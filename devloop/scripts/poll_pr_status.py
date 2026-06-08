@@ -123,9 +123,20 @@ def repos_to_poll(target: str) -> list[str]:
 
 def main(argv: list[str]) -> int:
     once = "--once" in argv
-    # --quiet: keep polling and writing .devloop/pr.json, but suppress the stdout
-    # emit. The harness turns this monitor's stdout into chat notifications, so
-    # --quiet keeps the PR guard/state fresh without the chat noise.
+    # --quiet: emit nothing to stdout (still polls + writes .devloop/pr.json, so the PR
+    # guard / prompt injection stay fresh). This is the DEFAULT in monitors.json — and it
+    # has to be, for a non-obvious reason worth recording:
+    #
+    # poll_once already dedups (emits <=1 line per 90s poll, only on a real PR/MR change),
+    # so it's tempting to think on-change is enough and --quiet is redundant. It is NOT.
+    # The chat-spam ("Monitor event: ...") is not produced by us: Claude Code's harness
+    # re-delivers a long-lived monitor task's notification on ~every turn — measured at
+    # ~5x/min, 362 deliveries from ONE underlying event over a 69-min session — regardless
+    # of how much we print. The multiplication happens downstream of this script, so
+    # on-change dedup cannot reduce the *frequency*; only producing zero stdout can. Hence
+    # --quiet is the actual noise control. Do not "simplify" by dropping it on the theory
+    # that on-change suffices (verified false). Revisit only if the harness ever stops
+    # re-delivering monitor notifications natively.
     quiet = "--quiet" in argv
     args = [a for a in argv if a not in ("--once", "--quiet")]
     target = args[0] if args else "."
