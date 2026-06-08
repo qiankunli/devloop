@@ -4,7 +4,7 @@ Per-workspace state (`<workspace_root>/.devloop/context.json`) is owned by
 `lib.context.workspace`. This module owns only the registry and discovery
 (`find_containing_workspace` / `maybe_register_workspace`).
 
-Persistence lives in the unified `lib.config` (`~/.config/devloop/config.json`,
+Persistence lives in the unified `lib.config` (`~/.devloop/config.json`,
 `workspaces` key) — a USER-LEVEL path, NOT inside the plugin directory: the plugin
 dir is a versioned cache (`~/.claude/plugins/cache/.../<version>/`), so anything
 written there is silently reset on every `/plugin update`. `config_dir` / `plugin_root`

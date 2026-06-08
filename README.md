@@ -71,7 +71,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_workspace.py <your-aggregate-workspac
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_repo.py
 ```
 
-GitLab features (MR / state injection) need a GitLab token — see [devloop/README.md](./devloop/README.md) for the unified `~/.config/devloop/config.json`.
+GitLab features (MR / state injection) need a GitLab token — see [devloop/README.md](./devloop/README.md) for the unified `~/.devloop/config.json`.
 
 ### Codex / opencode
 

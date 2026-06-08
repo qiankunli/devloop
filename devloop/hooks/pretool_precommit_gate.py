@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PreToolUse (Bash): deny `git commit` when the lint gate is on and lint is stale.
 
-Driven by the `precommit` section of `~/.config/devloop/config.json` (default off).
+Driven by the `precommit` section of `~/.devloop/config.json` (default off).
 Last-line fallback for repos that want strict enforcement; the normal flow runs lint
 before commit anyway.
 """
@@ -41,13 +41,13 @@ def decide(inp: hook_io.HookInput) -> str | None:
         if stale:
             parts.append(f"{stale} edit(s) since last lint pass.")
         parts.append("Run /lint (and /test if your repo requires it), then retry commit.")
-        parts.append("Disable this gate for the repo under `precommit` in ~/.config/devloop/config.json.")
+        parts.append("Disable this gate for the repo under `precommit` in ~/.devloop/config.json.")
         return "\n".join(parts)
     return None
 
 
 def _repo_config(git_root: str) -> dict:
-    cfg = config.precommit()
+    cfg = config.precommit(git_root)
     default = cfg.get("default") or {}
     repos = cfg.get("repos") or {}
     repo_abs = str(Path(git_root).resolve())

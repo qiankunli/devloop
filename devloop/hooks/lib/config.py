@@ -1,4 +1,4 @@
-"""Unified user-level config — the single `~/.config/devloop/config.json`.
+"""Unified config — `~/.devloop/config.json` plus optional local overrides.
 
 One file holds everything devloop depends on from the user / its environment, so
 the external dependencies (which GitLab, which token) are explicit in one place:
@@ -15,10 +15,19 @@ the external dependencies (which GitLab, which token) are explicit in one place:
       }
     }
 
-Lives at a USER-LEVEL path (override via `DEVLOOP_CONFIG_DIR`), never the versioned
-plugin dir — a `/plugin update` swaps that dir and would silently drop user config.
-The file is optional: every section has a default, so a fresh install just works and
-the file is created on first write (e.g. when a workspace auto-registers).
+Layering (low → high precedence), each layer may be PARTIAL:
+
+    _DEFAULTS  <  global (~/.devloop/config.json)  <  ancestor .devloop/config.json (closest wins)
+
+A repo or workspace can drop a `.devloop/config.json` next to its runtime state to
+override just a few keys (e.g. a different `gitlab.token`/`host` for that repo); the
+nearest one to `repo_dir` wins, everything else falls through to the global file.
+
+Global lives at a USER-LEVEL path (override the dir via `DEVLOOP_CONFIG_DIR`), never
+the versioned plugin dir — a `/plugin update` swaps that dir and would drop user
+config. Optional: every section has a default, so a fresh install just works; the
+global file is created on first write (e.g. when a workspace auto-registers). Writes
+always target the global file — local overrides are read-only, hand-authored.
 """
 from __future__ import annotations
 
@@ -26,13 +35,15 @@ import json
 import os
 from pathlib import Path
 
-# Section defaults — `load()` deep-merges the on-disk file over these, so a partial
-# config.json (e.g. only `workspaces`) still yields sane `gitlab` / `precommit`.
+# Section defaults — every load() deep-merges real layers over these, so a partial
+# config (e.g. only `workspaces`) still yields sane `gitlab` / `precommit`.
 _DEFAULTS: dict = {
     "workspaces": [],
     "gitlab": {"token": "", "host": ""},
     "precommit": {"default": {}, "repos": {}},
 }
+
+_LOCAL_NAME = ".devloop"
 
 
 def _expand(p: str) -> str:
@@ -40,14 +51,15 @@ def _expand(p: str) -> str:
 
 
 def config_dir() -> Path:
-    """User-level config dir — survives plugin version switches."""
+    """Global config dir — survives plugin version switches."""
     env = os.environ.get("DEVLOOP_CONFIG_DIR")
     if env:
         return Path(_expand(env))
-    return Path.home() / ".config" / "devloop"
+    return Path.home() / ".devloop"
 
 
 def config_file() -> Path:
+    """The global, writable config file."""
     return config_dir() / "config.json"
 
 
@@ -64,20 +76,28 @@ def plugin_root() -> Path:
 
 
 # ── read / write ─────────────────────────────────────────────────────────────
-def load() -> dict:
-    """Full config dict — on-disk file deep-merged over `_DEFAULTS` (missing file → defaults)."""
-    return _deep_merge(_DEFAULTS, _read_json(config_file()) or {})
+def load(repo_dir: str | Path | None = None) -> dict:
+    """Merged config: `_DEFAULTS < global < ancestor .devloop/config.json (closest wins)`.
+
+    `repo_dir` enables the local layers (the repo's / workspace's `.devloop/config.json`
+    and any in between); without it only the global file is consulted.
+    """
+    out: dict = {}
+    for layer in [_DEFAULTS, _read_global(), *(_read_json(f) or {} for f in _local_files(repo_dir))]:
+        out = _deep_merge(out, layer)
+    return out
 
 
 def save(data: dict) -> None:
+    """Persist to the GLOBAL file. Local overrides are hand-authored, never written here."""
     path = config_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
 def update(mutate) -> dict:
-    """Read-modify-write that preserves all sections. `mutate(d)` edits in place."""
-    data = load()
+    """Read-modify-write the GLOBAL config, preserving all sections. `mutate(d)` edits in place."""
+    data = _deep_merge(_DEFAULTS, _read_global())
     mutate(data)
     save(data)
     return data
@@ -85,33 +105,60 @@ def update(mutate) -> dict:
 
 # ── section accessors ────────────────────────────────────────────────────────
 def workspaces() -> list[str]:
-    return [_expand(p) for p in load().get("workspaces", []) if isinstance(p, str)]
+    # The workspace registry is a global-only discovery concern — not subject to
+    # per-repo override (a repo declaring "which dirs are workspaces" is nonsensical).
+    return [_expand(p) for p in (_deep_merge(_DEFAULTS, _read_global())).get("workspaces", []) if isinstance(p, str)]
 
 
 def set_workspaces(ws: list[str]) -> None:
     update(lambda d: d.__setitem__("workspaces", list(ws)))
 
 
-def gitlab_token() -> str | None:
-    """Canonical token: env `GITLAB_TOKEN` wins (CI-friendly), else `gitlab.token`."""
+def gitlab_token(repo_dir: str | Path | None = None) -> str | None:
+    """Canonical token: env `GITLAB_TOKEN` wins (CI-friendly), else `gitlab.token`
+    from the config closest to `repo_dir`."""
     env = os.environ.get("GITLAB_TOKEN")
     if env and env.strip():
         return env.strip()
-    tok = ((load().get("gitlab") or {}).get("token") or "").strip()
+    tok = ((load(repo_dir).get("gitlab") or {}).get("token") or "").strip()
     return tok or None
 
 
-def gitlab_host() -> str | None:
-    """Optional host override; None → derive from each repo's origin remote."""
-    host = ((load().get("gitlab") or {}).get("host") or "").strip()
+def gitlab_host(repo_dir: str | Path | None = None) -> str | None:
+    """Optional host override (config closest to `repo_dir`); None → derive from origin."""
+    host = ((load(repo_dir).get("gitlab") or {}).get("host") or "").strip()
     return host or None
 
 
-def precommit() -> dict:
-    return load().get("precommit") or {}
+def precommit(repo_dir: str | Path | None = None) -> dict:
+    return load(repo_dir).get("precommit") or {}
 
 
 # ── internals ────────────────────────────────────────────────────────────────
+def _read_global() -> dict:
+    """Global layer: `~/.devloop/config.json` (or `$DEVLOOP_CONFIG_DIR`). `{}` if absent."""
+    return _read_json(config_file()) or {}
+
+
+def _local_files(repo_dir: str | Path | None) -> list[Path]:
+    """Ancestor `.devloop/config.json` files from `repo_dir` upward, shallow→deep so the
+    closest (deepest) wins when deep-merged last. Excludes the global file; bounded at $HOME."""
+    if not repo_dir:
+        return []
+    glob = config_file()
+    home = Path.home()
+    found: list[Path] = []
+    start = Path(os.path.abspath(_expand(str(repo_dir))))
+    for anc in [start, *start.parents]:
+        f = anc / _LOCAL_NAME / "config.json"
+        if f != glob and f.is_file():
+            found.append(f)
+        if anc == home:
+            break
+    found.reverse()
+    return found
+
+
 def _read_json(path: Path) -> dict | None:
     if not path.exists():
         return None

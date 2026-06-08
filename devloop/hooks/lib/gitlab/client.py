@@ -9,9 +9,10 @@ Why this shape: the operation surface (mr.py) mirrors python-gitlab
 later — to the python-gitlab SDK, or to a GitLab MCP server — means reimplementing
 ONLY `request()` (and `load_token`/`resolve_project`); every call site stays put.
 
-Auth: token from `~/.config/devloop/config.json` (`gitlab.token`), overridable by the
-`GITLAB_TOKEN` env var. No token → `for_repo` returns None (callers skip quietly).
-Host: derived from each repo's `origin` remote, overridable by `gitlab.host` in config.
+Auth: token from config (`gitlab.token` — the repo's nearest `.devloop/config.json`,
+else `~/.devloop/config.json`), overridable by the `GITLAB_TOKEN` env var. No token →
+`for_repo` returns None (callers skip quietly). Host: derived from each repo's `origin`
+remote, overridable by `gitlab.host` in that same nearest config.
 """
 from __future__ import annotations
 
@@ -54,16 +55,18 @@ class Project:
         return f"https://{self.host}/api/v4/projects/{self.encoded}"
 
 
-def load_token() -> str | None:
-    """Token from config (`gitlab.token`), env `GITLAB_TOKEN` overriding. None if absent."""
-    return config.gitlab_token()
+def load_token(repo_dir: str | Path | None = None) -> str | None:
+    """Token from config (`gitlab.token`, nearest to `repo_dir`), env `GITLAB_TOKEN`
+    overriding. None if absent."""
+    return config.gitlab_token(repo_dir)
 
 
 def resolve_project(repo_dir: str | Path) -> Project | None:
     """Parse the `origin` remote URL → Project(host, path). None if unresolvable.
 
-    `gitlab.host` in config overrides the host parsed from origin (for SSH host
-    aliases / mirrors / non-standard remotes); the project path still comes from origin.
+    `gitlab.host` in the config nearest to `repo_dir` overrides the host parsed from
+    origin (for SSH host aliases / mirrors / non-standard remotes); the project path
+    still comes from origin.
     """
     r = gitcmd.git(repo_dir, "remote", "get-url", "origin")
     if not r.ok or not r.out:
@@ -75,7 +78,7 @@ def resolve_project(repo_dir: str | Path) -> Project | None:
         m = re.match(r"https?://[^/]*?([^/@]+)/(.+?)(?:\.git)?$", url)
     if not m:
         return None
-    return Project(host=config.gitlab_host() or m.group(1), path=m.group(2))
+    return Project(host=config.gitlab_host(repo_dir) or m.group(1), path=m.group(2))
 
 
 class GitLabClient:
@@ -90,7 +93,7 @@ class GitLabClient:
     def for_repo(cls, repo_dir: str | Path, *, timeout: int = DEFAULT_TIMEOUT) -> "GitLabClient | None":
         """Build a client for the repo's origin. None if no token / not a GitLab remote
         (callers skip quietly — GitLab features are best-effort)."""
-        token = load_token()
+        token = load_token(repo_dir)
         if not token:
             return None
         project = resolve_project(repo_dir)

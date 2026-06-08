@@ -43,11 +43,13 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_repo.py            # 单仓库
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_workspace.py <dir> # 聚合工作区
 ```
 
-## 配置（`~/.config/devloop/config.json`）
+## 配置（`~/.devloop/config.json` + 本地覆盖）
 
-devloop 对外部的依赖（连哪个 GitLab、用什么 token）+ 工作区注册表 + 提交门禁，**统一收在一个用户级文件** `~/.config/devloop/config.json` 里。放用户级目录（不是 plugin 目录）是因为 plugin 目录是版本化 cache，`/plugin update` 会把写进去的东西清掉。可用环境变量 `DEVLOOP_CONFIG_DIR` 覆写目录。
+devloop 对外部的依赖（连哪个 GitLab、用什么 token）+ 工作区注册表 + 提交门禁，**统一收在一个全局文件** `~/.devloop/config.json` 里。放用户级目录（不是 plugin 目录）是因为 plugin 目录是版本化 cache，`/plugin update` 会把写进去的东西清掉。可用环境变量 `DEVLOOP_CONFIG_DIR` 覆写目录。
 
-文件不存在也能用——所有项都有默认值，hook 首次运行时会按需创建。`devloop/config/config.example.json` 是带注释占位的模板，照着填即可：
+**本地覆盖（就近优先）**：任一 repo / workspace 可以在自己的 `.devloop/config.json` 里只写要改的几项（比如该 repo 用不同的 `gitlab.token` / `host`）。读取时按「**离 repo 最近的赢**」分层合并：`默认值 < 全局 ~/.devloop/config.json < 上层 .devloop/config.json（由外到内，最近的覆盖）`；没写的段落自动落回外层。本地文件**只读、手写**——devloop 自己的写入（如工作区自动注册）只落全局文件。
+
+文件不存在也能用——所有项都有默认值，hook 首次运行时会按需创建。`devloop/config/config.example.json` 是带注释占位的模板，照着填即可（同一份 schema 既可作全局，也可裁剪成本地覆盖放进某个 `.devloop/`）：
 
 ```jsonc
 {
@@ -69,7 +71,7 @@ devloop 对外部的依赖（连哪个 GitLab、用什么 token）+ 工作区注
 }
 ```
 
-> token 以明文存在 config.json，请勿把这个文件提交进任何仓库（它在 `~/.config/` 下，不在项目里）。需要避免落盘时改用 `GITLAB_TOKEN` 环境变量。
+> token 以明文存在 config.json，请勿把它提交进任何仓库。全局文件在 `~/.devloop/` 下、不在项目里；若放本地覆盖到某 repo 的 `.devloop/config.json`，该目录已被 devloop 加进 `.git/info/exclude`、不会被提交。需要彻底避免落盘时改用 `GITLAB_TOKEN` 环境变量。
 
 ## v0.1 范围 / 限制
 
