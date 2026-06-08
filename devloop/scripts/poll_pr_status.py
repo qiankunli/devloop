@@ -123,12 +123,16 @@ def repos_to_poll(target: str) -> list[str]:
 
 def main(argv: list[str]) -> int:
     once = "--once" in argv
-    args = [a for a in argv if a != "--once"]
+    # --quiet: keep polling and writing .devloop/pr.json, but suppress the stdout
+    # emit. The harness turns this monitor's stdout into chat notifications, so
+    # --quiet keeps the PR guard/state fresh without the chat noise.
+    quiet = "--quiet" in argv
+    args = [a for a in argv if a not in ("--once", "--quiet")]
     target = args[0] if args else "."
     if once:
         for r in repos_to_poll(target):
             msg = poll_once(r)
-            if msg:
+            if msg and not quiet:
                 print(f"devloop: {msg}")
         return 0
     # monitor loop: each tick, poll every repo in scope (all subprojects in Mode A),
@@ -137,7 +141,7 @@ def main(argv: list[str]) -> int:
         try:
             for r in repos_to_poll(target):
                 msg = poll_once(r)
-                if msg:
+                if msg and not quiet:
                     print(f"devloop: {msg}", flush=True)
         except Exception:
             pass

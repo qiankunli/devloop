@@ -1,7 +1,7 @@
 [
   {
     "name": "devloop-pr-sweep",
-    "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/poll_pr_status.py\" \"${CLAUDE_PROJECT_DIR}\"",
-    "description": "Polling GitHub/GitLab for recent PR/MR status"
+    "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/poll_pr_status.py\" \"${CLAUDE_PROJECT_DIR}\" --quiet",
+    "description": "Polling GitHub/GitLab for recent PR/MR status (--quiet: refresh .devloop/pr.json without chat notifications; drop the flag to re-enable emits)"
   }
 ]
