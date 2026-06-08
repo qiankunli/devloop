@@ -256,6 +256,18 @@ def warn_mixed_version_bump(repo: str, plan: list[str]) -> None:
         )
 
 
+def refresh_pr_state(repo: str) -> None:
+    """Refresh the monitor-owned `pr` segment from the LIVE forge (current branch) so the
+    branch-positioning gate / PLAN notes decide on authoritative state, not a stale cache.
+    Reuses the monitor's own single-writer poll; best-effort (fail-open to existing cache)."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from poll_pr_status import poll_once
+        poll_once(repo)
+    except Exception:
+        pass
+
+
 def reuse_or_create_pr(repo: str, source: str, target: str, title: str, plan: list[str]):
     """Open a PR/MR for `source`→`target`, reusing the branch's open one if present.
     Provider-neutral: the forge is resolved from the repo's origin (GitHub or GitLab)."""
@@ -368,12 +380,7 @@ def publish(intent: GitIntent, branch: BranchResult, staged: StageResult, plan: 
         RepoContext.refresh_branch(repo)
         # Don't write pr_number here — keep the `pr` segment single-owner. Trigger one
         # monitor poll so it (the sole writer) populates number + window for the new branch.
-        try:
-            sys.path.insert(0, str(Path(__file__).resolve().parent))
-            from poll_pr_status import poll_once
-            poll_once(repo)
-        except Exception:
-            pass
+        refresh_pr_state(repo)
 
 
 def main(argv: list[str]) -> int:
@@ -408,6 +415,13 @@ def main(argv: list[str]) -> int:
         f"mode={intent.mode} repo={Path(intent.repo).name} ({intent.source}) "
         f"branch={current} target={intent.target}"
     ]
+    if intent.mode in ("push", "mr"):
+        # Gate branch positioning on LIVE PR state, not a possibly-stale cache: a PR merged
+        # on the server the monitor hasn't caught yet must still block committing onto the
+        # dead branch (the exact lag devloop exists to kill). Cached state is fine for prompt
+        # hints; a decision that gates an outward push deserves authoritative state.
+        refresh_pr_state(intent.repo)
+        ctx = RepoContext.load(intent.repo) or ctx
     try:
         branch = prepare_branch(intent, ctx, current, plan)
         staged = stage_and_commit(intent, plan)
