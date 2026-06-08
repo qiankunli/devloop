@@ -123,9 +123,26 @@ def repos_to_poll(target: str) -> list[str]:
 
 def main(argv: list[str]) -> int:
     once = "--once" in argv
-    # --quiet: keep polling and writing .devloop/pr.json, but suppress the stdout
-    # emit. The harness turns this monitor's stdout into chat notifications, so
-    # --quiet keeps the PR guard/state fresh without the chat noise.
+    # --quiet: emit nothing to stdout (still polls + writes .devloop/pr.json, so the PR
+    # guard / prompt injection stay fresh). DEFAULT in monitors.json. This is a deliberate
+    # compromise, not the behavior we'd want — read before "simplifying" it away:
+    #
+    # What we actually want: a PR/MR changes rarely, so letting the monitor surface ONE
+    # "Monitor event" the moment it changes would be fine, even useful. poll_once already
+    # does exactly that — it dedups and emits <=1 line per 90s poll, only on a real change.
+    #
+    # Why we can't ship that: the chat-spam isn't ours. Claude Code's harness re-delivers a
+    # long-lived monitor task's notification on ~every turn — measured ~5x/min, 362
+    # deliveries from ONE underlying event over a 69-min session — independent of how much
+    # we print. So on-change dedup cannot cut the *frequency*; the multiplication is
+    # downstream of us. And the harness exposes no knob to keep the one-per-change ping
+    # while dropping the repeats — the only lever we have is all-or-nothing stdout.
+    #
+    # The compromise: pick all-off (--quiet). We give up the (wanted) one-ping-per-change,
+    # but state stays fresh in pr.json, so nothing functional is lost — only the chat ping.
+    # Tracked upstream at anthropics/claude-code#66219. If the harness ever delivers a
+    # monitor line once (no per-turn re-delivery), drop --quiet to restore the intended
+    # one-ping-per-change behavior.
     quiet = "--quiet" in argv
     args = [a for a in argv if a not in ("--once", "--quiet")]
     target = args[0] if args else "."
