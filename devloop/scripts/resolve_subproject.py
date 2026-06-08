@@ -84,7 +84,8 @@ def resolve_base(query: str) -> tuple[str | None, int, str]:
     if ctx is None or not ctx.subprojects:
         ctx = WorkspaceContext.refresh(ws_root)
     if not ctx.subprojects:
-        return None, 1, f"NONE\tworkspace {ws_root} has no subprojects parsed from AGENTS.md"
+        return None, 1, (f"NONE\tworkspace {ws_root} has no subprojects "
+                         f"(no git-repo subdir/symlink found, and none in AGENTS.md)")
 
     scored: list[tuple[int, str, str]] = []
     for s in ctx.subprojects:

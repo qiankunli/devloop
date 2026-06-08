@@ -93,10 +93,10 @@ class WorkspaceContext:
     def refresh(cls, workspace_root: str | Path) -> "WorkspaceContext":
         root = Path(workspace_root).resolve()
         agents_md = root / "AGENTS.md"
-        items, subs = [], []
+        items, table_rows = [], []
         if agents_md.exists():
             items = parsers.parse_references_section(agents_md)
-            subs = parsers.parse_subprojects_section(agents_md)
+            table_rows = parsers.parse_subprojects_section(agents_md)
         prev = cls.load(root)
         new = cls(
             workspace_root=str(root),
@@ -105,7 +105,7 @@ class WorkspaceContext:
                 references=[Reference(title=r.get("title", ""), path=r.get("path", ""),
                                       hook=r.get("description")) for r in items],
             ),
-            subprojects=[_build_subproject(root, s) for s in subs],
+            subprojects=_merge_subprojects(root, table_rows),
             injection_session=prev.injection_session if prev else Cadence(),
         )
         new.save()
@@ -152,6 +152,57 @@ class WorkspaceContext:
         self.save()
 
 
+# Direct children that are never subprojects, skipped before the git-repo test. The
+# git-repo test alone already drops them; this just avoids stat'ing the obvious ones
+# (and documents intent). Hidden dirs (`.devloop`, `.git`, …) are skipped by the dot rule.
+_DISCOVERY_SKIP = {"docs", "worktrees", "worktree", "node_modules"}
+
+
+def discover_subproject_names(root: str | Path) -> list[str]:
+    """Filesystem source of truth: workspace direct children that ARE (or symlink to) a
+    git repo are subprojects. This — not the AGENTS.md table — decides existence, so
+    adding a subproject is ≈ dropping a symlink in. Returns dir names, sorted."""
+    root = Path(root)
+    try:
+        children = sorted(root.iterdir())
+    except OSError:
+        return []
+    out: list[str] = []
+    for child in children:
+        name = child.name
+        if name.startswith(".") or name in _DISCOVERY_SKIP:
+            continue
+        try:
+            if not child.is_dir():               # follows symlinks → symlink-to-dir qualifies
+                continue
+            if not (child / ".git").exists():     # .git dir (repo) or .git file (worktree/submodule)
+                continue
+        except OSError:
+            continue
+        out.append(name)
+    return out
+
+
+def _merge_subprojects(root: Path, table_rows: list[dict]) -> list[Subproject]:
+    """Join the AGENTS.md table (optional garnish: aliases/language/role) onto the
+    filesystem-discovered set, by name (= dir name). Discovery establishes existence;
+    table rows that still resolve to an existing dir but weren't discovered (table-only
+    legacy workspaces, or a non-git subdir) are kept too so we converge without a hard cut."""
+    table_by_name = {r["name"]: r for r in table_rows if r.get("name")}
+    names: list[str] = []
+    seen: set[str] = set()
+    for name in discover_subproject_names(root):
+        names.append(name)
+        seen.add(name)
+    for row in table_rows:
+        nm = row.get("name")
+        if nm and nm not in seen and (root / (row.get("path") or nm)).is_dir():
+            names.append(nm)
+            seen.add(nm)
+    return [_build_subproject(root, {**table_by_name.get(nm, {}), "name": nm, "path": nm})
+            for nm in names]
+
+
 def _build_subproject(root: Path, s: dict) -> Subproject:
     sub = Subproject(name=s.get("name", ""), path=s.get("path", ""),
                      aliases=s.get("aliases", []), language=s.get("language"),
@@ -165,6 +216,10 @@ def _build_subproject(root: Path, s: dict) -> Subproject:
         canon = sp_dir.resolve()
         if canon != Path(root).resolve() / rel:
             sub.canonical = str(canon)
+        # Auto-detect language when the table didn't pin one (table value wins).
+        if not sub.language:
+            from .. import repo_layout
+            sub.language = repo_layout.detect_language(repo_layout.find_repo_code_dir(sp_dir))
     return sub
 
 
