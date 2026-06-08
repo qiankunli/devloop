@@ -1,0 +1,423 @@
+"""`RepoContext` — per-repo state, persisted as per-owner segment files under
+`<git_root>/.devloop/` (`meta.json` / `branch.json` / `mr.json` / `validation.json` /
+`injection.json`). `RepoContext` is the in-memory *view* that `load()` assembles by
+merging them; each mutator writes back only its own segment.
+
+Why one file per owner: the state has several independent writer-roles (the refresh,
+the MR monitor, validation marks, injection marks) running in different processes. A
+single shared file would force a read-modify-write that can lose a concurrent writer's
+update; one file per owner makes every write touch a disjoint file, so that whole class
+is structurally impossible — no lock, atomic per-file writes (see base.py `_write_atomic`).
+
+Schema + operations (load/refresh/mark/emit) built on `base.py` leaves
+(`AgentsMd`/`MRRef`/`Cadence`/...) and the `gitcmd`-routed `git_state`. Notable schema choices:
+
+- **MR model**: `branch.mr_iid` holds only the current branch's MR *number*; the recent-MR
+  window lives in `mrs`. Both are monitor-owned and persist in `mr.json`, which is
+  *branch-keyed* — on `load` the iid is joined in only if it was computed for the current
+  branch, so a branch switch self-invalidates it with no writer. "branch inactive" is
+  *derived* (`branch_mr_inactive`) by joining mr_iid → mrs, never stored as a bool.
+- **No scheduler segment** — the MR sweep is a native `monitor` that self-paces.
+- All timestamps are float epoch (see base.py).
+"""
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+from .. import git_state, parsers, repo_layout
+from . import base
+from .base import (
+    REPO_STALE_SEC,
+    SESSION_TTL_SEC,
+    TURN_TTL_SEC,
+    AgentsMd,
+    Cadence,
+    MRRef,
+    Reference,
+    WorktreeInfo,
+)
+
+
+# ── segment dataclasses ──────────────────────────────────────────────────────
+@dataclass
+class RepoMeta:
+    repo_dir: str = ""        # git root as the caller referenced it (symlink preserved)
+    real_repo_dir: str = ""   # Path(repo_dir).resolve() — for git IO
+    code_dir: str = ""        # where make/uv run (repo root or server/ backend/)
+    language: str | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "RepoMeta":
+        d = d or {}
+        return cls(
+            repo_dir=d.get("repo_dir", ""),
+            real_repo_dir=d.get("real_repo_dir", ""),
+            code_dir=d.get("code_dir", ""),
+            language=d.get("language"),
+        )
+
+
+@dataclass
+class BranchState:
+    current: str | None = None
+    protected: bool = False
+    target: str = "release"
+    ahead: int = 0
+    behind: int = 0
+    mr_iid: int | None = None          # current branch's MR number; join into mrs for the rest
+    worktree: WorktreeInfo = field(default_factory=WorktreeInfo)
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "BranchState":
+        d = d or {}
+        return cls(
+            current=d.get("current"),
+            protected=bool(d.get("protected")),
+            target=d.get("target", "release"),
+            ahead=int(d.get("ahead", 0) or 0),
+            behind=int(d.get("behind", 0) or 0),
+            mr_iid=d.get("mr_iid"),
+            worktree=WorktreeInfo.from_dict(d.get("worktree") or {}),
+        )
+
+
+@dataclass
+class Validation:
+    last_lint_at: float | None = None
+    last_test_at: float | None = None
+    edits_since_lint: int = 0
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "Validation":
+        d = d or {}
+        return cls(
+            last_lint_at=d.get("last_lint_at"),
+            last_test_at=d.get("last_test_at"),
+            edits_since_lint=int(d.get("edits_since_lint", 0) or 0),
+        )
+
+
+@dataclass
+class Injection:
+    turn: Cadence = field(default_factory=Cadence)
+    session: Cadence = field(default_factory=Cadence)
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "Injection":
+        d = d or {}
+        return cls(
+            turn=Cadence.from_dict(d.get("turn") or {}),
+            session=Cadence.from_dict(d.get("session") or {}),
+        )
+
+
+@dataclass
+class RepoContext:
+    repo: RepoMeta = field(default_factory=RepoMeta)
+    agents_md: AgentsMd = field(default_factory=AgentsMd)
+    branch: BranchState = field(default_factory=BranchState)
+    validation: Validation = field(default_factory=Validation)
+    injection: Injection = field(default_factory=Injection)
+    mrs: list[MRRef] = field(default_factory=list)   # monitor-owned recent-MR window
+    updated_at: float = 0.0
+
+    # ── load (merge segments) ──────────────────────────────────────────────────
+    @classmethod
+    def load(cls, repo_dir: str | Path) -> "RepoContext | None":
+        """Assemble the in-memory view by merging the per-owner segment files.
+
+        `meta` is the existence marker: absent → not initialized → None (caller
+        refresh_all's). Every other segment defaults independently, so one missing /
+        corrupt file degrades to its default without losing the rest (fail-open)."""
+        meta = base.load_segment(repo_dir, "meta")
+        if meta is None:
+            return None
+        branch = BranchState.from_dict(base.load_segment(repo_dir, "branch") or {})
+        mr = base.load_segment(repo_dir, "mr") or {}
+        # Join the monitor-owned mr_iid only when it was computed for the CURRENT branch.
+        # mr.json is branch-keyed, so a branch switch self-invalidates the stale iid with
+        # nobody writing — the monitor re-establishes it on its next poll.
+        branch.mr_iid = mr.get("mr_iid") if mr.get("branch") == branch.current else None
+        ctx = cls(
+            repo=RepoMeta.from_dict(meta.get("repo")),
+            agents_md=AgentsMd.from_dict(meta.get("agents_md") or {}),
+            branch=branch,
+            validation=Validation.from_dict(base.load_segment(repo_dir, "validation") or {}),
+            injection=Injection.from_dict(base.load_segment(repo_dir, "injection") or {}),
+            mrs=[MRRef.from_dict(m) for m in (mr.get("mrs") or []) if m.get("iid") is not None],
+            updated_at=float(meta.get("updated_at", 0) or 0),
+        )
+        if not ctx.repo.repo_dir:
+            ctx.repo.repo_dir = str(Path(repo_dir))
+        return ctx
+
+    # ── per-owner segment writers ──────────────────────────────────────────────
+    # Each writes exactly one file. A writer-role only ever calls its own saver, so
+    # two concurrent writers (e.g. the monitor and a refresh) touch disjoint files —
+    # the lost-update class is structurally impossible, no lock needed.
+    def _root(self) -> str:
+        return self.repo.repo_dir or self.repo.real_repo_dir
+
+    def _save_meta(self) -> None:
+        root = self._root()
+        if not root:
+            return
+        self.updated_at = base.now()
+        base.save_segment(root, "meta", {
+            "repo": asdict(self.repo),
+            "agents_md": asdict(self.agents_md),
+            "updated_at": self.updated_at,
+        })
+        git_state.ensure_gitignore_excluded(root)   # keep /.devloop/ out of git
+
+    def _save_branch(self) -> None:
+        if not self._root():
+            return
+        d = asdict(self.branch)
+        d.pop("mr_iid", None)   # mr_iid is monitor-owned → the `mr` segment, not here
+        base.save_segment(self._root(), "branch", d)
+
+    def _save_mr(self) -> None:
+        """Monitor's write surface (also used by gcampr via a one-shot poll). Branch-keyed
+        so a later branch switch invalidates mr_iid on read without anyone clearing it."""
+        if not self._root():
+            return
+        base.save_segment(self._root(), "mr", {
+            "branch": self.branch.current,
+            "mr_iid": self.branch.mr_iid,
+            "mrs": [asdict(m) for m in self.mrs],
+        })
+
+    def _save_validation(self) -> None:
+        if self._root():
+            base.save_segment(self._root(), "validation", asdict(self.validation))
+
+    def _save_injection(self) -> None:
+        if self._root():
+            base.save_segment(self._root(), "injection", asdict(self.injection))
+
+    # ── refresh (re-derive from authoritative sources) ─────────────────────────
+    @classmethod
+    def refresh_all(cls, repo_dir: str | Path) -> "RepoContext":
+        """Full rebuild (normal-impl boundary: SessionStart / enter / TTL).
+
+        Writes only the refresher-owned segments (meta + branch). validation /
+        injection / mr live in their own files and are left untouched — their values
+        are merged in from disk only to keep the *returned* object complete."""
+        repo_dir_in = str(Path(repo_dir))
+        repo_dir_abs = str(Path(repo_dir).resolve())
+        code_dir = repo_layout.find_repo_code_dir(repo_dir_abs)
+        language = repo_layout.detect_language(code_dir)
+        agents_md_path = repo_layout.find_agents_md(repo_dir_abs, code_dir)
+        target = git_state.get_default_target(repo_dir_abs)
+
+        prev = cls.load(repo_dir_abs) or cls()
+        items = parsers.parse_references_section(agents_md_path) if agents_md_path else []
+        ctx = cls(
+            repo=RepoMeta(repo_dir=repo_dir_in, real_repo_dir=repo_dir_abs,
+                          code_dir=code_dir, language=language),
+            agents_md=AgentsMd(
+                path=agents_md_path,
+                references=[Reference(title=r.get("title", ""), path=r.get("path", ""),
+                                      hook=r.get("description")) for r in items],
+            ),
+            branch=_build_branch(repo_dir_abs, target),
+            validation=prev.validation,
+            injection=prev.injection,
+            mrs=prev.mrs,
+        )
+        ctx.branch.mr_iid = prev.branch.mr_iid   # keep the join value on the returned object
+        ctx._save_meta()
+        ctx._save_branch()
+        return ctx
+
+    @classmethod
+    def refresh_branch(cls, repo_dir: str | Path) -> "RepoContext":
+        """Incremental branch refresh (fast; after git state change). No AGENTS.md re-parse.
+        Writes only branch.json. Not-yet-initialized → fall back to a full build."""
+        ctx = cls.load(repo_dir)
+        if ctx is None:
+            return cls.refresh_all(repo_dir)
+        prev_iid = ctx.branch.mr_iid
+        target = ctx.branch.target or git_state.get_default_target(ctx.repo.real_repo_dir)
+        ctx.branch = _build_branch(ctx.repo.real_repo_dir, target)
+        ctx.branch.mr_iid = prev_iid   # in-memory only; mr.json (the source of truth) is untouched
+        ctx._save_branch()
+        return ctx
+
+    @classmethod
+    def is_stale_at(cls, repo_dir: str | Path, ttl: float = REPO_STALE_SEC) -> bool:
+        meta = base.load_segment(repo_dir, "meta")
+        if meta is None:
+            return True
+        return base.is_stale(meta.get("updated_at"), ttl)
+
+    # ── mutators (each touches exactly one segment) ─────────────────────────────
+    def increment_stale_edits(self, delta: int = 1) -> None:
+        self.validation.edits_since_lint += delta
+        self._save_validation()
+
+    def mark_lint_passed(self) -> None:
+        self.validation.last_lint_at = base.now()
+        self.validation.edits_since_lint = 0
+        self._save_validation()
+
+    def mark_test_passed(self) -> None:
+        self.validation.last_test_at = base.now()
+        self._save_validation()
+
+    def set_branch_mr_iid(self, iid: int | None) -> None:
+        """Write surface for the current branch's MR number (monitor + create_mr)."""
+        self.branch.mr_iid = iid
+        self._save_mr()
+
+    def set_mrs(self, mrs: list[MRRef]) -> None:
+        """Monitor's sole write surface for the recent-MR window."""
+        self.mrs = list(mrs)
+        self._save_mr()
+
+    # ── MR derivation ─────────────────────────────────────────────────────────
+    def current_mr(self) -> MRRef | None:
+        if self.branch.mr_iid is None:
+            return None
+        return next((m for m in self.mrs if m.iid == self.branch.mr_iid), None)
+
+    def branch_mr_inactive(self) -> bool:
+        """True if the current branch's MR is merged/closed (derived, not stored).
+        The branch-merged guard reads this."""
+        m = self.current_mr()
+        return bool(m and m.inactive)
+
+    def branch_mr_in_flight(self) -> bool:
+        """True if the current branch's MR is still open / awaiting human merge (derived).
+
+        The loop's between-rounds state. Surfaced so the orchestrator can note that committing
+        here continues an in-flight MR — and, more importantly, so starting NEW work is never
+        stacked onto an in-flight feature branch by default (it re-bases off origin/<target>)."""
+        m = self.current_mr()
+        return bool(m and m.is_open)
+
+    # ── injection: turn / session cadences ─────────────────────────────────────
+    def turn_text(self) -> str:
+        return _format_turn(self)
+
+    def session_text(self) -> str:
+        if not self.agents_md.references:
+            return ""
+        return _format_session(self)
+
+    def emit_turn_if_changed(self) -> str:
+        text = self.turn_text()
+        return text if self.injection.turn.should_emit(text, now=base.now(), ttl=TURN_TTL_SEC) else ""
+
+    def emit_session_if_changed(self) -> str:
+        text = self.session_text()
+        return text if self.injection.session.should_emit(text, now=base.now(), ttl=SESSION_TTL_SEC) else ""
+
+    def mark_turn_emitted(self, text: str) -> None:
+        self.injection.turn.mark(text, now=base.now())
+        self._save_injection()
+
+    def mark_session_emitted(self, text: str) -> None:
+        self.injection.session.mark(text, now=base.now())
+        self._save_injection()
+
+    def reset_turn_injection(self) -> None:
+        self.injection.turn.clear()
+        self._save_injection()
+
+    def reset_session_injection(self) -> None:
+        self.injection.session.clear()
+        self._save_injection()
+
+    def clear_injection_dedup(self) -> None:
+        """PostCompact: drop both cadences' stamps so state re-injects next turn."""
+        self.injection.turn.clear()
+        self.injection.session.clear()
+        self._save_injection()
+
+
+# ── private builders / renderers ──────────────────────────────────────────────
+def _build_branch(repo_dir: str, target: str) -> BranchState:
+    current = git_state.get_current_branch(repo_dir)
+    ahead, behind = 0, 0
+    if git_state.target_exists(repo_dir, target):
+        ab = git_state.get_ahead_behind(repo_dir, target)
+        if ab:
+            ahead, behind = ab
+    is_linked, common_dir, main_branch = git_state.get_worktree_metadata(repo_dir)
+    # mr_iid is intentionally NOT set here — it's monitor-owned (the `mr` segment) and
+    # joined in by branch at load time, so a branch switch drops it without any writer.
+    return BranchState(
+        current=current,
+        protected=git_state.is_protected_branch(current),
+        target=target,
+        ahead=ahead,
+        behind=behind,
+        worktree=WorktreeInfo(is_linked=is_linked, common_dir=common_dir, main_branch=main_branch),
+    )
+
+
+def _format_turn(ctx: "RepoContext") -> str:
+    lines = [f"[Current repo: {ctx.repo.code_dir} ({ctx.repo.language or '?'})]"]
+    b = ctx.branch
+    cur = b.current or "?"
+    if b.worktree.is_linked:
+        wt = f" (worktree, main={b.worktree.main_branch})" if b.worktree.main_branch else " (worktree)"
+    else:
+        wt = ""
+    extras = []
+    if b.protected:
+        extras.append("PROTECTED")
+    mr = ctx.current_mr()
+    if mr and mr.inactive:
+        extras.append(
+            f"INACTIVE (MR #{mr.iid} {mr.state}) — cut a new branch from latest origin/{b.target}"
+        )
+    elif mr and mr.is_open:
+        # Soft hint, not a guard: an in-flight MR has one legitimate edit case (amending it for
+        # review), so we surface the state and let the agent choose rather than hard-blocking.
+        extras.append(
+            f"IN-FLIGHT (MR #{mr.iid} opened) — new work needs a fresh branch (gcampr --branch); "
+            f"edit here only to amend this MR"
+        )
+    extra_str = f" ⚠️ {'; '.join(extras)}" if extras else ""
+    lines.append(f"Branch: {cur}{wt} (ahead {b.ahead}, behind {b.behind}, target={b.target}){extra_str}")
+
+    raw = git_state.get_workspace_status(ctx.repo.real_repo_dir or ctx.repo.repo_dir)
+    if raw.get("dirty"):
+        lines.append(f"Workspace: dirty: {raw.get('modified_count', 0)} modified, {raw.get('untracked_count', 0)} untracked")
+    else:
+        lines.append("Workspace: clean")
+
+    v = ctx.validation
+    stale = f", {v.edits_since_lint} edits since" if v.edits_since_lint else ""
+    lines.append(f"Validation: lint={base.fmt_ts(v.last_lint_at)}{stale}; test={base.fmt_ts(v.last_test_at)}")
+
+    if ctx.mrs:
+        parts = []
+        for m in ctx.mrs:
+            star = "*" if m.iid == b.mr_iid else ""
+            parts.append(f"#{m.iid}{star} {m.state or '?'}({m.source_branch or '?'})")
+        lines.append("Recent MRs: " + "  ".join(parts) + ("   (*=current branch)" if b.mr_iid else ""))
+
+    return " | ".join(lines)
+
+
+def _format_session(ctx: "RepoContext") -> str:
+    lines = ["Repo AGENTS.md references (Read with the Read tool when your task touches these topics):"]
+    for r in ctx.agents_md.references:
+        lines.append("  - " + _format_ref(r))
+    return "\n".join(lines)
+
+
+def _format_ref(r: Reference) -> str:
+    title = r.title or "?"
+    desc = (r.hook or "").strip()
+    basename = Path(r.path).name if r.path else ""
+    desc_is_path = desc and (desc == basename or desc == r.path
+                             or (desc.endswith(".md") and Path(desc).name == basename))
+    if desc and not desc_is_path:
+        return f"{title} — {desc}  ← {basename}"
+    return f"{title}  ← {basename}"

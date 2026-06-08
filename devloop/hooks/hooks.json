@@ -1,0 +1,111 @@
+{
+  "description": "devloop plugin hooks: native-first state bus (inject/refresh) + hard intercepts",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_protect_branch.py", "timeout": 5, "statusMessage": "Checking branch protection" },
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_checkout_owner_guard.py", "timeout": 5, "statusMessage": "Checking checkout ownership" },
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_block_add_all.py", "timeout": 3, "statusMessage": "Checking git add scope" },
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_workspace_cwd_guard.py", "timeout": 5, "statusMessage": "Validating workspace boundary" },
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_pytest_naked.py", "timeout": 5, "statusMessage": "Checking pytest invocation" },
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_pip_install_block.py", "timeout": 5, "statusMessage": "Checking pip install guard" },
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_precommit_gate.py", "timeout": 5, "statusMessage": "Checking pre-commit validation" }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_edit_owner_guard.py", "timeout": 5, "statusMessage": "Checking checkout ownership" },
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_branch_merged_guard.py", "timeout": 5, "statusMessage": "Checking branch merge status" },
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_requirements_edit_block.py", "timeout": 5, "statusMessage": "Checking requirements edit guard" }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart_init.py",
+            "timeout": 10,
+            "statusMessage": "Initializing devloop session"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/userprompt_inject.py",
+            "timeout": 10,
+            "statusMessage": "Injecting devloop context"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/postcompact_reinject.py",
+            "timeout": 5,
+            "statusMessage": "Re-injecting devloop state after compaction"
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/filechanged_refs.py",
+            "timeout": 5,
+            "statusMessage": "Refreshing AGENTS.md references"
+          }
+        ]
+      }
+    ],
+    "CwdChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/cwdchanged_enter.py",
+            "timeout": 10,
+            "statusMessage": "Entering subproject (devloop)"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/posttool_git_refresh.py",
+            "timeout": 10,
+            "statusMessage": "Refreshing devloop branch state"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/posttool_track_edits.py",
+            "timeout": 5,
+            "statusMessage": "Tracking file edits"
+          }
+        ]
+      }
+    ]
+  }
+}

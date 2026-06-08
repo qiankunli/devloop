@@ -1,0 +1,9 @@
+{
+  "name": "example",
+  "version": "0.0.2",
+  "description": "Placeholder plugin demonstrating that devloop marketplace hosts multiple plugins. Provides a trivial /hello command.",
+  "author": {
+    "name": "qiankunli",
+    "url": "https://github.com/qiankunli"
+  }
+}

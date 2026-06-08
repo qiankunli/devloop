@@ -1,0 +1,18 @@
+{
+  "name": "example",
+  "version": "0.0.2",
+  "description": "Placeholder plugin demonstrating that devloop marketplace hosts multiple plugins (Codex side).",
+  "author": {
+    "name": "qiankunli",
+    "url": "https://github.com/qiankunli"
+  },
+  "license": "MIT",
+  "keywords": ["example", "template"],
+  "skills": "./commands/",
+  "interface": {
+    "displayName": "Example",
+    "shortDescription": "Trivial hello command, demonstrates marketplace structure",
+    "category": "Example",
+    "capabilities": ["Read"]
+  }
+}

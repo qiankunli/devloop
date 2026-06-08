@@ -1,0 +1,764 @@
+#!/usr/bin/env python3
+"""devloop unit tests — the pure logic worth pinning down.
+
+Covers the bits most prone to silent breakage: guard command parsing (quoted-text
+false positives + `git -C` false negatives), the MR window iid-math, origin→project
+parsing, the staging sensitive-filter, and branch-MR selection.
+
+Run standalone: `python3 devloop/tests/test_units.py`  (also pytest-collectable).
+"""
+from __future__ import annotations
+
+import importlib.util
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+HOOKS = Path(__file__).resolve().parent.parent / "hooks"
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+sys.path.insert(0, str(HOOKS))
+
+from lib import cmdparse  # noqa: E402
+from lib.context import MRRef, Cadence  # noqa: E402
+from lib.gitlab import resolve_project, to_mrrefs  # noqa: E402
+from lib.gitlab.mr import _window_iids  # noqa: E402
+
+
+def _load_from(base, name):
+    spec = importlib.util.spec_from_file_location(name, str(base / f"{name}.py"))
+    m = importlib.util.module_from_spec(spec)
+    # 注册进 sys.modules 再 exec:dataclass(及其它按 __module__ 反查注解的机制)
+    # 需要 sys.modules[m.__name__] 存在,否则被测模块里定义 @dataclass 直接炸
+    sys.modules[name] = m
+    spec.loader.exec_module(m)
+    return m
+
+
+def _load_script(name):
+    return _load_from(SCRIPTS, name)
+
+
+def _load_hook(name):
+    return _load_from(HOOKS, name)
+
+
+def _git(repo, *a):
+    subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)
+
+
+def test_cmdparse_git_invocations():
+    gi = cmdparse.git_invocations
+    assert [i["subcommand"] for i in gi("git commit -m x")] == ["commit"]
+    # false negative fixed: global options before the subcommand
+    assert gi("git -C /repo commit")[0]["subcommand"] == "commit"
+    assert gi("git -c user.name=x push")[0]["subcommand"] == "push"
+    assert gi("GIT_DIR=.git git commit")[0]["subcommand"] == "commit"
+    assert gi("/usr/bin/git push")[0]["subcommand"] == "push"
+    # false positive fixed: pattern inside quoted text is NOT a git invocation
+    assert gi('echo "git add -A"') == []
+    assert gi("grep -r 'git commit' .") == []
+    # operator inside quotes must not split the command
+    assert [i["subcommand"] for i in gi('git commit -m "a && b"')] == ["commit"]
+    # chained commands
+    assert [i["subcommand"] for i in gi("cd r && git push")] == ["push"]
+    # add -A detection (incl. -C form)
+    assert gi("git add -A")[0]["args"] == ["-A"]
+    assert gi("git -C r add -A")[0]["subcommand"] == "add"
+    # -C target captured so guards can judge the right repo
+    assert gi("git -C /repo commit")[0]["cwd"] == "/repo"
+    assert gi("git commit")[0]["cwd"] is None
+
+
+def test_protect_branch_checks_dash_c_target():
+    """Codex #4: protect guard must judge the `-C` target repo, not the caller's cwd."""
+    pb = _load_hook("pretool_protect_branch")
+    from lib import hook_io
+    from lib.context import RepoContext
+    R = "/tmp/dlut_prot"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "master")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+
+    def hi(cmd, cwd):
+        return hook_io.HookInput(event="PreToolUse", tool_name="Bash",
+                                 tool_input={"command": cmd}, cwd=cwd, raw={})
+
+    # the hole: `git -C <master repo> commit` from a NON-repo cwd (e.g. workspace root)
+    assert pb.decide(hi(f"git -C {R} commit -m x", "/tmp"))
+    assert pb.decide(hi("git commit -m x", R))                      # plain, on master
+    _git(R, "checkout", "-q", "-b", "feat/x"); RepoContext.refresh_all(R)
+    assert pb.decide(hi("git commit -m x", R)) is None              # feature branch → allow
+    assert pb.decide(hi(f"git -C {R} commit -m x", "/tmp")) is None  # -C feature repo → allow
+
+
+def test_cmdparse_commands():
+    assert cmdparse.commands("PYTHONPATH=. pytest x")[0][0] == "pytest"   # env stripped
+    assert cmdparse.first_token_is("make test", "make") is True
+    assert cmdparse.first_token_is('echo "make test"', "make") is False
+
+
+def test_window_iids():
+    assert _window_iids(10, 10, 5) == [6, 7, 8, 9, 10]
+    assert _window_iids(10, 11, 5) == [7, 8, 9, 10, 11]
+    assert _window_iids(10, 12, 5) == [8, 9, 10, 11, 12]
+    assert _window_iids(10, 20, 5) == [8, 9, 10, 19, 20]
+    assert _window_iids(None, 20, 5) == [16, 17, 18, 19, 20]
+    assert _window_iids(3, 3, 5) == [1, 2, 3]
+    assert all(10 in _window_iids(10, L, 5) for L in range(10, 40))   # anchor always present
+
+
+def test_resolve_project():
+    R = "/tmp/dlut_repo"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    subprocess.run(["git", "init", "-q"], cwd=R, check=True)
+    subprocess.run(["git", "remote", "add", "origin", "git@gitlab.example.com:acme/widgets.git"],
+                   cwd=R, check=True)
+    p = resolve_project(R)
+    assert p.host == "gitlab.example.com" and p.path == "acme/widgets"
+    assert p.encoded == "acme%2Fwidgets"
+    subprocess.run(["git", "remote", "set-url", "origin", "https://gitlab.com/g/s/proj.git"], cwd=R, check=True)
+    p = resolve_project(R)
+    assert p.host == "gitlab.com" and p.path == "g/s/proj"
+
+
+def test_sensitive_filter():
+    is_sensitive = _load_script("smart_git_ops")._is_sensitive
+    assert is_sensitive(".env") and is_sensitive("sub/.env.local")
+    assert is_sensitive("a/.idea/x") and is_sensitive("pkg/__pycache__/m.pyc")
+    assert not is_sensitive("src/main.py") and not is_sensitive("README.md")
+
+
+def test_decide_branch_is_intent_driven():
+    """--branch 一律基于 base(默认 origin/<target>),与当前停在哪条分支无关——避免新 MR
+    夹带上一条未合 feature 分支的提交。"""
+    decide = _load_script("smart_git_ops").decide_branch
+    B = "origin/release"
+    # 新 --branch:即便当前停在另一条未合 feature 分支,也切自 base 而非当前 HEAD
+    assert decide("chat-fix", "bump-x", protected=False, stale=False, base=B) == ("cut", B)
+    # 显式 --base → 故意栈式,切自该 base
+    assert decide("release", "feat2", protected=True, stale=False, base="feat1") == ("cut", "feat1")
+    # 无 --branch + 健康分支 → 续写当前(往开着的 MR 加提交)
+    assert decide("feat1", None, protected=False, stale=False, base=B) == ("continue", None)
+    # 无 --branch + protected → 报错,要 --branch
+    act, why = decide("release", None, protected=True, stale=False, base=B)
+    assert act == "error" and "protected" in why
+    # 无 --branch + MR 已 merged/closed(stale) → 报错
+    act, why = decide("old", None, protected=False, stale=True, base=B)
+    assert act == "error" and "merged" in why
+    # --branch == 当前分支(已在该分支)→ 续写,不重切
+    assert decide("feat1", "feat1", protected=False, stale=False, base=B) == ("continue", None)
+
+
+def test_pick_branch_mr():
+    poll = _load_script("poll_mr_status")
+    poll._is_ancestor = lambda repo, sha, head: True
+    assert poll.pick_branch_mr([{"state": "opened", "iid": 5, "sha": "a"},
+                                {"state": "merged", "iid": 4, "sha": "b"}], "r", "h")["iid"] == 5
+    poll._is_ancestor = lambda repo, sha, head: sha == "b"
+    assert poll.pick_branch_mr([{"state": "merged", "iid": 4, "sha": "b"},
+                                {"state": "closed", "iid": 3, "sha": "c"}], "r", "h")["iid"] == 4
+    poll._is_ancestor = lambda repo, sha, head: False
+    assert poll.pick_branch_mr([{"state": "merged", "iid": 4, "sha": "dead"}], "r", "h") is None
+
+
+def test_mrref_and_cadence():
+    mr = MRRef.from_dict({"iid": 7, "state": "merged", "source_branch": "f", "target_branch": "m"})
+    assert mr.inactive and MRRef.from_dict({"iid": 8, "state": "opened"}).inactive is False
+    # in-flight(opened)与 inactive(merged/closed)互斥——循环"轮次之间"的第四态
+    assert MRRef.from_dict({"iid": 9, "state": "opened"}).is_open
+    assert not MRRef.from_dict({"iid": 10, "state": "merged"}).is_open and not mr.is_open
+    assert len(to_mrrefs([{"iid": 1, "state": "opened"}, {"no_iid": True}])) == 1
+    c = Cadence()
+    assert c.should_emit("x", now=100, ttl=1800)
+    c.mark("x", now=100)
+    assert not c.should_emit("x", now=200, ttl=1800)        # same → skip
+    assert c.should_emit("y", now=200, ttl=1800)            # changed → emit
+    assert c.should_emit("x", now=100 + 1800, ttl=1800)     # TTL → emit
+    c.clear()
+    assert c.should_emit("x", now=200, ttl=1800)            # PostCompact clear → emit
+
+
+def test_context_segments():
+    """Per-owner segment files: each writer touches a disjoint file (no lost update),
+    and mr.json is branch-keyed so a branch switch self-invalidates mr_iid with no writer."""
+    from lib.context import MRRef, RepoContext, base
+    R = "/tmp/dlut_seg"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+
+    # refresh_all writes ONLY the refresher-owned segments
+    RepoContext.refresh_all(R)
+    seg = set(os.listdir(f"{R}/.devloop"))
+    assert {"meta.json", "branch.json"} <= seg and "validation.json" not in seg and "mr.json" not in seg
+
+    ctx = RepoContext.load(R)
+    assert ctx.branch.current == "feat/a" and ctx.branch.mr_iid is None and ctx.mrs == []
+
+    # a validation mark writes only validation.json
+    ctx.mark_lint_passed()
+    assert (Path(R) / ".devloop" / "validation.json").exists()
+    assert RepoContext.load(R).validation.edits_since_lint == 0
+
+    # monitor-owned mr write, branch-keyed; joins on the matching branch
+    ctx = RepoContext.load(R)
+    ctx.mrs = [MRRef(iid=51, state="opened", source_branch="feat/a")]
+    ctx.branch.mr_iid = 51
+    ctx._save_mr()
+    assert base.load_segment(R, "mr")["branch"] == "feat/a"
+    assert RepoContext.load(R).branch.mr_iid == 51
+
+    # branch switch → stale iid drops at load with nobody clearing mr.json
+    _git(R, "checkout", "-q", "-b", "feat/b")
+    RepoContext.refresh_branch(R)
+    assert RepoContext.load(R).branch.mr_iid is None
+    assert base.load_segment(R, "mr")["branch"] == "feat/a"   # monitor file untouched by refresh
+
+    # disjoint writers (refresh ↔ monitor) don't clobber each other
+    RepoContext.refresh_branch(R)
+    c = RepoContext.load(R); c.mrs = [MRRef(iid=60, state="opened", source_branch="feat/b")]
+    c.branch.mr_iid = 60; c._save_mr()
+    merged = RepoContext.load(R)
+    assert merged.branch.current == "feat/b" and merged.branch.mr_iid == 60
+
+
+def test_branch_mr_in_flight():
+    """in-flight = 当前分支有 opened MR(循环的"人工 merge 前 / 轮次之间"态);
+    与 inactive(merged/closed)互斥。orchestrator 据此提示"在续写在途 MR"。"""
+    from lib.context import MRRef, RepoContext
+    R = "/tmp/dlut_inflight"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+
+    ctx = RepoContext.load(R)
+    ctx.mrs = [MRRef(iid=51, state="opened", source_branch="feat/a")]; ctx.branch.mr_iid = 51
+    assert ctx.branch_mr_in_flight() and not ctx.branch_mr_inactive()
+    # 合入后转 inactive、不再 in-flight
+    ctx.mrs = [MRRef(iid=51, state="merged", source_branch="feat/a")]
+    assert ctx.branch_mr_inactive() and not ctx.branch_mr_in_flight()
+    # 无 MR(mr_iid=None)两者皆 False
+    ctx.branch.mr_iid = None
+    assert not ctx.branch_mr_in_flight() and not ctx.branch_mr_inactive()
+
+
+def test_in_flight_turn_hint():
+    """in-flight 是软提示(不硬拦):turn 注入出现 IN-FLIGHT + 引导新工作切新分支;
+    inactive 仍是 INACTIVE;healthy 两者都不出现。"""
+    from lib.context import MRRef, RepoContext
+    R = "/tmp/dlut_if_hint"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+    ctx = RepoContext.load(R)
+
+    # in-flight(opened)→ 软提示出现 + actionable
+    ctx.mrs = [MRRef(iid=51, state="opened", source_branch="feat/a")]; ctx.branch.mr_iid = 51
+    txt = ctx.turn_text()
+    assert "IN-FLIGHT" in txt and "fresh branch" in txt and "INACTIVE" not in txt
+
+    # inactive(merged)→ 仍是 INACTIVE,不误报 IN-FLIGHT
+    ctx.mrs = [MRRef(iid=51, state="merged", source_branch="feat/a")]
+    txt = ctx.turn_text()
+    assert "INACTIVE" in txt and "IN-FLIGHT" not in txt
+
+    # healthy(无 MR)→ 两者都没有
+    ctx.branch.mr_iid = None; ctx.mrs = []
+    txt = ctx.turn_text()
+    assert "IN-FLIGHT" not in txt and "INACTIVE" not in txt
+
+
+def test_atomic_segment_write():
+    """save_segment is atomic: a reader never sees a torn write, and a corrupt segment
+    degrades to its default rather than nuking the whole context."""
+    from lib.context import base
+    R = "/tmp/dlut_atomic"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    base.save_segment(R, "meta", {"repo": {"repo_dir": R}, "updated_at": 1.0})
+    base.save_segment(R, "branch", {"current": "x"})
+    # no .tmp residue left behind after an atomic replace
+    assert not any(n.endswith(".tmp") for n in os.listdir(f"{R}/.devloop"))
+    # a corrupt segment reads as None (caller falls back to default), siblings still load
+    (Path(R) / ".devloop" / "branch.json").write_text("{ not json")
+    assert base.load_segment(R, "branch") is None
+    assert base.load_segment(R, "meta")["updated_at"] == 1.0
+
+
+def test_git_invocation_cd_prefix():
+    """git_invocations 按位置跟踪 cd 前缀(取代 last_cd_target)——聚合工作区里 session
+    cwd 停在 workspace 根,inp.cwd 不是命令真正触达的仓库;相对 cd 链按 shell 语义组合
+    (`cd a && cd b` → a/b,旧 last-cd-wins 会错算成 b)。"""
+    def cds(cmd):
+        return [inv["cd"] for inv in cmdparse.git_invocations(cmd)]
+    assert cds("cd /a/b && git commit -m 'x'") == ["/a/b"]
+    assert cds("cd a && make && cd b && git push") == [os.path.join("a", "b")]
+    assert cds("git commit -m 'cd /tmp'") == [None]    # 引号内不算
+    assert cds("echo cd /x; git fetch") == [None]      # cd 不是命令词
+    assert cds("git fetch && cd /x && git push") == [None, "/x"]  # 位置感知
+
+
+def test_normalize_files_rebase():
+    """--files 自动 rebase 到 repo-root 相对路径——调用方从 workspace 根 / server 子目录
+    传来的路径不再死于裸 `git add` 报错;删除文件等不存在路径保持原样。"""
+    sgo = _load_script("smart_git_ops")
+    R = "/tmp/dlut_nf"
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/repo/server", exist_ok=True)
+    Path(f"{R}/repo/server/a.py").write_text("x")
+    plan: list[str] = []
+    assert sgo.normalize_files(f"{R}/repo", [f"{R}/repo/server/a.py"], "/", plan) == ["server/a.py"]
+    assert any("rebased" in line for line in plan)
+    assert sgo.normalize_files(f"{R}/repo", ["a.py"], f"{R}/repo/server", []) == ["server/a.py"]
+    assert sgo.normalize_files(f"{R}/repo", ["server/a.py"], "/", []) == ["server/a.py"]   # 已正确 → 不动
+    assert sgo.normalize_files(f"{R}/repo", ["gone.py"], "/", []) == ["gone.py"]           # 不存在 → 不动
+
+
+def test_version_bump_mix_hint():
+    """版本 bump 与功能文件混在同一 commit → PLAN 软提示(不拦);单独 bump 不提示。"""
+    sgo = _load_script("smart_git_ops")
+    R = "/tmp/dlut_vb"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    Path(f"{R}/pyproject.toml").write_text('version = "0.0.1"\n')
+    Path(f"{R}/a.py").write_text("x = 1\n")
+    _git(R, "add", "."); _git(R, "commit", "-qm", "i")
+    Path(f"{R}/pyproject.toml").write_text('version = "0.0.2"\n')
+    Path(f"{R}/a.py").write_text("x = 2\n")
+    _git(R, "add", ".")
+    plan: list[str] = []
+    sgo.warn_mixed_version_bump(R, plan)
+    assert any("version bump" in line for line in plan)
+    _git(R, "reset", "-q"); _git(R, "add", "pyproject.toml")
+    plan = []
+    sgo.warn_mixed_version_bump(R, plan)
+    assert plan == []
+
+
+def test_pick_lint_target():
+    """lint 戳记对齐 CI 入口:有 lint-ci(通常 uv sync 锁定工具链)优先于 lint,
+    消灭'本地 lint 绿、CI lint-ci 红'的版本漂移。"""
+    rf = _load_script("run_fixlint")
+    D = "/tmp/dlut_lint"
+    shutil.rmtree(D, ignore_errors=True); os.makedirs(D)
+    Path(f"{D}/Makefile").write_text("lint:\n\ttrue\n")
+    assert rf.pick_lint_target(D) == "lint"
+    Path(f"{D}/Makefile").write_text("lint:\n\ttrue\nlint-ci:\n\ttrue\n")
+    assert rf.pick_lint_target(D) == "lint-ci"
+    Path(f"{D}/Makefile").write_text("test:\n\ttrue\n")
+    assert rf.pick_lint_target(D) is None
+
+
+def test_subproject_canonical():
+    """symlink 农场:子项目条目本身是 symlink → 注入文本携带 canonical 映射,
+    git 输出的真实路径不再被当成另一个仓库;普通子目录不带箭头。"""
+    from lib.context import Subproject, WorkspaceContext
+    from lib.context import workspace as wsctx
+    W = "/tmp/dlut_canon"
+    shutil.rmtree(W, ignore_errors=True)
+    os.makedirs(f"{W}/ws/plain"); os.makedirs(f"{W}/real/nb")
+    os.symlink(f"{W}/real/nb", f"{W}/ws/nb")
+    sub = wsctx._build_subproject(Path(f"{W}/ws"), {"name": "nb", "path": "nb"})
+    assert sub.canonical and sub.canonical.endswith("real/nb")
+    assert wsctx._build_subproject(Path(f"{W}/ws"), {"name": "plain", "path": "plain"}).canonical is None
+    txt = WorkspaceContext(workspace_root="/ws", subprojects=[sub]).session_text()
+    assert f"→ {sub.canonical}" in txt
+    txt2 = WorkspaceContext(workspace_root="/ws",
+                            subprojects=[Subproject(name="plain", path="plain")]).session_text()
+    assert "→" not in txt2
+
+
+def test_resolve_repo_dir():
+    """脚本 repo 解析与 cwd 解耦:显式路径 / 子项目名(模糊)/ cwd 所在仓库 /
+    workspace last-active 四级;workspace 根 + 无活动记录 → 明确报错而非瞎猜。"""
+    from lib import repo_resolve, workspace as registry
+    from lib.context import Subproject, WorkspaceContext, load_active_repo, record_active_repo
+    W = "/tmp/dlut_rr"
+    shutil.rmtree(W, ignore_errors=True)
+    os.makedirs(f"{W}/ws"); os.makedirs(f"{W}/real/nb")
+    _git(f"{W}/real/nb", "init", "-q")
+    os.symlink(f"{W}/real/nb", f"{W}/ws/nb")
+    WorkspaceContext(workspace_root=f"{W}/ws",
+                     subprojects=[Subproject(name="nb", path="nb")]).save()
+    real_nb = Path(f"{W}/real/nb").resolve()
+    orig = registry.load_workspaces
+    registry.load_workspaces = lambda: [f"{W}/ws"]
+    try:
+        r, how = repo_resolve.resolve_repo_dir(f"{W}/real/nb", "/")           # 显式路径
+        assert r and Path(r.git_root).resolve() == real_nb
+        # 四个路径身份在解析边界一次算清(ResolvedRepo),消费方不再各自 re-derive
+        assert Path(r.real_git_root) == real_nb and r.code_dir and r.source == how
+        r, how = repo_resolve.resolve_repo_dir("nb", "/")                     # 子项目名 → canonical 仓库
+        assert r and Path(r.git_root).resolve() == real_nb and "subproject" in how
+        # symlink farm 下 canonical git_root 在 workspace 树外,containment-only 会得
+        # None(Mode B 误判);必须经 subproject realpath 匹配归属到注册 workspace
+        assert r.workspace_root and Path(r.workspace_root).resolve() == Path(f"{W}/ws").resolve()
+        r, how = repo_resolve.resolve_repo_dir(None, f"{W}/real/nb")          # cwd 在仓库内
+        assert r and how == "cwd"
+        r, how = repo_resolve.resolve_repo_dir(None, f"{W}/ws")               # workspace 根、无活动 → 明确报错
+        assert r is None and "--repo" in how
+        record_active_repo(f"{W}/ws/nb")                                      # canonical 不在 ws 下也能归属
+        active = load_active_repo(f"{W}/ws")
+        assert active and Path(active).resolve() == real_nb
+        r, how = repo_resolve.resolve_repo_dir(None, f"{W}/ws")               # last-active 兜底
+        assert r and Path(r.git_root).resolve() == real_nb and "last-active" in how
+        r, how = repo_resolve.resolve_repo_dir("zzz", "/")                    # 无匹配
+        assert r is None
+    finally:
+        registry.load_workspaces = orig
+
+
+def test_active_repo_first_entry_symlink_workspace():
+    """P1 回归:首次进入(尚无 context.json)+ symlink 子仓,record_active_repo 也要落
+    active.json——workspace_for_repo 缺 context 时自刷新(解析 AGENTS.md 子项目表)。"""
+    from lib import workspace as registry
+    from lib.context import load_active_repo, record_active_repo
+    W = "/tmp/dlut_first"
+    shutil.rmtree(W, ignore_errors=True)
+    os.makedirs(f"{W}/ws"); os.makedirs(f"{W}/real/nb")
+    _git(f"{W}/real/nb", "init", "-q")
+    os.symlink(f"{W}/real/nb", f"{W}/ws/nb")
+    Path(f"{W}/ws/AGENTS.md").write_text(
+        "# ws\n\n## Subprojects\n\n| 名称 | 说明 |\n|------|------|\n| `nb` | python 服务 |\n",
+        encoding="utf-8")
+    orig = registry.load_workspaces
+    registry.load_workspaces = lambda: [f"{W}/ws"]
+    try:
+        record_active_repo(f"{W}/real/nb")   # canonical 路径,不在 ws 目录树内
+        active = load_active_repo(f"{W}/ws")
+        assert active and Path(active).resolve() == Path(f"{W}/real/nb").resolve()
+    finally:
+        registry.load_workspaces = orig
+
+
+def test_affected_roots_parsed_not_regex():
+    """PostToolUse 刷新改 parsed 判定:`git -C repo commit` / `cd repo && git push`
+    都解析到正确的 effective repo;引号内文本与非状态子命令不触发。"""
+    pgr = _load_hook("posttool_git_refresh")
+    W = "/tmp/dlut_ar"
+    shutil.rmtree(W, ignore_errors=True)
+    os.makedirs(f"{W}/repo")
+    _git(f"{W}/repo", "init", "-q")
+    expected = {str(Path(f"{W}/repo").resolve())}
+    def roots(cmd, cwd=W):
+        return {str(Path(r).resolve()) for r in pgr.affected_roots(cmd, cwd)}
+    assert roots(f"git -C {W}/repo commit -m x") == expected          # -C,cwd 非仓库
+    assert roots(f"cd {W}/repo && git push") == expected              # cd 前缀
+    assert roots("git -C repo fetch", cwd=W) == expected              # -C 相对路径
+    assert roots('echo "git commit"') == set()                        # 引号内不算
+    assert roots(f"cd {W}/repo && git status") == set()               # 非状态子命令
+    assert roots("git commit -m x") == set()                          # cwd 不是仓库
+
+
+def test_cmdparse_contract_table():
+    """guard 协议层契约表:cmdparse 是全部硬拦截的共同地基,把真实踩过的 shell 形态
+    固化成表——语义回退会让 guard 集体误判(误拦 kubectl+uv)或漏判(cd 前缀绕过)。"""
+    # (command, 期望的段头序列)
+    HEADS = [
+        ("git push && cd other", ["git", "cd"]),                                  # 后置 cd 独立成段
+        ("cd a && git commit -m x && cd b", ["cd", "git", "cd"]),                 # cd 夹击
+        ("kubectl -o jsonpath='{range .items[*]}{\"\\n\"}{end}'; git status", ["kubectl", "git"]),  # 引号紧贴 ;
+        ('echo "git add -A"', ["echo"]),                                          # 引号内不是调用
+        ("FOO=1 BAR=2 git -C /tmp/r fetch", ["git"]),                             # env 前缀剥离
+        ("make&&go test", ["make", "go"]),                                        # 胶连运算符
+    ]
+    for cmd, heads in HEADS:
+        got = [os.path.basename(s[0]) for s in cmdparse.commands(cmd)]
+        assert got == heads, f"{cmd!r}: {got} != {heads}"
+    # git 调用归属:-C 绝对优先 / -C 相对叠在 cd 前缀上 / 后置 cd 不偷归属
+    inv = cmdparse.git_invocations("FOO=1 git -C /tmp/r fetch")[0]
+    assert inv["subcommand"] == "fetch" and cmdparse.invocation_dir(inv, "/base") == "/tmp/r"
+    inv = cmdparse.git_invocations("cd sub && git -C nested commit -m x")[0]
+    assert cmdparse.invocation_dir(inv, "/base") == "/base/sub/nested"
+    inv = cmdparse.git_invocations("git push && cd /elsewhere")[0]
+    assert cmdparse.invocation_dir(inv, "/base") == "/base"
+
+
+def test_protocol_files_schema():
+    """平台协议文件(plugin.json/hooks.json/monitors.json)由 CLI 直接解析,写错 key
+    只能等到运行时才暴露(如 monitors 带非法 key 时整个 monitor 静默不跑)——发布前由本测试
+    锁住:必填键、合法键集、脚本路径必须经 ${CLAUDE_PLUGIN_ROOT}(裸路径会随
+    版本化 cache 目录失效)。新增合法键时有意识地更新这里,这正是协议变更的关卡。"""
+    import json
+    import re as _re
+    P = Path(__file__).resolve().parent.parent  # devloop/
+
+    plugin = json.loads((P / ".claude-plugin/plugin.json").read_text())
+    assert {"name", "version", "description"} <= set(plugin)
+    assert _re.fullmatch(r"\d+\.\d+\.\d+", plugin["version"])
+
+    hooks = json.loads((P / "hooks/hooks.json").read_text())["hooks"]
+    KNOWN_EVENTS = {"PreToolUse", "PostToolUse", "SessionStart", "SessionEnd", "UserPromptSubmit",
+                    "PostCompact", "PreCompact", "FileChanged", "CwdChanged", "Stop", "SubagentStop"}
+    assert set(hooks) <= KNOWN_EVENTS, f"unknown hook event: {set(hooks) - KNOWN_EVENTS}"
+    for groups in hooks.values():
+        for g in groups:
+            assert set(g) <= {"matcher", "hooks"}
+            for h in g["hooks"]:
+                assert {"type", "command"} <= set(h)
+                assert set(h) <= {"type", "command", "timeout", "statusMessage"}, f"unknown hook key: {set(h)}"
+                assert h["type"] == "command" and "${CLAUDE_PLUGIN_ROOT}" in h["command"]
+
+    monitors = json.loads((P / "monitors/monitors.json").read_text())
+    assert isinstance(monitors, list) and monitors
+    for m in monitors:
+        assert {"name", "command"} <= set(m)
+        assert set(m) <= {"name", "command", "description", "interval"}, f"unknown monitor key: {set(m)}"
+        assert "${CLAUDE_PLUGIN_ROOT}" in m["command"]
+
+
+def test_enter_does_not_acquire_owner():
+    """enter 只选中上下文,不占资源:占有由第一笔变更动作建立(edit/checkout guard、
+    posttool git 变更)。否则只是 /enter 看代码的 session 会把真正要编辑的 session
+    拦成 guest——锁保护的是可变面,只读进入不污染它(与 gitignored 豁免同一判据)。"""
+    ce = _load_hook("cwdchanged_enter")
+    from lib import session_lock
+    R = "/tmp/dlut_enter_noacq"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q")
+    inp = _hook_input("", {"session_id": "sess-reader", "cwd": R})
+    ce.handle(inp)
+    assert session_lock.read(R) is None
+
+
+def test_owner_lock_acquire_atomic():
+    """acquire 的 first-actor-wins 必须原子:check-then-replace 的 TOCTOU 窗口里两个
+    session 同时首次 acquire 会都\"成功\"、后写覆盖先写。O_EXCL 化后:输掉 create race
+    收敛到 deny;stale/corrupt 锁可被接管;锁文件 I/O 错误保持 fail-open。"""
+    import time as _t
+    from lib import session_lock
+    R = "/tmp/dlut_lockrace"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q")
+
+    # TOCTOU 模拟:read 第一次谎报\"无锁\"(检查窗口),实际 A 活跃持锁 → B 不得覆盖
+    assert session_lock.acquire(R, "A", "b", pid=os.getpid())
+    orig_read, calls = session_lock.read, {"n": 0}
+    def flaky_read(repo):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else orig_read(repo)
+    session_lock.read = flaky_read
+    try:
+        assert session_lock.acquire(R, "B", "b", pid=os.getpid()) is False
+    finally:
+        session_lock.read = orig_read
+    assert session_lock.read(R)["session_id"] == "A"
+
+    # stale 接管:owner pid 已死且 TTL 过期 → guest 可接管
+    session_lock.acquire(R, "A", "b", pid=99999999, now=_t.time() - session_lock.OWNER_TTL_SEC - 1)
+    assert session_lock.acquire(R, "B", "b", pid=os.getpid()) is True
+    assert session_lock.read(R)["session_id"] == "B"
+
+    # corrupt 锁文件不卡死:可被重建
+    session_lock._lock_file(R).write_text("{not json")
+    assert session_lock.acquire(R, "C", "b", pid=os.getpid()) is True
+    assert session_lock.read(R)["session_id"] == "C"
+
+
+def test_cd_position_aware_attribution():
+    """cd 前缀按位置生效,不是 last-cd-wins:`git checkout x && cd <非仓库>` 曾把
+    checkout 归到 cd 目标,branch.json 不刷新、注入滞留已删分支;
+    `cd subrepo && git commit` 的前缀语义保持不变(guards 也经 invocation_dir 受益)。"""
+    pgr = _load_hook("posttool_git_refresh")
+    W = "/tmp/dlut_cdpos"
+    shutil.rmtree(W, ignore_errors=True)
+    os.makedirs(f"{W}/repo"); os.makedirs(f"{W}/notrepo")
+    _git(f"{W}/repo", "init", "-q")
+    expected = {str(Path(f"{W}/repo").resolve())}
+    def roots(cmd, cwd):
+        return {str(Path(r).resolve()) for r in pgr.affected_roots(cmd, cwd)}
+    # cd 在 git 之后:归属仍是发起时的 cwd(修复点)
+    assert roots(f"git checkout -q master && cd {W}/notrepo && python3 x.py", cwd=f"{W}/repo") == expected
+    # cd 前缀在前:照旧解析到目标仓库
+    assert roots(f"cd {W}/repo && git push && cd {W}/notrepo", cwd=W) == expected
+    # 相对 cd 链组合
+    assert roots(f"cd {W} && cd repo && git fetch", cwd="/") == expected
+
+
+def test_cmdparse_glued_operators():
+    """运算符紧贴词尾时也要断句:shlex.split 会把 `jsonpath='...';` 的 `;` 吞进
+    token,segments() 断不开句——cd 落到段中而非段头,workspace guard 的 cd 豁免
+    失效,kubectl+cd+uv 串被误拦。punctuation_chars 化后修复。"""
+    from lib import cmdparse
+    cmd = ("kubectl -o jsonpath='{range .items[*]}{\"\\n\"}{end}'; "
+           "cd /tmp/sub && uv run x.py")
+    assert [s[0] for s in cmdparse.commands(cmd)] == ["kubectl", "cd", "uv"]
+    assert [s[0] for s in cmdparse.commands("make&&go test")] == ["make", "go"]
+    # 引号内的运算符不断句(既有语义不回退)
+    assert [s[0] for s in cmdparse.commands('echo "a; b" && make x')] == ["echo", "make"]
+
+
+def _hook_input(tool: str, raw: dict):
+    from lib import hook_io
+    return hook_io.HookInput(event="PreToolUse", tool_name=tool,
+                             tool_input=raw.get("tool_input") or {},
+                             cwd=raw.get("cwd", "/"), raw=raw)
+
+
+def test_edit_owner_guard():
+    """并发 session 防线的补全:owner 锁随'第一笔编辑'建立(acquire-follows-activity),
+    guest 直接改 owner 工作树的文件被硬拦并引导 worktree——此前只有 git switch 被拦,
+    第二个 session 直接 Edit 同一 checkout 畅通无阻。"""
+    import importlib.util as _il
+    guard = _load_hook("pretool_edit_owner_guard")
+    from lib import session_lock
+    R = "/tmp/dlut_eog"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo/server", exist_ok=True)
+    _git(f"{R}/repo", "init", "-q")
+    fp = f"{R}/repo/server/a.py"
+
+    # session A 第一笔编辑 → 放行并成为 owner(锁文件落盘)
+    inp_a = _hook_input("Edit", {"session_id": "sess-A", "cwd": R, "tool_input": {"file_path": fp}})
+    assert guard.decide(inp_a) is None
+    owner = session_lock.read(f"{R}/repo")
+    assert owner and owner["session_id"] == "sess-A"
+
+    # 把 owner 的 pid 钉成本进程(活着) → session B 编辑被拦,信息含 worktree 指引
+    session_lock.acquire(f"{R}/repo", "sess-A", "feat/x", pid=os.getpid())
+    inp_b = _hook_input("Edit", {"session_id": "sess-B", "cwd": R, "tool_input": {"file_path": fp}})
+    reason = guard.decide(inp_b)
+    assert reason and "worktree" in reason and "owner.lock" in reason
+
+    # gitignored 文件不进 owner 的 status/diff,guest 写它无混入风险 → 放行,
+    # 且不抢锁(owner 仍是 sess-A)
+    Path(f"{R}/repo/.gitignore").write_text("runs/\n")
+    ign = _hook_input("Write", {"session_id": "sess-B", "cwd": R,
+                                "tool_input": {"file_path": f"{R}/repo/runs/report.md"}})
+    assert guard.decide(ign) is None
+    assert session_lock.read(f"{R}/repo")["session_id"] == "sess-A"
+
+    # notebook_path(NotebookEdit)同样解析;owner 自己编辑不受影响
+    inp_nb = _hook_input("NotebookEdit", {"session_id": "sess-A", "cwd": R, "tool_input": {"notebook_path": fp}})
+    assert guard.decide(inp_nb) is None
+    # repo 之外的编辑不 gate
+    outside = _hook_input("Edit", {"session_id": "sess-B", "cwd": R, "tool_input": {"file_path": f"{R}/x.py"}})
+    assert guard.decide(outside) is None
+
+
+def test_branch_merged_guard_uses_file_path():
+    """INACTIVE 分支编辑拦截按 file_path 解析 repo——session cwd 在 workspace 根时
+    cwd-based 查找为 None,guard 此前静默失效。"""
+    from lib.context import MRRef, RepoContext
+    guard = _load_hook("pretool_branch_merged_guard")
+    R = "/tmp/dlut_bmg"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo", exist_ok=True)
+    _git(f"{R}/repo", "init", "-q"); _git(f"{R}/repo", "config", "user.email", "t@t.t")
+    _git(f"{R}/repo", "config", "user.name", "t"); _git(f"{R}/repo", "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/repo/f").write_text("x"); _git(f"{R}/repo", "add", "f"); _git(f"{R}/repo", "commit", "-qm", "i")
+    RepoContext.refresh_all(f"{R}/repo")
+    ctx = RepoContext.load(f"{R}/repo")
+    ctx.mrs = [MRRef(iid=9, state="merged", source_branch="feat/a")]
+    ctx.branch.mr_iid = 9; ctx._save_mr()
+    # cwd 在 workspace 根(R,非 git repo),编辑文件在 repo 内 → 仍要拦
+    inp = _hook_input("Edit", {"session_id": "s", "cwd": R, "tool_input": {"file_path": f"{R}/repo/f"}})
+    reason = guard.decide(inp)
+    assert reason and "no longer active" in reason
+
+
+def test_workspace_registry_user_level():
+    """注册表住用户级 config.json(DEVLOOP_CONFIG_DIR 可覆写),不随 /plugin update 的
+    版本化 cache 重置。"""
+    from lib import config, workspace as registry
+    W = "/tmp/dlut_reg"
+    shutil.rmtree(W, ignore_errors=True); os.makedirs(f"{W}/cfg")
+    old_env = os.environ.get("DEVLOOP_CONFIG_DIR")
+    os.environ["DEVLOOP_CONFIG_DIR"] = f"{W}/cfg"
+    try:
+        registry.register_workspace(f"{W}/ws1")
+        assert config.config_file() == Path(f"{W}/cfg/config.json")
+        assert Path(f"{W}/cfg/config.json").exists()   # 落在用户级 config.json
+        assert any(p.endswith("ws1") for p in registry.load_workspaces())
+    finally:
+        if old_env is None:
+            os.environ.pop("DEVLOOP_CONFIG_DIR", None)
+        else:
+            os.environ["DEVLOOP_CONFIG_DIR"] = old_env
+
+
+def test_unified_config_gitlab_and_precommit():
+    """config.json 统一承载 workspaces / gitlab(token,host) / precommit;token env 覆写 config,
+    host 覆写从 origin 推断的 host,update 保留其它段。"""
+    from lib import config
+    W = "/tmp/dlut_cfg"
+    shutil.rmtree(W, ignore_errors=True); os.makedirs(f"{W}/cfg")
+    old_env = os.environ.get("DEVLOOP_CONFIG_DIR")
+    old_tok = os.environ.get("GITLAB_TOKEN")
+    os.environ["DEVLOOP_CONFIG_DIR"] = f"{W}/cfg"
+    os.environ.pop("GITLAB_TOKEN", None)
+    try:
+        Path(f"{W}/cfg/config.json").write_text(
+            '{"workspaces": ["/tmp/ws"],'
+            ' "gitlab": {"token": "from-config", "host": "gitlab.example.com"},'
+            ' "precommit": {"default": {"commit_gate_lint": true}, "repos": {}}}'
+        )
+        assert config.gitlab_token() == "from-config"
+        assert config.gitlab_host() == "gitlab.example.com"
+        assert config.precommit()["default"]["commit_gate_lint"] is True
+        # env 覆写 config 里的 token
+        os.environ["GITLAB_TOKEN"] = "from-env"
+        assert config.gitlab_token() == "from-env"
+        # update 改 workspaces 不丢 gitlab/precommit
+        config.set_workspaces(["/tmp/ws-new"])
+        assert config.gitlab_host() == "gitlab.example.com"
+        assert config.precommit()["default"]["commit_gate_lint"] is True
+    finally:
+        if old_env is None:
+            os.environ.pop("DEVLOOP_CONFIG_DIR", None)
+        else:
+            os.environ["DEVLOOP_CONFIG_DIR"] = old_env
+        if old_tok is None:
+            os.environ.pop("GITLAB_TOKEN", None)
+        else:
+            os.environ["GITLAB_TOKEN"] = old_tok
+
+
+def test_maybe_register_workspace():
+    """workspace 自动注册:非 git 目录 + AGENTS.md 带子项目表 → 注册;普通 git 仓 /
+    无 AGENTS.md 的目录绝不误判。手工 init_workspace 不再是主路径的前置条件。"""
+    from lib import workspace as registry
+    W = "/tmp/dlut_auto"
+    shutil.rmtree(W, ignore_errors=True)
+    os.makedirs(f"{W}/cfg"); os.makedirs(f"{W}/ws/nb"); os.makedirs(f"{W}/plain"); os.makedirs(f"{W}/repo")
+    _git(f"{W}/repo", "init", "-q")
+    Path(f"{W}/ws/AGENTS.md").write_text(
+        "# ws\n\n## Subprojects\n\n| 名称 | 说明 |\n|------|------|\n| `nb` | python |\n",
+        encoding="utf-8")
+    Path(f"{W}/repo/AGENTS.md").write_text("# repo\n", encoding="utf-8")
+    old_env = os.environ.get("DEVLOOP_CONFIG_DIR")
+    os.environ["DEVLOOP_CONFIG_DIR"] = f"{W}/cfg"
+    try:
+        assert registry.maybe_register_workspace(f"{W}/ws") == str(Path(f"{W}/ws").resolve())
+        assert registry.find_containing_workspace(f"{W}/ws") is not None   # 注册即生效
+        assert registry.maybe_register_workspace(f"{W}/repo") is None      # git 仓不算
+        assert registry.maybe_register_workspace(f"{W}/plain") is None     # 无 AGENTS.md 不算
+    finally:
+        if old_env is None:
+            os.environ.pop("DEVLOOP_CONFIG_DIR", None)
+        else:
+            os.environ["DEVLOOP_CONFIG_DIR"] = old_env
+
+
+def _run_all():
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    failed = []
+    for t in tests:
+        try:
+            t()
+            print(f"  ✓ {t.__name__}")
+        except Exception as e:
+            print(f"  ✗ FAIL {t.__name__}: {e}")
+            failed.append(t.__name__)
+    print("RESULT:", "FAIL" if failed else f"ALL PASS ({len(tests)} tests)")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(_run_all())

@@ -1,0 +1,240 @@
+"""`WorkspaceContext` — aggregate-workspace state at `<workspace_root>/.devloop/context.json`.
+
+Same shape as RepoContext but only the **session** injection cadence (References +
+Subprojects); no turn-grain content (branch/dirty/validation are repo-level). The
+registry of which dirs are workspaces lives in `lib/workspace.py`.
+
+Besides `context.json` (single writer-role: the refresh), the workspace `.devloop/`
+holds one more segment: `active.json`, the last-active repo stamped by the "activity"
+writer-role (CwdChanged / PostToolUse hooks and the smart scripts). It exists because
+the session cwd snaps back to the workspace root between Bash calls — scripts fired
+there need a state-bus answer to "which subproject is being worked on".
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from .. import parsers
+from . import base
+from .base import (
+    ACTIVE_REPO_TTL_SEC,
+    SESSION_TTL_SEC,
+    WORKSPACE_STALE_SEC,
+    AgentsMd,
+    Cadence,
+    Reference,
+)
+
+
+@dataclass
+class Subproject:
+    name: str = ""
+    path: str = ""
+    aliases: list[str] = field(default_factory=list)
+    language: str | None = None
+    role: str | None = None
+    canonical: str | None = None   # realpath when it differs from the workspace path (symlink farm)
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "Subproject":
+        d = d or {}
+        return cls(
+            name=d.get("name", ""),
+            path=d.get("path", ""),
+            aliases=list(d.get("aliases") or []),
+            language=d.get("language"),
+            role=d.get("role"),
+            canonical=d.get("canonical"),
+        )
+
+
+@dataclass
+class WorkspaceContext:
+    workspace_root: str = ""
+    agents_md: AgentsMd = field(default_factory=AgentsMd)
+    subprojects: list[Subproject] = field(default_factory=list)
+    injection_session: Cadence = field(default_factory=Cadence)
+    parsed_at: float = 0.0
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "WorkspaceContext":
+        return cls(
+            workspace_root=d.get("workspace_root", ""),
+            agents_md=AgentsMd.from_dict(d.get("agents_md") or {}),
+            subprojects=[Subproject.from_dict(s) for s in (d.get("subprojects") or [])],
+            injection_session=Cadence.from_dict(d.get("injection_session") or {}),
+            parsed_at=float(d.get("parsed_at", 0) or 0),
+        )
+
+    @classmethod
+    def load(cls, workspace_root: str | Path) -> "WorkspaceContext | None":
+        raw = base.load_raw(workspace_root)
+        if raw is None:
+            return None
+        ctx = cls.from_dict(raw)
+        if not ctx.workspace_root:
+            ctx.workspace_root = str(Path(workspace_root))
+        return ctx
+
+    def save(self) -> None:
+        root = self.workspace_root
+        if not root:
+            return
+        self.parsed_at = base.now()
+        base.save_raw(root, base.to_dict(self))
+        # A workspace root is usually not a git repo; exclude only if it is one.
+        if (Path(root) / ".git").exists():
+            from .. import git_state
+            git_state.ensure_gitignore_excluded(root)
+
+    @classmethod
+    def refresh(cls, workspace_root: str | Path) -> "WorkspaceContext":
+        root = Path(workspace_root).resolve()
+        agents_md = root / "AGENTS.md"
+        items, subs = [], []
+        if agents_md.exists():
+            items = parsers.parse_references_section(agents_md)
+            subs = parsers.parse_subprojects_section(agents_md)
+        prev = cls.load(root)
+        new = cls(
+            workspace_root=str(root),
+            agents_md=AgentsMd(
+                path=str(agents_md) if agents_md.exists() else None,
+                references=[Reference(title=r.get("title", ""), path=r.get("path", ""),
+                                      hook=r.get("description")) for r in items],
+            ),
+            subprojects=[_build_subproject(root, s) for s in subs],
+            injection_session=prev.injection_session if prev else Cadence(),
+        )
+        new.save()
+        return new
+
+    def is_stale(self, ttl: float = WORKSPACE_STALE_SEC) -> bool:
+        return base.is_stale(self.parsed_at, ttl)
+
+    # ── session-cadence injection ──────────────────────────────────────────────
+    def session_text(self) -> str:
+        refs = self.agents_md.references
+        if not refs and not self.subprojects:
+            return ""
+        lines = [f"[Workspace: {self.workspace_root}]"]
+        if refs:
+            lines.append("AGENTS.md references (Read with the Read tool when your task touches these topics):")
+            for r in refs:
+                lines.append("  - " + _format_ref(r))
+        if self.subprojects:
+            lines.append("Subprojects (each in its own subdir under the workspace):")
+            for s in self.subprojects[:12]:
+                alias = f" ({', '.join(s.aliases)})" if s.aliases else ""
+                note = " · ".join([b for b in (s.language or "", s.role or "") if b])
+                # Surface the realpath for symlinked subprojects: git reports canonical
+                # paths, and without the mapping the agent treats them as two repos.
+                canon = f" → {s.canonical}" if s.canonical else ""
+                lines.append(f"  - {s.name}{alias}: {note}{canon}")
+        return "\n".join(lines)
+
+    def emit_session_if_changed(self) -> str:
+        text = self.session_text()
+        return text if self.injection_session.should_emit(text, now=base.now(), ttl=SESSION_TTL_SEC) else ""
+
+    def mark_session_emitted(self, text: str) -> None:
+        self.injection_session.mark(text, now=base.now())
+        self.save()
+
+    def reset_session_injection(self) -> None:
+        self.injection_session.clear()
+        self.save()
+
+    def clear_injection_dedup(self) -> None:
+        self.injection_session.clear()
+        self.save()
+
+
+def _build_subproject(root: Path, s: dict) -> Subproject:
+    sub = Subproject(name=s.get("name", ""), path=s.get("path", ""),
+                     aliases=s.get("aliases", []), language=s.get("language"),
+                     role=s.get("role") or s.get("note"))
+    rel = sub.path or sub.name
+    sp_dir = root / rel
+    if sp_dir.is_dir():
+        # Carry the realpath only when the subproject entry itself is a symlink —
+        # compare against the resolved root so symlinked *parents* (e.g. /tmp) don't
+        # mark every plain subdir as canonical-divergent.
+        canon = sp_dir.resolve()
+        if canon != Path(root).resolve() / rel:
+            sub.canonical = str(canon)
+    return sub
+
+
+# ── workspace `active` segment (the "activity" writer-role) ───────────────────
+# Every writer records the same last-write-wins fact — "this repo was just touched" —
+# so concurrent writers can't disagree in any way that matters (a lost update was an
+# equally-true value milliseconds older). Readers fail to None past the TTL: a guess
+# about *days-old* activity is worse than asking for an explicit --repo.
+
+def workspace_for_repo(repo_dir: str | Path) -> str | None:
+    """Which registered workspace owns `repo_dir`, if any.
+
+    Plain containment is not enough: workspaces are symlink farms, so the canonical
+    repo path (what `git rev-parse --show-toplevel` returns) usually lives OUTSIDE the
+    workspace root. Match against each workspace's subproject realpaths too.
+    """
+    from .. import workspace as registry
+    try:
+        rd = Path(repo_dir).resolve()
+    except OSError:
+        return None
+    for w in registry.load_workspaces():
+        wr = Path(w).resolve()
+        try:
+            rd.relative_to(wr)
+            return str(wr)
+        except ValueError:
+            pass
+        # First entry into a registered workspace may precede any context.json (the
+        # init scripts are optional) — build it here or the symlink match below can
+        # never succeed and active.json is silently never written. The is_stale gate
+        # keeps a workspace with no AGENTS.md from re-parsing on every call.
+        ctx = WorkspaceContext.load(wr)
+        if ctx is None or (not ctx.subprojects and ctx.is_stale()):
+            ctx = WorkspaceContext.refresh(wr)
+        for s in (ctx.subprojects if ctx else []):
+            sp = wr / (s.path or s.name)
+            if not sp.is_dir():
+                continue
+            try:
+                rd.relative_to(sp.resolve())
+                return str(wr)
+            except ValueError:
+                continue
+    return None
+
+
+def record_active_repo(repo_dir: str | Path) -> None:
+    """Stamp `repo_dir` as its workspace's last-active repo (`.devloop/active.json`)."""
+    ws = workspace_for_repo(repo_dir)
+    if ws:
+        base.save_segment(ws, "active", {"repo_dir": str(Path(repo_dir).resolve()),
+                                         "ts": base.now()})
+
+
+def load_active_repo(ws_root: str | Path) -> str | None:
+    """The workspace's last-active repo dir, or None if unset / stale / gone."""
+    seg = base.load_segment(ws_root, "active") or {}
+    repo = seg.get("repo_dir")
+    if not repo or base.is_stale(seg.get("ts"), ACTIVE_REPO_TTL_SEC):
+        return None
+    return repo if Path(repo).is_dir() else None
+
+
+def _format_ref(r: Reference) -> str:
+    title = r.title or "?"
+    desc = (r.hook or "").strip()
+    basename = Path(r.path).name if r.path else ""
+    desc_is_path = desc and (desc == basename or desc == r.path
+                             or (desc.endswith(".md") and Path(desc).name == basename))
+    if desc and not desc_is_path:
+        return f"{title} — {desc}  ← {basename}"
+    return f"{title}  ← {basename}"

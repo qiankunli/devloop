@@ -1,0 +1,13 @@
+{
+  "workspaces": [],
+
+  "gitlab": {
+    "token": "",
+    "host": ""
+  },
+
+  "precommit": {
+    "default": { "commit_gate_lint": false },
+    "repos": {}
+  }
+}

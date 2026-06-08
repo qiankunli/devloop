@@ -1,0 +1,18 @@
+{
+  "name": "devloop",
+  "owner": {
+    "name": "qiankunli"
+  },
+  "description": "Cross-CLI plugin marketplace (Codex side). Only plugins shipping a .codex-plugin/plugin.json are listed here. devloop itself is currently Claude-only.",
+  "plugins": [
+    {
+      "name": "example",
+      "source": "./example",
+      "description": "Placeholder plugin demonstrating that the devloop marketplace hosts multiple plugins (Codex side).",
+      "author": {
+        "name": "qiankunli",
+        "url": "https://github.com/qiankunli"
+      }
+    }
+  ]
+}

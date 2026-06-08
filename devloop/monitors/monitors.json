@@ -1,0 +1,7 @@
+[
+  {
+    "name": "devloop-mr-sweep",
+    "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/poll_mr_status.py\" \"${CLAUDE_PROJECT_DIR}\"",
+    "description": "Polling GitLab for recent MR status"
+  }
+]
