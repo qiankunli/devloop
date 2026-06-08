@@ -4,7 +4,8 @@ The `.devloop/` state bus spans two levels. **Repo** state is split into per-own
 *segment* files (`meta`/`branch`/`mr`/`validation`/`injection`.json) so independent
 writer-roles never share a file — see `repo.py`. **Workspace** state is a single
 `context.json` (one writer-role: the refresh). This module holds what both share:
-leaf dataclasses (`MRRef`, `Reference`, `AgentsMd`, `WorktreeInfo`), the injection
+leaf dataclasses (`Reference`, `AgentsMd`, `WorktreeInfo`) plus the re-exported forge
+domain (`PullRequest`), the injection
 `Cadence` (content-hash dedup with a TTL safety net), tunable constants, and the JSON
 read/write primitives. All writes go through `_write_atomic` (tmp + os.replace) so a
 reader sees old-or-new, never a torn half-write.
@@ -30,13 +31,16 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+# The neutral code-review proposal lives in the forge domain (provider-agnostic). The
+# state layer persists it and joins it by number; it does not redefine it.
+from lib.forge.base import PRS_CAP, Comment, PullRequest, vocab  # noqa: F401
+
 # ── tunables (seconds unless noted) ──────────────────────────────────────────
 REPO_STALE_SEC = 300          # repo context older than this → refresh_all on next cd/prompt
 WORKSPACE_STALE_SEC = 600     # workspace context staleness
 TURN_TTL_SEC = 1800           # turn-cadence injection re-emit backstop (~30 min)
 SESSION_TTL_SEC = 14400       # session-cadence (References) re-emit backstop (~4 h)
-MRS_CAP = 5                   # max entries in the `mrs` window (see plan §4 MR 模型)
-MR_POLL_INTERVAL_SEC = 90     # monitor poll cadence for MR status
+PR_POLL_INTERVAL_SEC = 90     # monitor poll cadence for PR/MR status
 ACTIVE_REPO_TTL_SEC = 21600   # workspace last-active repo validity (~6 h); stale → don't guess
 
 STATE_DIRNAME = ".devloop"
@@ -46,7 +50,7 @@ STATE_FILENAME = "context.json"   # workspace-level state (single owner: the ref
 # Each segment has exactly one writer-role, so a writer overwrites only its own file —
 # the cross-writer lost-update class is designed out, not guarded against. A missing /
 # corrupt segment degrades to its default (fail-open) without touching the others.
-REPO_SEGMENTS = ("meta", "branch", "mr", "validation", "injection")
+REPO_SEGMENTS = ("meta", "branch", "pr", "validation", "injection")
 
 
 # ── leaf dataclasses ─────────────────────────────────────────────────────────
@@ -87,50 +91,6 @@ class WorktreeInfo:
             is_linked=bool(d.get("is_linked")),
             common_dir=d.get("common_dir"),
             main_branch=d.get("main_branch"),
-        )
-
-
-@dataclass
-class MRRef:
-    """A merge request as devloop tracks it. `iid` is the project-scoped sequential
-    integer (the number in the MR URL), NOT the global `id`. `state` uses GitLab's
-    values: 'opened' | 'closed' | 'locked' | 'merged'.
-
-    `branch.mr_iid` stores only the iid; the full object is joined from the repo's
-    `mrs` window by iid (see plan §4). 'inactive' (merged/closed) is derived, not stored.
-    """
-    iid: int
-    title: str = ""
-    state: str = ""
-    source_branch: str = ""
-    target_branch: str = ""
-    web_url: str = ""
-    updated_at: str | None = None
-
-    @property
-    def inactive(self) -> bool:
-        return self.state in ("merged", "closed")
-
-    @property
-    def is_open(self) -> bool:
-        """In-flight: the MR exists and is still awaiting human merge ('opened').
-
-        The loop's 'create MR → human merges (out of AI's hands) → next round' transition
-        leaves the current branch in exactly this state. It's the fourth branch state beyond
-        healthy/protected/inactive, and the one new work must NOT be stacked onto by default.
-        """
-        return self.state == "opened"
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "MRRef":
-        return cls(
-            iid=int(d["iid"]),
-            title=d.get("title", ""),
-            state=d.get("state", ""),
-            source_branch=d.get("source_branch", ""),
-            target_branch=d.get("target_branch", ""),
-            web_url=d.get("web_url", ""),
-            updated_at=d.get("updated_at"),
         )
 
 

@@ -11,31 +11,34 @@ devloop 内多个 skill / 脚本共用的术语。架构理念见 [`AGENTS.md`](
 
 repo 级结构化状态里 `branch.json` 的 `protected=true` 时，注入头部以 `⚠️ PROTECTED` 提示，guard 据此拦截 commit/push。判定（`hooks/lib/git_state.py`）：`main` / `master` 严格匹配；`release` 严格匹配或以 `release` 开头 / 结尾；`release` 出现在中间不算（`feat/release-notes` 不受保护）。
 
-## MR 模型
+## PR 模型（PR/MR 统一概念）
 
-- **`iid`**：MR 在 project 内的递增编号（URL 里那个号），区别于全局 `id`。
-- **`branch.mr_iid`**：当前分支那条 MR 的编号（只存编号，整对象 join `mrs`）。
-- **`mrs`**：近期 MR 窗口，monitor 周期 sweep 写入。窗口 = whole-project `[mr_iid-2, latest]`，cap 5（超出保 anchor 邻域 + 最新若干；不足向下补足；无当前 MR → 最新 5）。
-- **branch 归属**：`mr.json` 记录其写入时的 branch；`load` 只在该 branch == 当前分支时才 join `mr_iid`——切分支自动失效，无需清理逻辑。
-- **分支失活（inactive）**：按 `mr_iid` 在 `mrs` 查到的 `state ∈ {merged, closed}` **派生**，不单独存。`branch_merged_guard` 读它拦截过期分支上的编辑。
-- **在途（in-flight）**：同样按 join 派生（`state = opened`，`branch_mr_in_flight`）——MR 已建、等人工 merge。与 inactive 互斥，二者加 protected / healthy 构成下面的四态。
+评审提案在 devloop 里是**中立领域对象 `PullRequest`**（GitHub PR / GitLab MR 同一概念），由 forge 层（`hooks/lib/forge/`）按 repo 的 origin 解析出对应实现产出；状态层只持久化与 join，不重定义。展示时按 `provider` 用 `vocab()` 贴回词汇（GitHub `PR #`、GitLab `MR !`）。
+
+- **`number`**：PR/MR 在 repo 内的编号（URL 里那个号；GitLab 的 `iid`、GitHub 的 PR number 统一为 `number`）。
+- **`state`**：归一为 `open` / `merged` / `closed`（GitHub 的 open/closed + `merged` 布尔在 adapter 里收敛为这三态）。
+- **`branch.pr_number`**：当前分支那条 PR 的编号（只存编号，整对象 join `prs`）。
+- **`prs`**：近期 PR 窗口，monitor 周期 sweep 写入，cap 5。GitLab（iid 连续）取 `[number-2, latest]` 邻域；GitHub（号与 issue 共享、不连续）取最新若干并确保 anchor 在内。
+- **branch 归属**：`pr.json` 记录其写入时的 branch + provider；`load` 只在该 branch == 当前分支时才 join `pr_number`——切分支自动失效，无需清理逻辑。
+- **分支失活（inactive）**：按 `pr_number` 在 `prs` 查到的 `state ∈ {merged, closed}` **派生**，不单独存。`branch_merged_guard` 读它拦截过期分支上的编辑。
+- **在途（in-flight）**：同样按 join 派生（`state = open`，`branch_pr_in_flight`）——PR 已建、等人工 merge。与 inactive 互斥，二者加 protected / healthy 构成下面的四态。
 
 ## 分支状态流转
 
-devloop 循环（`enter → 提需求 → 开发 → commit/MR → 人工 merge → 下一轮`）里，当前分支始终处于四态之一。处理强度按"是否有合法编辑场景"分两档——**没有合法编辑场景的硬拦，有合法例外的软提示**：
+devloop 循环（`enter → 提需求 → 开发 → commit/PR → 人工 merge → 下一轮`）里，当前分支始终处于四态之一。处理强度按"是否有合法编辑场景"分两档——**没有合法编辑场景的硬拦，有合法例外的软提示**：
 
 | 态 | 含义 | 派生自 | 处理 |
 |----|------|--------|------|
 | **protected** | main / master / release* | `is_protected_branch` | **硬拦** commit/push（`protect_branch`） |
 | **healthy** | 普通 feature 分支，仍在开发（非以下三态） | 默认 | 正常开发 |
-| **in-flight** | 已建 MR、等人工 merge | `branch_mr_in_flight`（state=opened） | **软提示**（turn 注入 IN-FLIGHT 行）：新工作切新分支、改本 MR 才在此编辑 |
-| **inactive** | MR 已 merged / closed | `branch_mr_inactive`（state∈{merged,closed}） | **硬拦** Edit/Write（`branch_merged_guard`） |
+| **in-flight** | 已建 PR、等人工 merge | `branch_pr_in_flight`（state=open） | **软提示**（turn 注入 IN-FLIGHT 行）：新工作切新分支、改本 PR 才在此编辑 |
+| **inactive** | PR 已 merged / closed | `branch_pr_inactive`（state∈{merged,closed}） | **硬拦** Edit/Write（`branch_merged_guard`） |
 
 **为什么 in-flight 是软提示而非硬拦**：protected / inactive 在其上编辑**没有任何合法场景**，硬拦干净。in-flight 有一个合法例外——应评审改自己这条 MR（amend）——且"新工作 vs amend"无法可靠自动区分。硬拦就必然要逃逸口，逃逸口要么低命中（如 slash command）、要么把简单事弄复杂。所以把 in-flight 这个事实喂给 AI（turn 注入），由它自行选"切新分支"还是"在此 amend"，比硬拦更合适——这正是状态总线该干的（杠杆①），不是硬拦（杠杆②）。
 
 一轮生命线全图与各拍的 hook/script 时序见 `docs/loop.md`。
 
-**fork-off 的真正防线在提交期，而非提示**——`smart_git_ops` 的 **base 由意图定，不由 HEAD 当前态定**：开新工作（`--branch`）**永远** cut 自 `origin/<target>`（或显式 `--base` 栈式），与当前停在哪个态无关；新分支只许带本轮提交，夹带外来 commit 在 push/MR 前被自检拦下。这是结构性保证：哪怕 AI 没看提示，从 in-flight 分支 fork 也不会把它的提交带进新 MR。提示负责"别把新活提交到在途 MR 上"，base 规则负责"别 fork 出夹带"。
+**fork-off 的真正防线在提交期，而非提示**——`smart_git_ops` 的 **base 由意图定，不由 HEAD 当前态定**：开新工作（`--branch`）**永远** cut 自 `origin/<target>`（或显式 `--base` 栈式），与当前停在哪个态无关；新分支只许带本轮提交，夹带外来 commit 在 push/MR 前被自检拦下。这是结构性保证：哪怕 AI 没看提示，从 in-flight 分支 fork 也不会把它的提交带进新 PR。提示负责"别把新活提交到在途 PR 上"，base 规则负责"别 fork 出夹带"。
 
 ## Owner / guest session（checkout 占有）
 
@@ -57,7 +60,7 @@ repo 级 `validation.json`：`last_lint_at` / `last_test_at`（float epoch）+ `
 AGENTS.md 是文字知识源；`.devloop/*.json` 是由 hooks / scripts / monitors 维护的结构化运行态，不保存 AGENTS.md 正文。
 
 - Workspace 级：`<workspace_root>/.devloop/context.json`，保存 workspace AGENTS.md 的 References / subproject 清单解析结果（symlink 子项目附 canonical 路径映射）以及 session 注入节奏；`active.json` 保存最近活跃 repo（脚本在 workspace 根被调用时的解析兜底）；它的多个写入点（CwdChanged / PostToolUse / smart 脚本）写的是同一个事实"刚碰过哪个 repo"，last-write-wins，丢更新无害。
-- Repo 级：`<git_root>/.devloop/meta.json` / `branch.json` / `mr.json` / `validation.json` / `injection.json`，按 writer-owner 分段保存 repo 运行态；`RepoContext.load()` 合并这些段成内存视图。
+- Repo 级：`<git_root>/.devloop/meta.json` / `branch.json` / `pr.json` / `validation.json` / `injection.json`，按 writer-owner 分段保存 repo 运行态；`RepoContext.load()` 合并这些段成内存视图。
 
 schema / TTL / cap 数值在 `hooks/lib/context/base.py`，不在文档复述。
 

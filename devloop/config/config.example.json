@@ -1,9 +1,9 @@
 {
   "workspaces": [],
 
-  "gitlab": {
-    "token": "",
-    "host": ""
+  "forges": {
+    "github.com": { "type": "github", "token": "" },
+    "gitlab.example.com": { "type": "gitlab", "token": "", "api_host": "" }
   },
 
   "precommit": {

@@ -2,8 +2,9 @@
 """devloop unit tests — the pure logic worth pinning down.
 
 Covers the bits most prone to silent breakage: guard command parsing (quoted-text
-false positives + `git -C` false negatives), the MR window iid-math, origin→project
-parsing, the staging sensitive-filter, and branch-MR selection.
+false positives + `git -C` false negatives), the PR window number-math, origin parsing
++ provider detection, GitHub/GitLab → PullRequest mapping, the staging sensitive-filter,
+and branch-PR selection.
 
 Run standalone: `python3 devloop/tests/test_units.py`  (also pytest-collectable).
 """
@@ -21,9 +22,11 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(HOOKS))
 
 from lib import cmdparse  # noqa: E402
-from lib.context import MRRef, Cadence  # noqa: E402
-from lib.gitlab import resolve_project, to_mrrefs  # noqa: E402
-from lib.gitlab.mr import _window_iids  # noqa: E402
+from lib.context import Cadence, PullRequest  # noqa: E402
+from lib.forge import detect_provider, parse_origin  # noqa: E402
+from lib.forge.base import _window_numbers  # noqa: E402
+from lib.forge.github import GitHubForge  # noqa: E402
+from lib.forge.gitlab import GitLabForge  # noqa: E402
 
 
 def _load_from(base, name):
@@ -101,28 +104,53 @@ def test_cmdparse_commands():
     assert cmdparse.first_token_is('echo "make test"', "make") is False
 
 
-def test_window_iids():
-    assert _window_iids(10, 10, 5) == [6, 7, 8, 9, 10]
-    assert _window_iids(10, 11, 5) == [7, 8, 9, 10, 11]
-    assert _window_iids(10, 12, 5) == [8, 9, 10, 11, 12]
-    assert _window_iids(10, 20, 5) == [8, 9, 10, 19, 20]
-    assert _window_iids(None, 20, 5) == [16, 17, 18, 19, 20]
-    assert _window_iids(3, 3, 5) == [1, 2, 3]
-    assert all(10 in _window_iids(10, L, 5) for L in range(10, 40))   # anchor always present
+def test_window_numbers():
+    assert _window_numbers(10, 10, 5) == [6, 7, 8, 9, 10]
+    assert _window_numbers(10, 11, 5) == [7, 8, 9, 10, 11]
+    assert _window_numbers(10, 12, 5) == [8, 9, 10, 11, 12]
+    assert _window_numbers(10, 20, 5) == [8, 9, 10, 19, 20]
+    assert _window_numbers(None, 20, 5) == [16, 17, 18, 19, 20]
+    assert _window_numbers(3, 3, 5) == [1, 2, 3]
+    assert all(10 in _window_numbers(10, L, 5) for L in range(10, 40))   # anchor always present
 
 
-def test_resolve_project():
+def test_parse_origin_and_detect_provider():
     R = "/tmp/dlut_repo"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     subprocess.run(["git", "init", "-q"], cwd=R, check=True)
-    subprocess.run(["git", "remote", "add", "origin", "git@gitlab.example.com:acme/widgets.git"],
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:owner/repo.git"],
                    cwd=R, check=True)
-    p = resolve_project(R)
-    assert p.host == "gitlab.example.com" and p.path == "acme/widgets"
-    assert p.encoded == "acme%2Fwidgets"
+    host, path = parse_origin(R)
+    assert host == "github.com" and path == "owner/repo"
     subprocess.run(["git", "remote", "set-url", "origin", "https://gitlab.com/g/s/proj.git"], cwd=R, check=True)
-    p = resolve_project(R)
-    assert p.host == "gitlab.com" and p.path == "g/s/proj"
+    host, path = parse_origin(R)
+    assert host == "gitlab.com" and path == "g/s/proj"
+    # provider inference from host, with explicit config override winning
+    assert detect_provider("github.com", None) == "github"
+    assert detect_provider("gitlab.example.com", None) == "gitlab"
+    assert detect_provider("git.acme.com", None) == "gitlab"            # default
+    assert detect_provider("git.acme.com", "github") == "github"        # GHE on custom host
+
+
+def test_forge_pr_mapping():
+    """Each adapter normalizes its native JSON → the neutral PullRequest: iid/number,
+    GitHub's open/closed + merged flag → open|merged|closed, head/base → source/target."""
+    gl = GitLabForge.__new__(GitLabForge)        # bypass __init__ (no HTTP needed for mapping)
+    pr = gl._to_pr({"iid": 7, "state": "opened", "source_branch": "f", "target_branch": "m",
+                    "web_url": "u", "sha": "abc"})
+    assert (pr.number, pr.provider, pr.state, pr.source_branch, pr.sha) == (7, "gitlab", "open", "f", "abc")
+    assert gl._to_pr({"iid": 8, "state": "merged"}).state == "merged"
+    assert gl._to_pr({"iid": 9, "state": "locked"}).state == "closed"
+
+    gh = GitHubForge.__new__(GitHubForge)
+    gh.owner, gh.name = "o", "r"
+    pr = gh._to_pr({"number": 12, "state": "open", "head": {"ref": "f", "sha": "abc"},
+                    "base": {"ref": "main"}, "html_url": "u"})
+    assert (pr.number, pr.provider, pr.state, pr.source_branch, pr.target_branch) == (12, "github", "open", "f", "main")
+    # closed + merged_at → merged; closed without merge → closed
+    assert gh._to_pr({"number": 13, "state": "closed", "merged_at": "2026-01-01"}).state == "merged"
+    assert gh._to_pr({"number": 14, "state": "closed"}).state == "closed"
+    assert gh._to_pr({"number": 15, "state": "closed", "merged": True}).state == "merged"
 
 
 def test_sensitive_filter():
@@ -153,25 +181,49 @@ def test_decide_branch_is_intent_driven():
     assert decide("feat1", "feat1", protected=False, stale=False, base=B) == ("continue", None)
 
 
-def test_pick_branch_mr():
-    poll = _load_script("poll_mr_status")
+def test_prepare_branch_reads_ctx_pr_state():
+    """prepare_branch 用真实 ctx 调 branch_pr_inactive()——decide_branch 的单测绕过了这条
+    调用,所以脚本里把 ctx 方法名写错(如沿用旧的 branch_mr_inactive)会从单测漏过。这条端到端
+    跑一遍 prepare_branch 兜住该回归。"""
+    sgo = _load_script("smart_git_ops")
+    from lib.context import RepoContext
+    R = "/tmp/dlut_prep"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+    ctx = RepoContext.load(R)
+    intent = sgo.GitIntent(mode="mr", message="m", title="m", requested_branch=None,
+                           target="main", base="origin/main", explicit_base=False,
+                           files=[], repo=R, source="test", invoke_cwd=R)
+    # healthy branch, no PR → continue on the current branch (and crucially: no AttributeError)
+    res = sgo.prepare_branch(intent, ctx, "feat/a", [])
+    assert res.branch == "feat/a" and res.cut is False
+
+
+def test_pick_branch_pr():
+    poll = _load_script("poll_pr_status")
+    P = lambda **kw: PullRequest(**kw)  # noqa: E731
     poll._is_ancestor = lambda repo, sha, head: True
-    assert poll.pick_branch_mr([{"state": "opened", "iid": 5, "sha": "a"},
-                                {"state": "merged", "iid": 4, "sha": "b"}], "r", "h")["iid"] == 5
+    assert poll.pick_branch_pr([P(number=5, state="open", sha="a"),
+                                P(number=4, state="merged", sha="b")], "r", "h").number == 5
     poll._is_ancestor = lambda repo, sha, head: sha == "b"
-    assert poll.pick_branch_mr([{"state": "merged", "iid": 4, "sha": "b"},
-                                {"state": "closed", "iid": 3, "sha": "c"}], "r", "h")["iid"] == 4
+    assert poll.pick_branch_pr([P(number=4, state="merged", sha="b"),
+                                P(number=3, state="closed", sha="c")], "r", "h").number == 4
     poll._is_ancestor = lambda repo, sha, head: False
-    assert poll.pick_branch_mr([{"state": "merged", "iid": 4, "sha": "dead"}], "r", "h") is None
+    assert poll.pick_branch_pr([P(number=4, state="merged", sha="dead")], "r", "h") is None
 
 
-def test_mrref_and_cadence():
-    mr = MRRef.from_dict({"iid": 7, "state": "merged", "source_branch": "f", "target_branch": "m"})
-    assert mr.inactive and MRRef.from_dict({"iid": 8, "state": "opened"}).inactive is False
-    # in-flight(opened)与 inactive(merged/closed)互斥——循环"轮次之间"的第四态
-    assert MRRef.from_dict({"iid": 9, "state": "opened"}).is_open
-    assert not MRRef.from_dict({"iid": 10, "state": "merged"}).is_open and not mr.is_open
-    assert len(to_mrrefs([{"iid": 1, "state": "opened"}, {"no_iid": True}])) == 1
+def test_pullrequest_and_cadence():
+    pr = PullRequest.from_dict({"number": 7, "state": "merged", "source_branch": "f", "target_branch": "m"})
+    assert pr.inactive and PullRequest.from_dict({"number": 8, "state": "open"}).inactive is False
+    # in-flight(open)与 inactive(merged/closed)互斥——循环"轮次之间"的第四态
+    assert PullRequest.from_dict({"number": 9, "state": "open"}).is_open
+    assert not PullRequest.from_dict({"number": 10, "state": "merged"}).is_open and not pr.is_open
+    # provider drives the display label
+    assert PullRequest(number=3, provider="github").label == "PR #3"
+    assert PullRequest(number=3, provider="gitlab").label == "MR !3"
     c = Cadence()
     assert c.should_emit("x", now=100, ttl=1800)
     c.mark("x", now=100)
@@ -184,8 +236,8 @@ def test_mrref_and_cadence():
 
 def test_context_segments():
     """Per-owner segment files: each writer touches a disjoint file (no lost update),
-    and mr.json is branch-keyed so a branch switch self-invalidates mr_iid with no writer."""
-    from lib.context import MRRef, RepoContext, base
+    and pr.json is branch-keyed so a branch switch self-invalidates pr_number with no writer."""
+    from lib.context import PullRequest, RepoContext, base
     R = "/tmp/dlut_seg"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -195,42 +247,43 @@ def test_context_segments():
     # refresh_all writes ONLY the refresher-owned segments
     RepoContext.refresh_all(R)
     seg = set(os.listdir(f"{R}/.devloop"))
-    assert {"meta.json", "branch.json"} <= seg and "validation.json" not in seg and "mr.json" not in seg
+    assert {"meta.json", "branch.json"} <= seg and "validation.json" not in seg and "pr.json" not in seg
 
     ctx = RepoContext.load(R)
-    assert ctx.branch.current == "feat/a" and ctx.branch.mr_iid is None and ctx.mrs == []
+    assert ctx.branch.current == "feat/a" and ctx.branch.pr_number is None and ctx.prs == []
 
     # a validation mark writes only validation.json
     ctx.mark_lint_passed()
     assert (Path(R) / ".devloop" / "validation.json").exists()
     assert RepoContext.load(R).validation.edits_since_lint == 0
 
-    # monitor-owned mr write, branch-keyed; joins on the matching branch
+    # monitor-owned pr write, branch-keyed; joins on the matching branch
     ctx = RepoContext.load(R)
-    ctx.mrs = [MRRef(iid=51, state="opened", source_branch="feat/a")]
-    ctx.branch.mr_iid = 51
-    ctx._save_mr()
-    assert base.load_segment(R, "mr")["branch"] == "feat/a"
-    assert RepoContext.load(R).branch.mr_iid == 51
+    ctx.prs = [PullRequest(number=51, provider="github", state="open", source_branch="feat/a")]
+    ctx.branch.pr_number = 51
+    ctx._save_pr()
+    assert base.load_segment(R, "pr")["branch"] == "feat/a"
+    assert base.load_segment(R, "pr")["provider"] == "github"
+    assert RepoContext.load(R).branch.pr_number == 51
 
-    # branch switch → stale iid drops at load with nobody clearing mr.json
+    # branch switch → stale number drops at load with nobody clearing pr.json
     _git(R, "checkout", "-q", "-b", "feat/b")
     RepoContext.refresh_branch(R)
-    assert RepoContext.load(R).branch.mr_iid is None
-    assert base.load_segment(R, "mr")["branch"] == "feat/a"   # monitor file untouched by refresh
+    assert RepoContext.load(R).branch.pr_number is None
+    assert base.load_segment(R, "pr")["branch"] == "feat/a"   # monitor file untouched by refresh
 
     # disjoint writers (refresh ↔ monitor) don't clobber each other
     RepoContext.refresh_branch(R)
-    c = RepoContext.load(R); c.mrs = [MRRef(iid=60, state="opened", source_branch="feat/b")]
-    c.branch.mr_iid = 60; c._save_mr()
+    c = RepoContext.load(R); c.prs = [PullRequest(number=60, provider="github", state="open", source_branch="feat/b")]
+    c.branch.pr_number = 60; c._save_pr()
     merged = RepoContext.load(R)
-    assert merged.branch.current == "feat/b" and merged.branch.mr_iid == 60
+    assert merged.branch.current == "feat/b" and merged.branch.pr_number == 60
 
 
-def test_branch_mr_in_flight():
-    """in-flight = 当前分支有 opened MR(循环的"人工 merge 前 / 轮次之间"态);
-    与 inactive(merged/closed)互斥。orchestrator 据此提示"在续写在途 MR"。"""
-    from lib.context import MRRef, RepoContext
+def test_branch_pr_in_flight():
+    """in-flight = 当前分支有 open PR(循环的"人工 merge 前 / 轮次之间"态);
+    与 inactive(merged/closed)互斥。orchestrator 据此提示"在续写在途 PR"。"""
+    from lib.context import PullRequest, RepoContext
     R = "/tmp/dlut_inflight"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -239,20 +292,20 @@ def test_branch_mr_in_flight():
     RepoContext.refresh_all(R)
 
     ctx = RepoContext.load(R)
-    ctx.mrs = [MRRef(iid=51, state="opened", source_branch="feat/a")]; ctx.branch.mr_iid = 51
-    assert ctx.branch_mr_in_flight() and not ctx.branch_mr_inactive()
+    ctx.prs = [PullRequest(number=51, provider="github", state="open", source_branch="feat/a")]; ctx.branch.pr_number = 51
+    assert ctx.branch_pr_in_flight() and not ctx.branch_pr_inactive()
     # 合入后转 inactive、不再 in-flight
-    ctx.mrs = [MRRef(iid=51, state="merged", source_branch="feat/a")]
-    assert ctx.branch_mr_inactive() and not ctx.branch_mr_in_flight()
-    # 无 MR(mr_iid=None)两者皆 False
-    ctx.branch.mr_iid = None
-    assert not ctx.branch_mr_in_flight() and not ctx.branch_mr_inactive()
+    ctx.prs = [PullRequest(number=51, provider="github", state="merged", source_branch="feat/a")]
+    assert ctx.branch_pr_inactive() and not ctx.branch_pr_in_flight()
+    # 无 PR(pr_number=None)两者皆 False
+    ctx.branch.pr_number = None
+    assert not ctx.branch_pr_in_flight() and not ctx.branch_pr_inactive()
 
 
 def test_in_flight_turn_hint():
     """in-flight 是软提示(不硬拦):turn 注入出现 IN-FLIGHT + 引导新工作切新分支;
-    inactive 仍是 INACTIVE;healthy 两者都不出现。"""
-    from lib.context import MRRef, RepoContext
+    inactive 仍是 INACTIVE;healthy 两者都不出现。vocab 按 provider 贴词(GitHub→PR)。"""
+    from lib.context import PullRequest, RepoContext
     R = "/tmp/dlut_if_hint"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -261,18 +314,23 @@ def test_in_flight_turn_hint():
     RepoContext.refresh_all(R)
     ctx = RepoContext.load(R)
 
-    # in-flight(opened)→ 软提示出现 + actionable
-    ctx.mrs = [MRRef(iid=51, state="opened", source_branch="feat/a")]; ctx.branch.mr_iid = 51
+    # in-flight(open)→ 软提示出现 + actionable + 按 provider 出 PR # 词汇
+    ctx.prs = [PullRequest(number=51, provider="github", state="open", source_branch="feat/a")]; ctx.branch.pr_number = 51
     txt = ctx.turn_text()
     assert "IN-FLIGHT" in txt and "fresh branch" in txt and "INACTIVE" not in txt
+    assert "PR #51" in txt and "Recent PRs" in txt
+
+    # GitLab provider → MR ! 词汇
+    ctx.prs = [PullRequest(number=51, provider="gitlab", state="open", source_branch="feat/a")]
+    assert "MR !51" in ctx.turn_text()
 
     # inactive(merged)→ 仍是 INACTIVE,不误报 IN-FLIGHT
-    ctx.mrs = [MRRef(iid=51, state="merged", source_branch="feat/a")]
+    ctx.prs = [PullRequest(number=51, provider="github", state="merged", source_branch="feat/a")]
     txt = ctx.turn_text()
     assert "INACTIVE" in txt and "IN-FLIGHT" not in txt
 
-    # healthy(无 MR)→ 两者都没有
-    ctx.branch.mr_iid = None; ctx.mrs = []
+    # healthy(无 PR)→ 两者都没有
+    ctx.branch.pr_number = None; ctx.prs = []
     txt = ctx.turn_text()
     assert "IN-FLIGHT" not in txt and "INACTIVE" not in txt
 
@@ -646,7 +704,7 @@ def test_edit_owner_guard():
 def test_branch_merged_guard_uses_file_path():
     """INACTIVE 分支编辑拦截按 file_path 解析 repo——session cwd 在 workspace 根时
     cwd-based 查找为 None,guard 此前静默失效。"""
-    from lib.context import MRRef, RepoContext
+    from lib.context import PullRequest, RepoContext
     guard = _load_hook("pretool_branch_merged_guard")
     R = "/tmp/dlut_bmg"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo", exist_ok=True)
@@ -655,8 +713,8 @@ def test_branch_merged_guard_uses_file_path():
     Path(f"{R}/repo/f").write_text("x"); _git(f"{R}/repo", "add", "f"); _git(f"{R}/repo", "commit", "-qm", "i")
     RepoContext.refresh_all(f"{R}/repo")
     ctx = RepoContext.load(f"{R}/repo")
-    ctx.mrs = [MRRef(iid=9, state="merged", source_branch="feat/a")]
-    ctx.branch.mr_iid = 9; ctx._save_mr()
+    ctx.prs = [PullRequest(number=9, provider="github", state="merged", source_branch="feat/a")]
+    ctx.branch.pr_number = 9; ctx._save_pr()
     # cwd 在 workspace 根(R,非 git repo),编辑文件在 repo 内 → 仍要拦
     inp = _hook_input("Edit", {"session_id": "s", "cwd": R, "tool_input": {"file_path": f"{R}/repo/f"}})
     reason = guard.decide(inp)
@@ -683,41 +741,44 @@ def test_workspace_registry_user_level():
             os.environ["DEVLOOP_CONFIG_DIR"] = old_env
 
 
-def test_unified_config_gitlab_and_precommit():
-    """config.json 统一承载 workspaces / gitlab(token,host) / precommit;token env 覆写 config,
-    host 覆写从 origin 推断的 host,update 保留其它段。"""
+def test_unified_config_forges_and_precommit():
+    """config.json 统一承载 workspaces / forges(host→token/type) / precommit;token 按
+    provider 的约定 env 覆写 config,update 保留其它段。"""
     from lib import config
     W = "/tmp/dlut_cfg"
     shutil.rmtree(W, ignore_errors=True); os.makedirs(f"{W}/cfg")
     old_env = os.environ.get("DEVLOOP_CONFIG_DIR")
-    old_tok = os.environ.get("GITLAB_TOKEN")
+    old_gh = os.environ.get("GITHUB_TOKEN")
+    old_gl = os.environ.get("GITLAB_TOKEN")
     os.environ["DEVLOOP_CONFIG_DIR"] = f"{W}/cfg"
-    os.environ.pop("GITLAB_TOKEN", None)
+    os.environ.pop("GITHUB_TOKEN", None); os.environ.pop("GH_TOKEN", None); os.environ.pop("GITLAB_TOKEN", None)
     try:
         Path(f"{W}/cfg/config.json").write_text(
             '{"workspaces": ["/tmp/ws"],'
-            ' "gitlab": {"token": "from-config", "host": "gitlab.example.com"},'
+            ' "forges": {"github.com": {"type": "github", "token": "gh-config"},'
+            '            "gitlab.example.com": {"type": "gitlab", "token": "gl-config"}},'
             ' "precommit": {"default": {"commit_gate_lint": true}, "repos": {}}}'
         )
-        assert config.gitlab_token() == "from-config"
-        assert config.gitlab_host() == "gitlab.example.com"
+        assert config.forge_entry("github.com")["type"] == "github"
+        assert config.forge_token("github.com", "github") == "gh-config"
+        assert config.forge_token("gitlab.example.com", "gitlab") == "gl-config"
         assert config.precommit()["default"]["commit_gate_lint"] is True
-        # env 覆写 config 里的 token
-        os.environ["GITLAB_TOKEN"] = "from-env"
-        assert config.gitlab_token() == "from-env"
-        # update 改 workspaces 不丢 gitlab/precommit
+        # provider 约定 env 覆写 config 里的 token
+        os.environ["GITHUB_TOKEN"] = "gh-env"
+        assert config.forge_token("github.com", "github") == "gh-env"
+        os.environ["GITLAB_TOKEN"] = "gl-env"
+        assert config.forge_token("gitlab.example.com", "gitlab") == "gl-env"
+        # update 改 workspaces 不丢 forges/precommit
         config.set_workspaces(["/tmp/ws-new"])
-        assert config.gitlab_host() == "gitlab.example.com"
+        assert config.forge_entry("gitlab.example.com")["type"] == "gitlab"
         assert config.precommit()["default"]["commit_gate_lint"] is True
     finally:
-        if old_env is None:
-            os.environ.pop("DEVLOOP_CONFIG_DIR", None)
-        else:
-            os.environ["DEVLOOP_CONFIG_DIR"] = old_env
-        if old_tok is None:
-            os.environ.pop("GITLAB_TOKEN", None)
-        else:
-            os.environ["GITLAB_TOKEN"] = old_tok
+        os.environ.pop("GITHUB_TOKEN", None)
+        for k, v in (("DEVLOOP_CONFIG_DIR", old_env), ("GITLAB_TOKEN", old_gl), ("GITHUB_TOKEN", old_gh)):
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def test_local_config_overrides_global():
@@ -730,39 +791,39 @@ def test_local_config_overrides_global():
     os.makedirs(f"{W}/ws/repo/sub/.devloop")     # repo 级(最近)
     os.makedirs(f"{W}/ws/.devloop")              # workspace 级(较远)
     old_env = os.environ.get("DEVLOOP_CONFIG_DIR")
-    old_tok = os.environ.get("GITLAB_TOKEN")
+    old_tok = os.environ.get("GITHUB_TOKEN")
     os.environ["DEVLOOP_CONFIG_DIR"] = f"{W}/cfg"
-    os.environ.pop("GITLAB_TOKEN", None)
+    os.environ.pop("GITHUB_TOKEN", None); os.environ.pop("GH_TOKEN", None)
     try:
         Path(f"{W}/cfg/config.json").write_text(
-            '{"gitlab": {"token": "GLOBAL", "host": "global.example.com"}}')
+            '{"forges": {"github.com": {"type": "github", "token": "GLOBAL"}}}')
         Path(f"{W}/ws/.devloop/config.json").write_text(
-            '{"gitlab": {"token": "WS", "host": "ws.example.com"}}')
-        # repo 级只含 token(部分配置)→ host 落回更外层
+            '{"forges": {"github.com": {"type": "github", "token": "WS", "api_host": "ws.example.com"}}}')
+        # repo 级只含 token(部分配置)→ api_host 落回更外层
         Path(f"{W}/ws/repo/sub/.devloop/config.json").write_text(
-            '{"gitlab": {"token": "REPO"}}')
+            '{"forges": {"github.com": {"token": "REPO"}}}')
         repo = f"{W}/ws/repo/sub"
-        assert config.gitlab_token(repo) == "REPO"            # 最近的赢
-        assert config.gitlab_host(repo) == "ws.example.com"   # repo 没配 host → 落 workspace 层
-        assert config.gitlab_token(f"{W}/ws") == "WS"         # 在 workspace 根 → workspace 层赢
-        assert config.gitlab_token(None) == "GLOBAL"          # 无 repo_dir → 仅全局
+        assert config.forge_token("github.com", "github", repo) == "REPO"          # 最近的赢
+        assert config.forge_entry("github.com", repo).get("api_host") == "ws.example.com"  # repo 没配 → 落 workspace 层
+        assert config.forge_token("github.com", "github", f"{W}/ws") == "WS"        # 在 workspace 根 → workspace 层赢
+        assert config.forge_token("github.com", "github", None) == "GLOBAL"         # 无 repo_dir → 仅全局
         # env 仍最高优先
-        os.environ["GITLAB_TOKEN"] = "ENV"
-        assert config.gitlab_token(repo) == "ENV"
-        os.environ.pop("GITLAB_TOKEN", None)
+        os.environ["GITHUB_TOKEN"] = "ENV"
+        assert config.forge_token("github.com", "github", repo) == "ENV"
+        os.environ.pop("GITHUB_TOKEN", None)
         # 写只落全局,不碰本地
         config.set_workspaces(["/tmp/ws-x"])
         assert "WS" in Path(f"{W}/ws/.devloop/config.json").read_text()   # 本地未被改写
-        assert config.gitlab_token(repo) == "REPO"                        # 本地覆盖仍生效
+        assert config.forge_token("github.com", "github", repo) == "REPO"  # 本地覆盖仍生效
     finally:
         if old_env is None:
             os.environ.pop("DEVLOOP_CONFIG_DIR", None)
         else:
             os.environ["DEVLOOP_CONFIG_DIR"] = old_env
         if old_tok is None:
-            os.environ.pop("GITLAB_TOKEN", None)
+            os.environ.pop("GITHUB_TOKEN", None)
         else:
-            os.environ["GITLAB_TOKEN"] = old_tok
+            os.environ["GITHUB_TOKEN"] = old_tok
 
 
 def test_maybe_register_workspace():

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""PreToolUse (Edit/Write): deny editing when the current branch's MR is merged/closed.
+"""PreToolUse (Edit/Write): deny editing when the current branch's PR/MR is merged/closed.
 
-Catches "MR merged externally; AI still editing the stale branch". Reads the
-*derived* signal (`branch_mr_inactive` joins branch.mr_iid → mrs), not a stored bool.
+Catches "PR merged externally; AI still editing the stale branch". Reads the
+*derived* signal (`branch_pr_inactive` joins branch.pr_number → prs), not a stored bool.
 """
 from __future__ import annotations
 
@@ -24,14 +24,14 @@ def decide(inp: hook_io.HookInput) -> str | None:
     if not git_root:
         return None
     ctx = RepoContext.load(git_root)
-    if ctx is None or not ctx.branch_mr_inactive():
+    if ctx is None or not ctx.branch_pr_inactive():
         return None
     cur = ctx.branch.current or "?"
     target = ctx.branch.target or "release"
-    mr = ctx.current_mr()
-    mr_str = f"MR #{mr.iid} {mr.state}" if mr else "its MR merged/closed"
+    pr = ctx.current_pr()
+    pr_str = f"{pr.label} {pr.state}" if pr else "its PR/MR merged/closed"
     return (
-        f"⚠️  Branch '{cur}' is no longer active ({mr_str} on origin/{target}).\n"
+        f"⚠️  Branch '{cur}' is no longer active ({pr_str} on origin/{target}).\n"
         "Editing this stale branch wastes work — changes won't reach a fresh MR.\n"
         f"Cut a new branch from latest origin/{target} first:\n"
         f"  /gcampr <new-feature-name> 'your commit msg'\n"

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """gcam / gcamp / gcampr orchestrator — the one place the commit→push→MR flow lives.
 
-Routes ALL git through `gitcmd` and ALL GitLab through the `lib.gitlab` facade —
-no scattered subprocess/urllib. Skills call this (via smart_gcamp.sh / smart_gcampr.sh)
+Routes ALL git through `gitcmd` and ALL code-review hosting through the `lib.forge` facade
+(GitHub / GitLab picked per-repo) — no scattered subprocess/urllib. Skills call this
+(via smart_gcamp.sh / smart_gcampr.sh)
 rather than raw git, so the AI never issues raw `git commit/push` (which the PreToolUse
 guards would otherwise intercept), and the decision logic lives here, not in markdown.
 
 Modes:
   commit  → stage + commit (gcam)
   push    → stage + commit + push (gcamp)
-  mr      → stage + commit + push + create/reuse MR (gcampr)
+  mr      → stage + commit + push + create/reuse PR/MR (gcampr)
 
 Branch positioning is decided from explicit intent, NOT from whichever branch HEAD happens
 to sit on (a prior gcampr leaves us on the branch it just created — building the next branch
@@ -34,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
 from lib import git_state, gitcmd, repo_resolve  # noqa: E402
 from lib.context import RepoContext, record_active_repo  # noqa: E402
-from lib.gitlab import GitLabClient, GitLabError, MergeRequests  # noqa: E402
+from lib.forge import ForgeError, forge_for_repo  # noqa: E402
 
 
 class SmartError(Exception):
@@ -255,21 +256,22 @@ def warn_mixed_version_bump(repo: str, plan: list[str]) -> None:
         )
 
 
-def reuse_or_create_mr(repo: str, source: str, target: str, title: str, plan: list[str]) -> dict:
-    cl = GitLabClient.for_repo(repo)
-    if cl is None:
-        raise SmartError("branch pushed, but no GitLab token (set gitlab.token in ~/.devloop/config.json or $GITLAB_TOKEN) / not a GitLab remote — create the MR manually.")
-    mrs = MergeRequests(cl)
+def reuse_or_create_pr(repo: str, source: str, target: str, title: str, plan: list[str]):
+    """Open a PR/MR for `source`→`target`, reusing the branch's open one if present.
+    Provider-neutral: the forge is resolved from the repo's origin (GitHub or GitLab)."""
+    forge = forge_for_repo(repo)
+    if forge is None:
+        raise SmartError("branch pushed, but no token / unsupported remote — open the PR/MR manually.")
     try:
-        existing = mrs.for_branch(source)
-        if existing and existing.get("state") == "opened":
-            plan.append(f"reused open MR !{existing['iid']}")
+        existing = forge.for_branch(source)
+        if existing and existing.is_open:
+            plan.append(f"reused open {existing.label}")
             return existing
-        mr = mrs.create(source_branch=source, target_branch=target, title=title)
-        plan.append(f"created MR !{mr['iid']}")
-        return mr
-    except GitLabError as e:
-        raise SmartError(f"branch pushed, but MR create/reuse failed: {e}")
+        pr = forge.create(source_branch=source, target_branch=target, title=title)
+        plan.append(f"created {pr.label}")
+        return pr
+    except ForgeError as e:
+        raise SmartError(f"branch pushed, but PR/MR create/reuse failed: {e}")
 
 
 def resolve_intent(ns: argparse.Namespace, invoke_cwd: str) -> GitIntent:
@@ -303,7 +305,7 @@ def prepare_branch(intent: GitIntent, ctx: RepoContext, current: str | None, pla
     """Phase 2: position the working branch — intent-driven, independent of where HEAD sits
     (see decide_branch for the cut/continue/error policy)."""
     protected = git_state.is_protected_branch(current)
-    stale = ctx.branch_mr_inactive()
+    stale = ctx.branch_pr_inactive()
     action, detail = decide_branch(
         current, intent.requested_branch, protected=protected, stale=stale, base=intent.base,
     )
@@ -314,9 +316,11 @@ def prepare_branch(intent: GitIntent, ctx: RepoContext, current: str | None, pla
     if action == "cut":
         cut_new_branch(intent.repo, intent.requested_branch, intent.base, plan)
         return BranchResult(branch=intent.requested_branch, cut=True)
-    if ctx.branch_mr_in_flight():
-        # continuing onto a branch whose MR is still open — the loop's between-rounds state.
-        plan.append(f"continuing in-flight MR !{ctx.branch.mr_iid} on '{current}'")
+    if ctx.branch_pr_in_flight():
+        # continuing onto a branch whose PR is still open — the loop's between-rounds state.
+        pr = ctx.current_pr()
+        label = pr.label if pr else "PR"
+        plan.append(f"continuing in-flight {label} on '{current}'")
     return BranchResult(branch=current or "", cut=False)
 
 
@@ -359,18 +363,18 @@ def publish(intent: GitIntent, branch: BranchResult, staged: StageResult, plan: 
 
     if intent.mode == "mr":
         rng = run(repo, "log", "--oneline", f"origin/{target}..{current}").strip()
-        plan.append(f"MR carries {len(rng.splitlines()) if rng else 0} commit(s) vs origin/{target}")
-        mr = reuse_or_create_mr(repo, current, target, intent.title, plan)
+        plan.append(f"PR carries {len(rng.splitlines()) if rng else 0} commit(s) vs origin/{target}")
+        pr = reuse_or_create_pr(repo, current, target, intent.title, plan)
         RepoContext.refresh_branch(repo)
-        # Don't write mr_iid here — keep the `mr` segment single-owner. Trigger one
-        # monitor poll so it (the sole writer) populates iid + window for the new branch.
+        # Don't write pr_number here — keep the `pr` segment single-owner. Trigger one
+        # monitor poll so it (the sole writer) populates number + window for the new branch.
         try:
             sys.path.insert(0, str(Path(__file__).resolve().parent))
-            from poll_mr_status import poll_once
+            from poll_pr_status import poll_once
             poll_once(repo)
         except Exception:
             pass
-        plan.append(f"MR: {mr['web_url']}")
+        plan.append(f"{pr.label}: {pr.web_url}")
 
 
 def main(argv: list[str]) -> int:
