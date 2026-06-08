@@ -13,12 +13,12 @@ repo 级结构化状态里 `branch.json` 的 `protected=true` 时，注入头部
 
 ## PR 模型（PR/MR 统一概念）
 
-评审提案在 devloop 里是**中立领域对象 `PullRequest`**（GitHub PR / GitLab MR 同一概念），由 forge 层（`hooks/lib/forge/`）按 repo 的 origin 解析出对应实现产出；状态层只持久化与 join，不重定义。展示时按 `provider` 用 `vocab()` 贴回词汇（GitHub `PR #`、GitLab `MR !`）。
+评审提案在 devloop 里是**中立领域对象 `PullRequest`**（GitHub PR / GitLab MR 同一概念），由 forge 层（`hooks/lib/forge/`）按 repo 的 origin 解析出对应实现产出；状态层只持久化与 join，不重定义。`PullRequest` **不带 provider**——provider 是 **repo 级事实**（一个仓要么 GitHub 要么 GitLab），存在 `pr.json` 段头；展示时用 `pr_label(provider, number)` / `vocab(provider)` 贴回词汇（GitHub `PR #`、GitLab `MR !`）。
 
 - **`number`**：PR/MR 在 repo 内的编号（URL 里那个号；GitLab 的 `iid`、GitHub 的 PR number 统一为 `number`）。
 - **`state`**：归一为 `open` / `merged` / `closed`（GitHub 的 open/closed + `merged` 布尔在 adapter 里收敛为这三态）。
 - **`branch.pr_number`**：当前分支那条 PR 的编号（只存编号，整对象 join `prs`）。
-- **`prs`**：近期 PR 窗口，monitor 周期 sweep 写入，cap 5。GitLab（iid 连续）取 `[number-2, latest]` 邻域；GitHub（号与 issue 共享、不连续）取最新若干并确保 anchor 在内。
+- **`prs`**：近期 PR 窗口，monitor 周期 sweep 写入，cap 5。窗口策略是**领域层** `build_window`（最新 cap + 确保当前分支 anchor 在内），组合在 port 的 `recent()` + `get()` 原语之上——**对两家一致**，adapter 不各写一份；adapter 只管协议差异。
 - **branch 归属**：`pr.json` 记录其写入时的 branch + provider；`load` 只在该 branch == 当前分支时才 join `pr_number`——切分支自动失效，无需清理逻辑。
 - **分支失活（inactive）**：按 `pr_number` 在 `prs` 查到的 `state ∈ {merged, closed}` **派生**，不单独存。`branch_merged_guard` 读它拦截过期分支上的编辑。
 - **在途（in-flight）**：同样按 join 派生（`state = open`，`branch_pr_in_flight`）——PR 已建、等人工 merge。与 inactive 互斥，二者加 protected / healthy 构成下面的四态。

@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from lib import hook_io, repo_layout  # noqa: E402
-from lib.context import RepoContext  # noqa: E402
+from lib.context import RepoContext, pr_label  # noqa: E402
 
 
 def decide(inp: hook_io.HookInput) -> str | None:
@@ -29,7 +29,7 @@ def decide(inp: hook_io.HookInput) -> str | None:
     cur = ctx.branch.current or "?"
     target = ctx.branch.target or "release"
     pr = ctx.current_pr()
-    pr_str = f"{pr.label} {pr.state}" if pr else "its PR/MR merged/closed"
+    pr_str = f"{pr_label(ctx.provider, pr.number)} {pr.state}" if pr else "its PR/MR merged/closed"
     return (
         f"⚠️  Branch '{cur}' is no longer active ({pr_str} on origin/{target}).\n"
         "Editing this stale branch wastes work — changes won't reach a fresh MR.\n"

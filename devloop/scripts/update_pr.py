@@ -6,13 +6,12 @@ Usage: update_pr.py <number> [--title T] [--description D] [--target-branch B] [
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
-from lib.forge import ForgeError, forge_for_repo  # noqa: E402
+from lib.forge import ForgeError, forge_for_repo, parse_pr_number, pr_label  # noqa: E402
 
 
 def main(argv: list[str]) -> int:
@@ -24,8 +23,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("repo_dir", nargs="?", default=".")
     ns = ap.parse_args(argv)
 
-    m = re.search(r"\d+", ns.number)
-    if not m:
+    number = parse_pr_number(ns.number)
+    if number is None:
         print(f"update_pr: bad number {ns.number!r}", file=sys.stderr)
         return 1
     # Neutral field names map to each forge's API inside the adapter (description→body for GitHub).
@@ -39,11 +38,11 @@ def main(argv: list[str]) -> int:
         print("update_pr: no token or unsupported remote", file=sys.stderr)
         return 0
     try:
-        pr = forge.update(int(m.group()), **fields)
+        pr = forge.update(number, **fields)
     except ForgeError as e:
         print(f"update_pr: {e}", file=sys.stderr)
         return 1
-    print(f"updated {pr.label}: {pr.title} [{pr.state}] → {pr.web_url}")
+    print(f"updated {pr_label(forge.provider, pr.number)}: {pr.title} [{pr.state}] → {pr.web_url}")
     return 0
 
 

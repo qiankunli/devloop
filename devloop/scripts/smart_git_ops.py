@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
 from lib import git_state, gitcmd, repo_resolve  # noqa: E402
 from lib.context import RepoContext, record_active_repo  # noqa: E402
-from lib.forge import ForgeError, forge_for_repo  # noqa: E402
+from lib.forge import ForgeError, forge_for_repo, pr_label  # noqa: E402
 
 
 class SmartError(Exception):
@@ -263,12 +263,12 @@ def reuse_or_create_pr(repo: str, source: str, target: str, title: str, plan: li
     if forge is None:
         raise SmartError("branch pushed, but no token / unsupported remote — open the PR/MR manually.")
     try:
-        existing = forge.for_branch(source)
-        if existing and existing.is_open:
-            plan.append(f"reused open {existing.label}")
+        existing = next((p for p in forge.prs_for_branch(source) if p.is_open), None)
+        if existing:
+            plan.append(f"reused open {pr_label(forge.provider, existing.number)}: {existing.web_url}")
             return existing
         pr = forge.create(source_branch=source, target_branch=target, title=title)
-        plan.append(f"created {pr.label}")
+        plan.append(f"created {pr_label(forge.provider, pr.number)}: {pr.web_url}")
         return pr
     except ForgeError as e:
         raise SmartError(f"branch pushed, but PR/MR create/reuse failed: {e}")
@@ -319,7 +319,7 @@ def prepare_branch(intent: GitIntent, ctx: RepoContext, current: str | None, pla
     if ctx.branch_pr_in_flight():
         # continuing onto a branch whose PR is still open — the loop's between-rounds state.
         pr = ctx.current_pr()
-        label = pr.label if pr else "PR"
+        label = pr_label(ctx.provider, pr.number) if pr else "PR"
         plan.append(f"continuing in-flight {label} on '{current}'")
     return BranchResult(branch=current or "", cut=False)
 
@@ -364,7 +364,7 @@ def publish(intent: GitIntent, branch: BranchResult, staged: StageResult, plan: 
     if intent.mode == "mr":
         rng = run(repo, "log", "--oneline", f"origin/{target}..{current}").strip()
         plan.append(f"PR carries {len(rng.splitlines()) if rng else 0} commit(s) vs origin/{target}")
-        pr = reuse_or_create_pr(repo, current, target, intent.title, plan)
+        reuse_or_create_pr(repo, current, target, intent.title, plan)
         RepoContext.refresh_branch(repo)
         # Don't write pr_number here — keep the `pr` segment single-owner. Trigger one
         # monitor poll so it (the sole writer) populates number + window for the new branch.
@@ -374,7 +374,6 @@ def publish(intent: GitIntent, branch: BranchResult, staged: StageResult, plan: 
             poll_once(repo)
         except Exception:
             pass
-        plan.append(f"{pr.label}: {pr.web_url}")
 
 
 def main(argv: list[str]) -> int:

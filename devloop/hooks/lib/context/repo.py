@@ -37,6 +37,7 @@ from .base import (
     PullRequest,
     Reference,
     WorktreeInfo,
+    pr_label,
     vocab,
 )
 
@@ -122,6 +123,7 @@ class RepoContext:
     validation: Validation = field(default_factory=Validation)
     injection: Injection = field(default_factory=Injection)
     prs: list[PullRequest] = field(default_factory=list)   # monitor-owned recent-PR window
+    provider: str = ""   # repo-level forge ("github"/"gitlab"); drives display vocabulary
     updated_at: float = 0.0
 
     # ── load (merge segments) ──────────────────────────────────────────────────
@@ -148,6 +150,7 @@ class RepoContext:
             validation=Validation.from_dict(base.load_segment(repo_dir, "validation") or {}),
             injection=Injection.from_dict(base.load_segment(repo_dir, "injection") or {}),
             prs=[PullRequest.from_dict(p) for p in (pr.get("prs") or []) if p.get("number") is not None],
+            provider=pr.get("provider", ""),
             updated_at=float(meta.get("updated_at", 0) or 0),
         )
         if not ctx.repo.repo_dir:
@@ -183,12 +186,13 @@ class RepoContext:
     def _save_pr(self) -> None:
         """Monitor's write surface (also used by gcampr via a one-shot poll). Branch-keyed
         so a later branch switch invalidates pr_number on read without anyone clearing it.
-        `provider` is derived from the window so display keeps the right vocabulary."""
+        `provider` is repo-level (the forge backing this repo) — stored once in the header,
+        not on every PR."""
         if not self._root():
             return
         base.save_segment(self._root(), "pr", {
             "branch": self.branch.current,
-            "provider": self.prs[0].provider if self.prs else "",
+            "provider": self.provider,
             "pr_number": self.branch.pr_number,
             "prs": [asdict(p) for p in self.prs],
         })
@@ -230,6 +234,7 @@ class RepoContext:
             validation=prev.validation,
             injection=prev.injection,
             prs=prev.prs,
+            provider=prev.provider,
         )
         ctx.branch.pr_number = prev.branch.pr_number   # keep the join value on the returned object
         ctx._save_meta()
@@ -377,14 +382,14 @@ def _format_turn(ctx: "RepoContext") -> str:
     pr = ctx.current_pr()
     if pr and pr.inactive:
         extras.append(
-            f"INACTIVE ({pr.label} {pr.state}) — cut a new branch from latest origin/{b.target}"
+            f"INACTIVE ({pr_label(ctx.provider, pr.number)} {pr.state}) — cut a new branch from latest origin/{b.target}"
         )
     elif pr and pr.is_open:
         # Soft hint, not a guard: an in-flight PR has one legitimate edit case (amending it for
         # review), so we surface the state and let the agent choose rather than hard-blocking.
-        noun = vocab(pr.provider)[0]
+        noun = vocab(ctx.provider)[0]
         extras.append(
-            f"IN-FLIGHT ({pr.label} open) — new work needs a fresh branch (gcampr --branch); "
+            f"IN-FLIGHT ({pr_label(ctx.provider, pr.number)} open) — new work needs a fresh branch (gcampr --branch); "
             f"edit here only to amend this {noun}"
         )
     extra_str = f" ⚠️ {'; '.join(extras)}" if extras else ""
@@ -401,7 +406,7 @@ def _format_turn(ctx: "RepoContext") -> str:
     lines.append(f"Validation: lint={base.fmt_ts(v.last_lint_at)}{stale}; test={base.fmt_ts(v.last_test_at)}")
 
     if ctx.prs:
-        noun, sigil = vocab(ctx.prs[0].provider)
+        noun, sigil = vocab(ctx.provider)
         parts = []
         for p in ctx.prs:
             star = "*" if p.number == b.pr_number else ""

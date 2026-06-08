@@ -24,9 +24,52 @@ sys.path.insert(0, str(HOOKS))
 from lib import cmdparse  # noqa: E402
 from lib.context import Cadence, PullRequest  # noqa: E402
 from lib.forge import detect_provider, parse_origin  # noqa: E402
-from lib.forge.base import _window_numbers  # noqa: E402
+from lib.forge.base import (  # noqa: E402
+    Forge,
+    Comment,
+    ForgeNotFound,
+    build_window,
+    parse_pr_number,
+    pr_label,
+)
 from lib.forge.github import GitHubForge  # noqa: E402
 from lib.forge.gitlab import GitLabForge  # noqa: E402
+
+
+class _FakeForge(Forge):
+    """In-memory Forge for testing the domain composition (build_window) + orchestration
+    (reuse_or_create_pr) without HTTP — the port is small enough that this is trivial."""
+    provider = "github"
+
+    def __init__(self, prs):
+        self._prs = {p.number: p for p in prs}
+        self.created = None
+
+    def create(self, *, source_branch, target_branch, title, body=""):
+        n = max(self._prs, default=0) + 1
+        pr = PullRequest(number=n, state="open", source_branch=source_branch,
+                         target_branch=target_branch, title=title, web_url=f"u/{n}")
+        self._prs[n] = pr
+        self.created = pr
+        return pr
+
+    def get(self, number):
+        if number not in self._prs:
+            raise ForgeNotFound(str(number))
+        return self._prs[number]
+
+    def update(self, number, **fields):
+        return self._prs[number]
+
+    def prs_for_branch(self, branch):
+        return sorted((p for p in self._prs.values() if p.source_branch == branch),
+                      key=lambda p: p.number, reverse=True)
+
+    def recent(self, limit):
+        return sorted(self._prs.values(), key=lambda p: p.number, reverse=True)[:limit]
+
+    def comments(self, number):
+        return [Comment(author="x", body="y")]
 
 
 def _load_from(base, name):
@@ -104,14 +147,35 @@ def test_cmdparse_commands():
     assert cmdparse.first_token_is('echo "make test"', "make") is False
 
 
-def test_window_numbers():
-    assert _window_numbers(10, 10, 5) == [6, 7, 8, 9, 10]
-    assert _window_numbers(10, 11, 5) == [7, 8, 9, 10, 11]
-    assert _window_numbers(10, 12, 5) == [8, 9, 10, 11, 12]
-    assert _window_numbers(10, 20, 5) == [8, 9, 10, 19, 20]
-    assert _window_numbers(None, 20, 5) == [16, 17, 18, 19, 20]
-    assert _window_numbers(3, 3, 5) == [1, 2, 3]
-    assert all(10 in _window_numbers(10, L, 5) for L in range(10, 40))   # anchor always present
+def test_build_window():
+    """Provider-agnostic window policy over the port's recent+get: newest `cap`, with the
+    anchor PR always present (fetched via get if it fell off the recent list)."""
+    prs = [PullRequest(number=n, state="open", source_branch=f"b{n}") for n in range(1, 21)]
+    f = _FakeForge(prs)
+    # anchor near latest → just the newest cap
+    nums = [p.number for p in build_window(f, 20, cap=5)]
+    assert nums == [20, 19, 18, 17, 16]
+    # anchor older than the newest cap → newest cap-1 + the anchor (anchor always present)
+    nums = [p.number for p in build_window(f, 3, cap=5)]
+    assert 3 in nums and nums[:4] == [20, 19, 18, 17] and len(nums) == 5
+    # no anchor → newest cap
+    assert [p.number for p in build_window(f, None, cap=5)] == [20, 19, 18, 17, 16]
+    # anchor that doesn't exist (404 on get) → silently dropped, still returns newest cap
+    nums = [p.number for p in build_window(f, 999, cap=5)]
+    assert nums == [20, 19, 18, 17, 16]
+
+
+def test_parse_pr_number():
+    assert parse_pr_number("https://github.com/o/r/pull/12") == 12
+    assert parse_pr_number("https://gitlab.com/g/p/-/merge_requests/7") == 7
+    assert parse_pr_number("#5") == 5 and parse_pr_number("!9") == 9 and parse_pr_number("42") == 42
+    assert parse_pr_number("nope") is None
+
+
+def test_pr_label():
+    assert pr_label("github", 3) == "PR #3"
+    assert pr_label("gitlab", 3) == "MR !3"
+    assert pr_label("", 3) == "PR #3"   # unknown → PR/#
 
 
 def test_parse_origin_and_detect_provider():
@@ -134,11 +198,13 @@ def test_parse_origin_and_detect_provider():
 
 def test_forge_pr_mapping():
     """Each adapter normalizes its native JSON → the neutral PullRequest: iid/number,
-    GitHub's open/closed + merged flag → open|merged|closed, head/base → source/target."""
+    GitHub's open/closed + merged flag → open|merged|closed, head/base → source/target.
+    No provider on the PR — that's repo-level."""
     gl = GitLabForge.__new__(GitLabForge)        # bypass __init__ (no HTTP needed for mapping)
     pr = gl._to_pr({"iid": 7, "state": "opened", "source_branch": "f", "target_branch": "m",
                     "web_url": "u", "sha": "abc"})
-    assert (pr.number, pr.provider, pr.state, pr.source_branch, pr.sha) == (7, "gitlab", "open", "f", "abc")
+    assert (pr.number, pr.state, pr.source_branch, pr.sha) == (7, "open", "f", "abc")
+    assert not hasattr(pr, "provider")
     assert gl._to_pr({"iid": 8, "state": "merged"}).state == "merged"
     assert gl._to_pr({"iid": 9, "state": "locked"}).state == "closed"
 
@@ -146,7 +212,7 @@ def test_forge_pr_mapping():
     gh.owner, gh.name = "o", "r"
     pr = gh._to_pr({"number": 12, "state": "open", "head": {"ref": "f", "sha": "abc"},
                     "base": {"ref": "main"}, "html_url": "u"})
-    assert (pr.number, pr.provider, pr.state, pr.source_branch, pr.target_branch) == (12, "github", "open", "f", "main")
+    assert (pr.number, pr.state, pr.source_branch, pr.target_branch) == (12, "open", "f", "main")
     # closed + merged_at → merged; closed without merge → closed
     assert gh._to_pr({"number": 13, "state": "closed", "merged_at": "2026-01-01"}).state == "merged"
     assert gh._to_pr({"number": 14, "state": "closed"}).state == "closed"
@@ -201,6 +267,38 @@ def test_prepare_branch_reads_ctx_pr_state():
     res = sgo.prepare_branch(intent, ctx, "feat/a", [])
     assert res.branch == "feat/a" and res.cut is False
 
+    # in-flight branch → continue + a self-narrating line built with the repo-level provider
+    ctx.prs = [PullRequest(number=7, state="open", source_branch="feat/a")]
+    ctx.branch.pr_number = 7; ctx.provider = "github"
+    plan = []
+    res = sgo.prepare_branch(intent, ctx, "feat/a", plan)
+    assert res.branch == "feat/a" and res.cut is False
+    assert any("continuing in-flight PR #7" in line for line in plan)
+
+
+def test_reuse_or_create_pr_over_narrowed_port():
+    """reuse_or_create_pr: reuse the branch's OPEN pr if present (via prs_for_branch),
+    else create. Over the narrowed port + a fake forge — no HTTP; label is repo-level."""
+    sgo = _load_script("smart_git_ops")
+    orig = sgo.forge_for_repo
+    try:
+        # reuse: an open PR exists for the branch
+        f = _FakeForge([PullRequest(number=3, state="open", source_branch="feat/x", web_url="u/3")])
+        sgo.forge_for_repo = lambda repo: f
+        plan = []
+        pr = sgo.reuse_or_create_pr("/repo", "feat/x", "main", "t", plan)
+        assert pr.number == 3 and f.created is None
+        assert any("reused open PR #3" in line for line in plan)
+        # create: only a finished PR for the branch → open a new one
+        f2 = _FakeForge([PullRequest(number=3, state="merged", source_branch="feat/x")])
+        sgo.forge_for_repo = lambda repo: f2
+        plan = []
+        pr = sgo.reuse_or_create_pr("/repo", "feat/x", "main", "t", plan)
+        assert f2.created is not None and pr.number == 4
+        assert any("created PR #4" in line for line in plan)
+    finally:
+        sgo.forge_for_repo = orig
+
 
 def test_pick_branch_pr():
     poll = _load_script("poll_pr_status")
@@ -221,9 +319,6 @@ def test_pullrequest_and_cadence():
     # in-flight(open)与 inactive(merged/closed)互斥——循环"轮次之间"的第四态
     assert PullRequest.from_dict({"number": 9, "state": "open"}).is_open
     assert not PullRequest.from_dict({"number": 10, "state": "merged"}).is_open and not pr.is_open
-    # provider drives the display label
-    assert PullRequest(number=3, provider="github").label == "PR #3"
-    assert PullRequest(number=3, provider="gitlab").label == "MR !3"
     c = Cadence()
     assert c.should_emit("x", now=100, ttl=1800)
     c.mark("x", now=100)
@@ -257,14 +352,16 @@ def test_context_segments():
     assert (Path(R) / ".devloop" / "validation.json").exists()
     assert RepoContext.load(R).validation.edits_since_lint == 0
 
-    # monitor-owned pr write, branch-keyed; joins on the matching branch
+    # monitor-owned pr write, branch-keyed; provider is repo-level (header, not per-PR)
     ctx = RepoContext.load(R)
-    ctx.prs = [PullRequest(number=51, provider="github", state="open", source_branch="feat/a")]
+    ctx.prs = [PullRequest(number=51, state="open", source_branch="feat/a")]
     ctx.branch.pr_number = 51
+    ctx.provider = "github"
     ctx._save_pr()
     assert base.load_segment(R, "pr")["branch"] == "feat/a"
     assert base.load_segment(R, "pr")["provider"] == "github"
-    assert RepoContext.load(R).branch.pr_number == 51
+    loaded = RepoContext.load(R)
+    assert loaded.branch.pr_number == 51 and loaded.provider == "github"
 
     # branch switch → stale number drops at load with nobody clearing pr.json
     _git(R, "checkout", "-q", "-b", "feat/b")
@@ -274,8 +371,8 @@ def test_context_segments():
 
     # disjoint writers (refresh ↔ monitor) don't clobber each other
     RepoContext.refresh_branch(R)
-    c = RepoContext.load(R); c.prs = [PullRequest(number=60, provider="github", state="open", source_branch="feat/b")]
-    c.branch.pr_number = 60; c._save_pr()
+    c = RepoContext.load(R); c.prs = [PullRequest(number=60, state="open", source_branch="feat/b")]
+    c.branch.pr_number = 60; c.provider = "github"; c._save_pr()
     merged = RepoContext.load(R)
     assert merged.branch.current == "feat/b" and merged.branch.pr_number == 60
 
@@ -292,10 +389,10 @@ def test_branch_pr_in_flight():
     RepoContext.refresh_all(R)
 
     ctx = RepoContext.load(R)
-    ctx.prs = [PullRequest(number=51, provider="github", state="open", source_branch="feat/a")]; ctx.branch.pr_number = 51
+    ctx.prs = [PullRequest(number=51, state="open", source_branch="feat/a")]; ctx.branch.pr_number = 51
     assert ctx.branch_pr_in_flight() and not ctx.branch_pr_inactive()
     # 合入后转 inactive、不再 in-flight
-    ctx.prs = [PullRequest(number=51, provider="github", state="merged", source_branch="feat/a")]
+    ctx.prs = [PullRequest(number=51, state="merged", source_branch="feat/a")]
     assert ctx.branch_pr_inactive() and not ctx.branch_pr_in_flight()
     # 无 PR(pr_number=None)两者皆 False
     ctx.branch.pr_number = None
@@ -314,18 +411,20 @@ def test_in_flight_turn_hint():
     RepoContext.refresh_all(R)
     ctx = RepoContext.load(R)
 
-    # in-flight(open)→ 软提示出现 + actionable + 按 provider 出 PR # 词汇
-    ctx.prs = [PullRequest(number=51, provider="github", state="open", source_branch="feat/a")]; ctx.branch.pr_number = 51
+    # in-flight(open)→ 软提示出现 + actionable + 按 repo-level provider 出 PR # 词汇
+    ctx.prs = [PullRequest(number=51, state="open", source_branch="feat/a")]; ctx.branch.pr_number = 51
+    ctx.provider = "github"
     txt = ctx.turn_text()
     assert "IN-FLIGHT" in txt and "fresh branch" in txt and "INACTIVE" not in txt
     assert "PR #51" in txt and "Recent PRs" in txt
 
-    # GitLab provider → MR ! 词汇
-    ctx.prs = [PullRequest(number=51, provider="gitlab", state="open", source_branch="feat/a")]
-    assert "MR !51" in ctx.turn_text()
+    # GitLab provider → MR ! 词汇(同一组 PR,只换 repo-level provider)
+    ctx.provider = "gitlab"
+    assert "MR !51" in ctx.turn_text() and "Recent MRs" in ctx.turn_text()
 
     # inactive(merged)→ 仍是 INACTIVE,不误报 IN-FLIGHT
-    ctx.prs = [PullRequest(number=51, provider="github", state="merged", source_branch="feat/a")]
+    ctx.provider = "github"
+    ctx.prs = [PullRequest(number=51, state="merged", source_branch="feat/a")]
     txt = ctx.turn_text()
     assert "INACTIVE" in txt and "IN-FLIGHT" not in txt
 
@@ -713,8 +812,8 @@ def test_branch_merged_guard_uses_file_path():
     Path(f"{R}/repo/f").write_text("x"); _git(f"{R}/repo", "add", "f"); _git(f"{R}/repo", "commit", "-qm", "i")
     RepoContext.refresh_all(f"{R}/repo")
     ctx = RepoContext.load(f"{R}/repo")
-    ctx.prs = [PullRequest(number=9, provider="github", state="merged", source_branch="feat/a")]
-    ctx.branch.pr_number = 9; ctx._save_pr()
+    ctx.prs = [PullRequest(number=9, state="merged", source_branch="feat/a")]
+    ctx.branch.pr_number = 9; ctx.provider = "github"; ctx._save_pr()
     # cwd 在 workspace 根(R,非 git repo),编辑文件在 repo 内 → 仍要拦
     inp = _hook_input("Edit", {"session_id": "s", "cwd": R, "tool_input": {"file_path": f"{R}/repo/f"}})
     reason = guard.decide(inp)

@@ -2,19 +2,24 @@
 
 The domain object is a *code-review proposal*, called `PullRequest` here regardless of
 which forge backs it (GitHub PR / GitLab MR are the same concept under two names). This
-module is PURE: dataclasses + the `Forge` port (ABC) + tiny helpers, no git / HTTP / config
-imports — so both the adapters (which produce `PullRequest`s) and the state layer (which
-persists them) depend inward on it, never the reverse.
+module is PURE: dataclasses + the `Forge` port (ABC) + small domain helpers, no git / HTTP
+/ config imports — so both the adapters (which produce `PullRequest`s) and the state layer
+(which persists them) depend inward on it, never the reverse.
 
-Greenfield seam: the boundary is at *provider*, not *transport*. GitHub and GitLab are two
-live adapters picked per-repo (see `__init__.forge_for_repo`), each implementing this port.
-Naming is neutral on purpose — `number` (not GitLab's `iid`), state normalized to
-`open|merged|closed` — so no call site needs to know which forge it's talking to. Per-forge
-vocabulary (PR/MR, #/!) is reattached only at display time via `vocab()`.
+Greenfield seams:
+- The boundary is at *provider*, not *transport*. GitHub and GitLab are two live adapters
+  picked per-repo (see `__init__.forge_for_repo`), each implementing this port.
+- The port exposes only the *fetch/mutate primitives* devloop needs; cross-provider
+  *policy* (the recent-PR window) lives once in `build_window`, composed over those
+  primitives — not duplicated in each adapter.
+- `provider` is a property of the repo/forge, not of each PR. So `PullRequest` carries no
+  provider; display vocabulary is reattached at render time via `pr_label` / `vocab` using
+  the repo-level provider.
 """
 from __future__ import annotations
 
 import abc
+import re
 from dataclasses import dataclass
 
 PRS_CAP = 5   # max entries in the recent-PR window the monitor tracks
@@ -27,6 +32,20 @@ _VOCAB = {"github": ("PR", "#"), "gitlab": ("MR", "!")}
 def vocab(provider: str | None) -> tuple[str, str]:
     """(noun, sigil) for a provider, e.g. ('PR', '#') / ('MR', '!'). Unknown → PR/#."""
     return _VOCAB.get(provider or "", ("PR", "#"))
+
+
+def pr_label(provider: str | None, number: int) -> str:
+    """Forge-flavored display label, e.g. 'PR #12' / 'MR !12'. Provider is repo-level."""
+    noun, sigil = vocab(provider)
+    return f"{noun} {sigil}{number}"
+
+
+def parse_pr_number(s: str) -> int | None:
+    """Extract a PR/MR number from a URL or a bare ref. Knows both forges' URL shapes
+    (GitHub `/pull/N`, GitLab `/merge_requests/N`) so callers (CLI scripts) don't carry
+    provider URL knowledge. Accepts a bare `N`, `#N`, or `!N` too."""
+    m = (re.search(r"/(?:pull|merge_requests)/(\d+)", s) or re.fullmatch(r"[!#]?(\d+)", s.strip()))
+    return int(m.group(1)) if m else None
 
 
 # ── errors (provider-neutral; adapters raise these, call sites catch them) ─────
@@ -49,18 +68,18 @@ class PullRequest:
 
     `number` is the per-repo sequential id (the number in the URL: GitLab `iid`,
     GitHub PR number). `state` is normalized to 'open' | 'merged' | 'closed' by the
-    adapter (GitHub's open/closed + a `merged` flag collapses to these three). `provider`
-    is carried through persistence so display can pick the right vocabulary after a reload.
-    'inactive' (merged/closed) is derived, never stored.
+    adapter (GitHub's open/closed + a `merged` flag collapses to these three). No
+    `provider` field — that's a repo-level fact (see module docstring); display labels
+    are built with `pr_label(provider, number)` at render time. 'inactive' (merged/closed)
+    is derived, never stored.
     """
     number: int
-    provider: str = ""          # "github" | "gitlab" — drives display vocabulary only
     title: str = ""
     state: str = ""             # neutral: "open" | "merged" | "closed"
     source_branch: str = ""
     target_branch: str = ""
     web_url: str = ""
-    sha: str = ""               # head sha — the monitor uses it for the ancestry check
+    sha: str = ""               # source-branch tip the monitor ancestry-checks against HEAD
     updated_at: str | None = None
 
     @property
@@ -77,17 +96,10 @@ class PullRequest:
         """
         return self.state == "open"
 
-    @property
-    def label(self) -> str:
-        """Forge-flavored display label, e.g. 'PR #12' / 'MR !12'."""
-        noun, sigil = vocab(self.provider)
-        return f"{noun} {sigil}{self.number}"
-
     @classmethod
     def from_dict(cls, d: dict) -> "PullRequest":
         return cls(
             number=int(d["number"]),
-            provider=d.get("provider", ""),
             title=d.get("title", ""),
             state=d.get("state", ""),
             source_branch=d.get("source_branch", ""),
@@ -107,11 +119,11 @@ class Comment:
 # ── the port ──────────────────────────────────────────────────────────────────
 class Forge(abc.ABC):
     """What devloop needs from a code-review host — defined in the domain's terms, NOT
-    mirroring any one SDK. GitLab/GitHub adapters implement this as peers.
+    mirroring any one SDK/REST surface. GitLab/GitHub adapters implement this as peers.
 
-    Methods return neutral `PullRequest` / `Comment`. `state` arguments/values are the
-    neutral enum ('open'/'closed'/'all' for queries); each adapter translates to its own
-    API vocabulary internally.
+    Only fetch/mutate *primitives* live here; the recent-PR window *policy* is
+    `build_window`, composed over `recent` + `get` so it's identical across forges.
+    Methods return neutral `PullRequest` / `Comment`.
     """
 
     provider: str = ""
@@ -127,37 +139,33 @@ class Forge(abc.ABC):
     def update(self, number: int, **fields) -> PullRequest: ...
 
     @abc.abstractmethod
-    def list(self, *, state: str = "all", source_branch: str | None = None,
-             per_page: int = 20) -> list[PullRequest]: ...
+    def prs_for_branch(self, branch: str) -> list[PullRequest]:
+        """All PRs whose source is `branch`, newest first (an old finished one + a new
+        open one can coexist after a branch is reused — callers pick)."""
 
     @abc.abstractmethod
-    def window(self, anchor: int | None) -> list[PullRequest]: ...
+    def recent(self, limit: int) -> list[PullRequest]:
+        """The `limit` most-recently-created PRs in the repo, newest first."""
 
     @abc.abstractmethod
     def comments(self, number: int) -> list[Comment]: ...
 
-    # Default: the most-recent PR whose source branch matches. Adapters may override.
-    def for_branch(self, branch: str) -> PullRequest | None:
-        prs = self.list(source_branch=branch, state="all", per_page=20)
-        return prs[0] if prs else None
 
-
-def _window_numbers(anchor: int | None, latest: int, cap: int) -> list[int]:
-    """Pure number-math for a contiguous-numbering window (GitLab iids). Returns the
-    target number set, newest-inclusive, with the anchor neighborhood always present.
-
-    - anchor known: base `[anchor-2, latest]`; if ≤cap pad down to cap ending at latest,
-      else keep {anchor-2,anchor-1,anchor} + the 2 newest (anchor always present).
-    - anchor unknown: the latest `cap`.
+def build_window(forge: Forge, anchor: int | None, cap: int = PRS_CAP) -> list[PullRequest]:
+    """The recent-PR window: newest `cap` PRs, with the current branch's `anchor` PR always
+    present (fetched if it fell off the recent list). Provider-agnostic policy composed over
+    the port's `recent` + `get` primitives — one definition for every forge, regardless of
+    whether its numbering is contiguous.
     """
-    if latest < 1:
-        return []
-    if anchor is None:
-        lo = max(1, latest - (cap - 1))
-        return list(range(lo, latest + 1))
-    if latest <= anchor + (cap - 3):
-        lo = max(1, latest - (cap - 1))
-        lo = min(lo, max(1, anchor - 2))
-        return list(range(lo, latest + 1))
-    s = {anchor - 2, anchor - 1, anchor, latest - 1, latest}
-    return sorted(i for i in s if i >= 1)
+    by_num = {p.number: p for p in forge.recent(cap)}
+    if anchor is not None and anchor not in by_num:
+        try:
+            by_num[anchor] = forge.get(anchor)
+        except ForgeNotFound:
+            pass
+    ordered = sorted(by_num.values(), key=lambda p: p.number, reverse=True)
+    if anchor is not None and anchor in by_num and by_num[anchor] not in ordered[:cap]:
+        # anchor older than the newest `cap` — keep newest cap-1 + the anchor.
+        keep = [p for p in ordered if p.number != anchor][:cap - 1] + [by_num[anchor]]
+        ordered = sorted(keep, key=lambda p: p.number, reverse=True)
+    return ordered[:cap]

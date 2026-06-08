@@ -30,6 +30,7 @@ from .base import (
     PullRequest,
     Reference,
     WorktreeInfo,
+    pr_label,
     vocab,
 )
 from .repo import BranchState, Injection, RepoContext, RepoMeta, Validation
