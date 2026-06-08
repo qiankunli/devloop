@@ -22,14 +22,20 @@ _SUBPROJECT_CMDS = {"make", "uv", "pytest", "go", "npm", "pnpm", "yarn", "cargo"
 def decide(inp: hook_io.HookInput) -> str | None:
     if not inp.is_tool("Bash"):
         return None
-    cmds = cmdparse.commands(inp.command)
-    if not any(os.path.basename(c[0]) in _SUBPROJECT_CMDS for c in cmds):
-        return None
-    # `cd <sub> && <cmd>` is fine — a cd segment moves into a real repo first.
-    if any(c and os.path.basename(c[0]) == "cd" for c in cmds):
+    invs = cmdparse.command_invocations(inp.command)
+    subproj = [v for v in invs if v.argv and os.path.basename(v.argv[0]) in _SUBPROJECT_CMDS]
+    if not subproj:
         return None
     cwd_resolved = str(Path(inp.cwd).resolve())
     if cwd_resolved not in {str(Path(w).resolve()) for w in workspace.load_workspaces()}:
+        return None
+    # Deny only if a subproject command actually executes AT the workspace root. A `cd <sub>`
+    # in the same shell scope moves it into a real repo (fine); a subshell `(cd <sub>); <cmd>`
+    # does NOT — cd-scope tells them apart, where a blunt "any cd token" check could not.
+    if not any(
+        str(Path(v.run_dir(cwd_resolved)).resolve()) == cwd_resolved
+        for v in subproj
+    ):
         return None
     ws = WorkspaceContext.load(cwd_resolved)
     subs = [s.name.strip("`") for s in (ws.subprojects if ws else [])[:10] if s.name]

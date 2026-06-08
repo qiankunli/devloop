@@ -23,11 +23,11 @@ _SWITCHERS = {"switch", "checkout"}
 
 def _is_branch_switch(inv: dict) -> bool:
     """True for HEAD-moving forms; False for file restores (`checkout -- <file>`)."""
-    sub = inv.get("subcommand")
+    sub = inv.subcommand
     if sub == "switch":
         return True
     if sub == "checkout":
-        return "--" not in (inv.get("args") or [])
+        return "--" not in inv.args
     return False
 
 
@@ -38,9 +38,9 @@ def decide(inp: hook_io.HookInput) -> str | None:
     if not sid:
         return None  # CLI without session id → can't attribute ownership, don't gate
     for inv in cmdparse.git_invocations(inp.command):
-        if inv.get("subcommand") not in _SWITCHERS or not _is_branch_switch(inv):
+        if inv.subcommand not in _SWITCHERS or not _is_branch_switch(inv):
             continue
-        git_root = repo_layout.find_git_root(cmdparse.invocation_dir(inv, inp.cwd))
+        git_root = repo_layout.find_git_root(inv.run_dir(inp.cwd))
         if not git_root:
             continue
         owner = session_lock.foreign_owner(git_root, sid)

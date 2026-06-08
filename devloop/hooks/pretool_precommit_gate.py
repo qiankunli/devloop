@@ -24,9 +24,9 @@ def decide(inp: hook_io.HookInput) -> str | None:
     # pretool_protect_branch — `git -C subrepo commit` fired from a workspace root
     # (where cwd isn't a git repo) must hit subrepo's gate, not silently pass.
     for inv in cmdparse.git_invocations(inp.command):
-        if inv["subcommand"] != "commit":
+        if inv.subcommand != "commit":
             continue
-        git_root = repo_layout.find_git_root(cmdparse.invocation_dir(inv, inp.cwd))
+        git_root = repo_layout.find_git_root(inv.run_dir(inp.cwd))
         if not git_root:
             continue
         if not _repo_config(git_root).get("commit_gate_lint", False):
