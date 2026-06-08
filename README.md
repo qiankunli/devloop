@@ -1,45 +1,89 @@
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
 # devloop
 
-跨 CLI 的 plugin marketplace。`devloop` 是第一个真实 plugin（开发者工作流），`example` 是占位 plugin——本仓库从一开始就按**多 plugin marketplace** 设计，devloop 只是第一个。
+**A guard-railed development loop for AI coding agents.** A cross-CLI plugin marketplace: `devloop` is the first (and flagship) plugin — a developer workflow built on native Claude Code events; `example` is a placeholder showing the repo is built to host *multiple* plugins.
 
-设计理念 / 架构 / 多 CLI 策略见 [AGENTS.md](./AGENTS.md)。各 plugin 的细节见各自目录的 README。
+> Currently Claude Code only. Design / architecture: [AGENTS.md](./AGENTS.md). Each plugin's own docs live in its directory.
 
-## 安装
+## The problem
 
-### Claude Code
+When you code with an AI agent, the time sink usually isn't "is the code correct" — it's two **structural losses**:
+
+1. **Information lag** — the agent doesn't know the real git / workspace state and guesses from chat history. Classic failure: it grinds away on a feature branch whose MR was *already merged* (and source branch deleted) on the server, never realizing until commit-time preflight stops it — forcing a re-branch + re-commit + re-MR every time.
+2. **Soft conventions can't enforce** — "don't commit to master", "don't `git add -A`" are just prompts. When the agent decides not to follow them, you have **no execution-level interception**. Committing to a protected branch, staging stray sensitive files, editing on a stale branch — all happen for real.
+
+## What devloop does — two levers
+
+- **A state bus eliminates information lag.** The current subproject's branch / working tree / recent MRs / validation state is injected into *every* prompt, so the agent knows reality before it edits the first line.
+- **Hard intercepts turn soft conventions into execution-level boundaries.** `PreToolUse` hooks return `deny`; the agent cannot route around them.
+
+Both levers share one hub: a structured state center under `.devloop/`. State written on `git commit` / `cd` / background polling is reused across N later prompt injections and M protected-branch checks at zero extra cost.
+
+## Design ideas worth knowing
+
+**What to hard-block vs. soft-hint** — the rule: *no legal edit case → hard-block; a legal exception exists → soft-hint.* Your current branch is always in one of four states:
+
+| State | Meaning | Handling |
+|-------|---------|----------|
+| protected | main / master / release* | **hard-block** commit/push |
+| healthy | normal feature branch, in progress | allow |
+| in-flight | MR opened, awaiting human merge | **soft-hint** (inject one `IN-FLIGHT` line) |
+| inactive | MR merged / closed | **hard-block** Edit/Write |
+
+`protected` and `inactive` hard-block cleanly — editing there has no legitimate reason. `in-flight` only hints, because there's a legal exception (you might be amending your own MR) the machine can't reliably tell from new work, so it feeds the fact to the agent and lets it choose.
+
+**Structural guarantees, not just hints** — a new branch's base is decided by *intent, not by where HEAD happens to sit*: opening new work (`--branch`) always cuts from `origin/<target>`, and a freshly cut branch is asserted to carry only this run's commits before push/MR. So even if the agent ignores the `IN-FLIGHT` hint, forking off an in-flight branch can't smuggle its commits into the new MR.
+
+**Aggregate-workspace & multi-session as first-class** — a workspace root holds many independent git subprojects (often symlinked). Scripts never trust shell `cwd` (they resolve the repo by explicit `--repo` → cwd's repo → last-active), and an *owner lock* keeps two concurrent sessions from mixing changes into one working tree. Plain single-repo mode is fully supported too — auto-detected, no manual switch.
+
+**native-first** — every capability sits on the most native event primitive instead of a workaround:
+
+| Capability | Workaround (old) | devloop (native) |
+|------------|------------------|------------------|
+| project-enter awareness | regex-parse `cd` | **`CwdChanged`** auto-enter |
+| survive compaction | TTL safety-net (timed guess) | **`PostCompact`** → re-inject |
+| `AGENTS.md` changes | mtime polling | **`FileChanged`** + `watchPaths` |
+| MR awareness / branch staleness | hook-heartbeat scheduler | **`monitors`** background poll |
+
+All git goes through one `gitcmd` seam, all GitLab through one `lib/gitlab` facade, all user config through one `lib/config` seam. Every guard is **fail-open** — a broken guardrail at worst fails to block; it never blocks your work.
+
+## Where it's heading
+
+devloop makes the loop *run smoothly*, but the loop's **granularity** is still step-level — a human nudges at every step. The next step is automating the **verify** link (lint → test → automated eval) until intervention can lift from *step-level* to *requirement-level*: the human states a requirement, the agent develops + verifies + self-corrects in a closed loop, the human accepts the result. lint / test / eval are that loop's sensors — the more automatic and trustworthy they are, the fewer steps a human must touch.
+
+---
+
+## Install (Claude Code)
 
 ```
 /plugin marketplace add https://github.com/qiankunli/devloop.git
 /plugin install devloop@devloop
 ```
 
-安装后建议跑一次 init（按你的使用形态选其一）：
+Optionally run init once (hooks also auto-init on first `cd` into a repo):
 
 ```
-# 形态 A：聚合工作区（一个根目录下有多个 git 子项目）
+# Mode A: aggregate workspace (one root holding many git subprojects)
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_workspace.py <your-aggregate-workspace>
 
-# 形态 B：单 git 仓库
+# Mode B: a single git repo
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_repo.py
 ```
 
-不跑 init 也能用，hook 会在你第一次 cd 到 git repo 时自动初始化。但形态 A 必须显式注册（plugin 不会自动判断哪些目录算聚合工作区）。
+GitLab features (MR / state injection) need a GitLab token — see [devloop/README.md](./devloop/README.md) for the unified `~/.config/devloop/config.json`.
 
-GitLab（MR / 状态注入）相关功能依赖一个 GitLab token，配置见 [devloop/README.md](./devloop/README.md#配置)。
+### Codex / opencode
 
-### Codex / opencode 等
+The marketplace layout is CLI-agnostic: a new CLI just needs a `.<cli>-plugin/marketplace.json` at the repo root (`.agents/plugins/marketplace.json` for Codex and `.opencode/marketplace.json` already exist) plus a matching manifest per plugin. `devloop` itself is currently **Claude Code only** (its hard intercepts / state injection sit on Claude-native events); the Codex side currently ships only the `example` placeholder.
 
-marketplace 结构是 CLI 无关的：新 CLI 接入只需在仓库根加 `.<cli>-plugin/marketplace.json`（已有 `.agents/plugins/marketplace.json` 给 Codex、`.opencode/marketplace.json` 占位），并在每个 plugin 子目录加对应 manifest。
+## Plugins
 
-当前 `devloop` 是 **Claude Code only**（它的硬拦截 / 状态注入坐在 Claude 原生事件上，Codex hook 协议跟上再接，架构已预留）。Codex 侧目前只有 `example` 占位 plugin 演示 marketplace 结构。
+| Plugin | What it is | README |
+|--------|-----------|--------|
+| `devloop` | Developer workflow: git/MR + cwd-aware enter + lint/test gates + live state injection + execution-level hard intercepts (Claude-only) | [devloop/README.md](./devloop/README.md) |
+| `example` | Placeholder demonstrating the multi-plugin marketplace structure | [example/README.md](./example/README.md) |
 
-## Plugin 列表
+## Adding a plugin
 
-| Plugin | 简介 | README |
-|--------|------|--------|
-| `devloop` | 开发者工作流：git/MR + cwd-aware enter + lint/test gates + 实时状态注入 + 执行级硬拦截（Claude-only） | [devloop/README.md](./devloop/README.md) |
-| `example` | 占位 plugin，演示多 plugin marketplace 结构 | [example/README.md](./example/README.md) |
-
-## 新增 plugin
-
-见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+See [CONTRIBUTING.md](./CONTRIBUTING.md).

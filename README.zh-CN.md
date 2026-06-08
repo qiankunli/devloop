@@ -1,0 +1,89 @@
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
+# devloop
+
+**给 AI 编码搭一条带护栏的开发循环。** 一个跨 CLI 的 plugin marketplace：`devloop` 是第一个（也是主力）plugin——坐在 Claude Code 原生事件上的开发者工作流；`example` 是占位 plugin，表明本仓库从一开始就按**多 plugin marketplace** 设计。
+
+> 当前仅支持 Claude Code。设计理念 / 架构见 [AGENTS.md](./AGENTS.md)，各 plugin 细节见各自目录的 README。
+
+## 要解决什么
+
+用 AI agent 写代码时，真正吃掉时间的往往不是「AI 写得对不对」，而是两类**结构性损耗**：
+
+1. **信息滞后**——AI 不知道当前 git / 工作区的真实状态，只能凭对话历史猜。典型翻车：AI 基于某个 feature 分支吭哧吭哧改了一通，结果这条分支的 MR 早在服务端被 merge 了、源分支也删了；AI 全程不知道，一直改到 commit 那一刻才被 preflight 拦下，被迫重新切分支、搬代码、重建 MR——这套「晚发现」的固定开销每次都在白交。
+2. **软约定拦不住**——「别在 master 上直接 commit」「别 `git add -A`」写在 prompt / skill 里只是软引导。AI 决定不遵守时，你**没有任何执行级的拦截能力**。保护分支直接 commit、误带敏感文件进暂存区、在过期分支上继续改——这些都真实发生过。
+
+## devloop 做什么——两个杠杆
+
+- **状态总线消除信息滞后**：把当前子项目的 branch / 工作区 / 近期 MR / 验证状态，实时注入**每一轮** prompt，AI 改第一行代码前就掌握现状。
+- **硬拦截把软约定变成执行级边界**：`PreToolUse` hook 直接 `deny`，AI 绕不过去。
+
+两个杠杆共享同一个枢纽：一个 `.devloop/` 结构化状态中心。`git commit` / `cd` / 后台轮询时刷新一次的状态，可被后续 N 轮 prompt 注入、M 次保护分支判定复用，零额外成本。
+
+## 几个值得一看的设计
+
+**什么该硬拦、什么只软提示**——准则：*没有任何合法编辑场景的，硬拦；有合法例外的，软提示。* 当前分支永远处于四态之一：
+
+| 态 | 含义 | 处理 |
+|----|------|------|
+| protected | main / master / release* | **硬拦** commit/push |
+| healthy | 普通 feature 分支，还在开发 | 正常放行 |
+| in-flight | 已建 MR、等人工 merge | **软提示**（注入一行 `IN-FLIGHT`） |
+| inactive | MR 已 merged / closed | **硬拦** Edit/Write |
+
+protected 和 inactive 能干净地硬拦——在它们上面编辑没有任何合法理由。in-flight 只能软提示，因为它有一个机器无法可靠区分的合法例外（你可能就是想 amend 自己这条 MR），于是把「这条分支在途」的事实喂给 AI，让它自己选。
+
+**结构性保证，不只靠提示**——新分支的基点**由意图决定，不由 HEAD 当前停在哪决定**：只要是开新工作（`--branch`），就**永远**从 `origin/<target>` 切，且新分支在 push / 建 MR 前会被自检只带本轮提交。所以哪怕 AI 完全没看那行 `IN-FLIGHT` 提示，从在途分支 fork 也不会把它的提交夹带进新 MR。
+
+**聚合工作区 + 多 session 是一等公民**——一个 workspace 根挂着多个独立 git 子项目（常以软链接聚合）。脚本一律**不信 shell 的 cwd**（按「显式 `--repo` → cwd 所在仓 → 最近活跃仓」解析），并用 *owner 锁* 防止两个并发 session 的改动混进同一个工作树。单仓库形态也完全支持——按用户级配置自动判定，无需手工切换。
+
+**native-first**——每个能力都坐在最原生的事件原语上，而不是绕路：
+
+| 能力 | 旧机制（绕路） | devloop 原生 |
+|------|---------------|-------------|
+| 进项目感知 | 正则解析 `cd` | **`CwdChanged`** 自动 enter |
+| 防 compaction 丢状态 | TTL 安全网（定时猜） | **`PostCompact`** → 重注入 |
+| `AGENTS.md` 变更 | mtime 轮询 | **`FileChanged`** + `watchPaths` |
+| MR 感知 / 分支失活 | hook 心跳 scheduler | **`monitors`** 后台轮询 |
+
+所有 git 走唯一入口 `gitcmd`，所有 GitLab 走唯一 facade `lib/gitlab`，所有用户配置走唯一入口 `lib/config`。每个 guard 一律 **fail-open**——护栏坏了最坏是没拦住，但绝不堵死你的路。
+
+## 往哪走
+
+devloop 把循环跑稳了，但循环的**粒度**还停在步骤级——人依然要在每一步盯着纠偏。下一程是把闭环里「校验」那一环自动化（lint → test → 自动化 eval），直到干预粒度能从**步骤级**抬到**需求级**：人提需求，AI 自己开发 + 自己校验 + 自己纠偏跑完闭环，人只做验收。lint / test / eval 就是这条闭环的传感器——它们越自动、越可信，人要插手的步骤就越少。
+
+---
+
+## 安装（Claude Code）
+
+```
+/plugin marketplace add https://github.com/qiankunli/devloop.git
+/plugin install devloop@devloop
+```
+
+可选地跑一次 init（不跑也行，hook 首次 `cd` 进 repo 时会自动初始化）：
+
+```
+# 形态 A：聚合工作区（一个根目录下挂多个 git 子项目）
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_workspace.py <your-aggregate-workspace>
+
+# 形态 B：单 git 仓库
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_repo.py
+```
+
+GitLab 相关功能（MR / 状态注入）需要一个 GitLab token——统一配置在 `~/.config/devloop/config.json`，见 [devloop/README.md](./devloop/README.md)。
+
+### Codex / opencode
+
+marketplace 结构是 CLI 无关的：新 CLI 接入只需在仓库根加 `.<cli>-plugin/marketplace.json`（已有 `.agents/plugins/marketplace.json` 给 Codex、`.opencode/marketplace.json` 占位）+ 每个 plugin 子目录的对应 manifest。`devloop` 本身当前 **Claude Code only**（硬拦截 / 状态注入坐在 Claude 原生事件上）；Codex 侧目前只有 `example` 占位。
+
+## Plugin 列表
+
+| Plugin | 简介 | README |
+|--------|------|--------|
+| `devloop` | 开发者工作流：git/MR + cwd-aware enter + lint/test gates + 实时状态注入 + 执行级硬拦截（Claude-only） | [devloop/README.md](./devloop/README.md) |
+| `example` | 占位 plugin，演示多 plugin marketplace 结构 | [example/README.md](./example/README.md) |
+
+## 新增 plugin
+
+见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
