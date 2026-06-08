@@ -21,7 +21,7 @@ HOOKS = Path(__file__).resolve().parent.parent / "hooks"
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(HOOKS))
 
-from lib import cmdparse  # noqa: E402
+from lib.cmdtree import cmdparse  # noqa: E402
 from lib.context import Cadence, PullRequest  # noqa: E402
 from lib.forge import detect_provider, parse_origin  # noqa: E402
 from lib.forge.base import (  # noqa: E402
@@ -824,13 +824,40 @@ def test_cmdparse_glued_operators():
     """运算符紧贴词尾时也要断句:shlex.split 会把 `jsonpath='...';` 的 `;` 吞进
     token,segments() 断不开句——cd 落到段中而非段头,workspace guard 的 cd 豁免
     失效,kubectl+cd+uv 串被误拦。punctuation_chars 化后修复。"""
-    from lib import cmdparse
+    from lib.cmdtree import cmdparse
     cmd = ("kubectl -o jsonpath='{range .items[*]}{\"\\n\"}{end}'; "
            "cd /tmp/sub && uv run x.py")
     assert [s[0] for s in cmdparse.commands(cmd)] == ["kubectl", "cd", "uv"]
     assert [s[0] for s in cmdparse.commands("make&&go test")] == ["make", "go"]
     # 引号内的运算符不断句(既有语义不回退)
     assert [s[0] for s in cmdparse.commands('echo "a; b" && make x')] == ["echo", "make"]
+
+
+def test_cmdparse_subshell_scope():
+    """AST 解析(Parable)拿到扁平模型拿不到的结构:子 shell 的 `(` 不再掩盖命令词,
+    子 shell 的 cd 不外泄,命令替换里的 git 也被看见。"""
+    from lib.cmdtree import cmdparse
+    # `(` 不再掩码命令词:workspace guard 能同时看到 cd 与 uv(原误拦的 case)
+    assert [s[0] for s in cmdparse.commands("(cd repo && uv run pytest)")] == ["cd", "uv"]
+    # cd 在子 shell 内对同 shell 的命令生效……
+    assert [i["cd"] for i in cmdparse.git_invocations("(cd x && git push)")] == ["x"]
+    # ……但不外泄给子 shell 之后的兄弟命令(扁平模型做不到的 soundness)
+    assert [i["cd"] for i in cmdparse.git_invocations("(cd x); git push")] == [None]
+    # brace group 的 cd 留在本 shell → 会外泄(与子 shell 相反)
+    assert [i["cd"] for i in cmdparse.git_invocations("{ cd y; git status; }")] == ["y"]
+    # 命令替换 `$(…)` 里的 git 也要被看见(否则 protect 守卫漏判),且其 cd 隔离
+    assert [i["subcommand"] for i in cmdparse.git_invocations("echo $(git push)")] == ["push"]
+    assert [i["cd"] for i in cmdparse.git_invocations("echo $(cd z && git push)")] == ["z"]
+    assert cmdparse.git_invocations('echo "git push"') == []   # 引号内仍不算
+
+
+def test_cmdtree_parser_protocol():
+    """解析后端符合 cmdtree.base.Parser 接口(具名 Protocol)——这正是"可随时替换"的契约:
+    换 parser 只要再写一个暴露 `parser`(带 `parse(str)->Node`)的后端模块。"""
+    from lib.cmdtree import base
+    from lib.cmdtree import parable as parable_backend
+    assert isinstance(parable_backend.parser, base.Parser)        # runtime_checkable
+    assert isinstance(parable_backend.parser.parse("git push"), base.Seq)
 
 
 def _hook_input(tool: str, raw: dict):

@@ -12,7 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import cmdparse, hook_io, workspace  # noqa: E402
+from lib import hook_io, workspace  # noqa: E402
+from lib.cmdtree import cmdparse  # noqa: E402
 from lib.context import WorkspaceContext, load_active_repo  # noqa: E402
 
 _SUBPROJECT_CMDS = {"make", "uv", "pytest", "go", "npm", "pnpm", "yarn", "cargo"}
