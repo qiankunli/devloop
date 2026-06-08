@@ -4,6 +4,7 @@ devloop 内多个 skill / 脚本共用的术语。架构理念见 [`AGENTS.md`](
 
 ## 路径术语
 
+- **subproject**：聚合工作区直接子项中「是 / 指向 git 仓」的那些目录——存在性由**文件系统自发现**判定（`hooks/lib/context/workspace.py::discover_subproject_names`，判据：子目录含 `.git`），而非手写表格。workspace `AGENTS.md` 的子项目表是**可选润色**，按目录名 join 补 `aliases` / `role`（`language` 缺省自动探测，表格显式值覆盖）；表格里有、文件系统没有但目录尚存的行仍保留，渐进收敛。
 - **`repo_dir`**：子项目目录入口（可能是软链接）。用前 `realpath` 确认真实路径。
 - **`repo_code_dir`**：实际代码工程目录，`make` / `uv` 的 workdir。Python 常是 `<repo_dir>/server` 或 `backend`；Go / TS 通常就是 `repo_dir`。子项目 `AGENTS.md` 一定在它下面。`repo_layout.find_repo_code_dir` 探测。
 
@@ -59,7 +60,7 @@ repo 级 `validation.json`：`last_lint_at` / `last_test_at`（float epoch）+ `
 
 AGENTS.md 是文字知识源；`.devloop/*.json` 是由 hooks / scripts / monitors 维护的结构化运行态，不保存 AGENTS.md 正文。
 
-- Workspace 级：`<workspace_root>/.devloop/context.json`，保存 workspace AGENTS.md 的 References / subproject 清单解析结果（symlink 子项目附 canonical 路径映射）以及 session 注入节奏；`active.json` 保存最近活跃 repo（脚本在 workspace 根被调用时的解析兜底）；它的多个写入点（CwdChanged / PostToolUse / smart 脚本）写的是同一个事实"刚碰过哪个 repo"，last-write-wins，丢更新无害。
+- Workspace 级：`<workspace_root>/.devloop/context.json`，保存 workspace AGENTS.md 的 References + 文件系统自发现的 subproject 清单（叠加 AGENTS.md 表润色，symlink 子项目附 canonical 路径映射）以及 session 注入节奏；`active.json` 保存最近活跃 repo（脚本在 workspace 根被调用时的解析兜底）；它的多个写入点（CwdChanged / PostToolUse / smart 脚本）写的是同一个事实"刚碰过哪个 repo"，last-write-wins，丢更新无害。
 - Repo 级：`<git_root>/.devloop/meta.json` / `branch.json` / `pr.json` / `validation.json` / `injection.json`，按 writer-owner 分段保存 repo 运行态；`RepoContext.load()` 合并这些段成内存视图。
 
 schema / TTL / cap 数值在 `hooks/lib/context/base.py`，不在文档复述。

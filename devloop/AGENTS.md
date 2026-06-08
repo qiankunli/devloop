@@ -24,7 +24,7 @@ enter 某子模块 → 提需求(可能跨多个 subproject) → 开发 → comm
 **实现取向**：native-first——承载这两个杠杆的机制全部坐到 Claude Code 原生事件（CwdChanged / PostCompact / FileChanged / monitors）+ 两个统一 facade（gitcmd / forge）上，代码自证、文档薄。独立 `.devloop/` 命名空间，状态与其它工具互不干扰。
 
 **边界**：
-- **两级模型**：聚合工作区（Mode A，多 subproject）与单仓库（Mode B）都支持，按全局配置（`~/.devloop/config.json` 的 `workspaces`）自动判定，workspace 可选。配置**不放 plugin 目录**——那是版本化 cache，`/plugin update` 即清零；workspace 根（非 git 仓 + AGENTS.md 带子项目表）在 SessionStart / cd / resolve 时自动注册，手工 init 不是前置。
+- **两级模型**：聚合工作区（Mode A，多 subproject）与单仓库（Mode B）都支持，按全局配置（`~/.devloop/config.json` 的 `workspaces`）自动判定，workspace 可选。配置**不放 plugin 目录**——那是版本化 cache，`/plugin update` 即清零；workspace 根（非 git 仓 + AGENTS.md + 至少一个子项目，子项目存在性由文件系统自发现或 AGENTS.md 表声明）在 SessionStart / cd / resolve 时自动注册，手工 init 不是前置。
 - **跨 subproject 需求是常态，但 0.1 的多 repo 协同（fanout / 发包依赖顺序）仍是占位**——当前以"逐个 enter subproject 开发"承载。
 - 只管循环里"在 subproject 内动手开发"这一段的 git / 工作区 / 验证效率；**不做**问题发现与 trace（as-ops / infra-ops 等）、部署、通用 git 教学。
 - 当前 **Claude-only**（CLI-agnostic by construction：hook 不读 plugin-root env、payload 只用公共子集、`${CLAUDE_PLUGIN_ROOT}` 占位；Codex 跟上加个 manifest 即可，0.1 不投入）。
@@ -90,6 +90,7 @@ devloop/
 ### 4. 状态总线 `.devloop/`（文字源 → 结构化态）
 两级（workspace / repo）。写入者：PostToolUse / SessionStart / CwdChanged / FileChanged / monitor。读取者：UserPromptSubmit（软注入）+ PreToolUse guards（硬决策）。
 - **文字源与结构化态分层**：AGENTS.md（workspace 级 / repo 级各自的边界、清单、References）是文字知识源；`.devloop/` 只保存解析后的结构化结果与运行态，不复刻正文。文件布局见 CONCEPTS.md〈状态文件〉。
+- **subproject 存在性 = 文件系统自发现**（不靠手写表格）：workspace 直接子项里「是 / 指向 git 仓」的即为 subproject（`discover_subproject_names`，判据是子目录含 `.git`），`docs` / `worktrees` / 隐藏目录走黑名单排除。AGENTS.md 子项目表降级为**可选润色**——按目录名 join 补 `aliases` / `role`，`language` 缺省自动探测、表格显式值可覆盖。加一个 subproject ≈ 建个 symlink，无需手编表格。为什么：手维护的表格易过时 / 表头不被识别就整片丢失，而文件系统是不会撒谎的事实源。
 - **分段状态中心（为什么 repo 级不是单文件）**：repo 级状态按 writer-owner 拆成段文件、`load` 合并成视图——写入角色分散在不同进程，单文件逼出"读-改-写"、并发丢更新；一段一 owner 让每次写只碰不相交的文件，**多写者丢更新在结构上不可能、无需锁**。原子写 / fail-open 读的原语在 `context/base.py`。
 - **脚本与 cwd 解耦**：session cwd 在聚合工作区常驻 workspace 根，smart 脚本一律不依赖 cwd——repo 按"显式 `--repo` → cwd 仓库 → 最近活跃仓"解析并在 PLAN 里自述来源。解析链见 CONCEPTS.md〈脚本的 repo 解析〉。
 - **PR 模型**：中立 `PullRequest`（provider 随对象走）；单 anchor（`branch.pr_number`）+ 近期窗口（`prs`）**派生**失活 / 在途，不存 bool；`pr.json` 由 monitor 独占且按 branch 归属——切分支即自动失效、无人去清（gcampr 建 PR 后也只触发 monitor poll，不自己写）。字段语义与窗口规则见 CONCEPTS.md〈PR 模型〉。

@@ -543,6 +543,38 @@ def test_subproject_canonical():
     assert "→" not in txt2
 
 
+def test_subproject_autodiscovery():
+    """文件系统是 subproject 存在性的事实来源:workspace 直接子项里"是/指向 git 仓"的
+    才算;docs/隐藏目录/非 git 子目录被排除(目录黑名单 + git 判据)。AGENTS.md 表格降级为
+    可选润色——按 name 补 aliases/role,language 缺省自动探测、表格显式值可覆盖。"""
+    from lib.context import workspace as wsctx
+    W = "/tmp/dlut_autodisc"
+    shutil.rmtree(W, ignore_errors=True)
+    os.makedirs(f"{W}/ws/docs")                         # 非仓子目录 → 黑名单排除
+    os.makedirs(f"{W}/ws/plaindir")                     # 非 git 普通目录 → git 判据排除
+    os.makedirs(f"{W}/ws/.hidden")                      # 隐藏目录 → 点前缀排除
+    os.makedirs(f"{W}/ws/svc"); _git(f"{W}/ws/svc", "init", "-q")  # 直接 git 子目录 → 命中
+    Path(f"{W}/ws/svc/go.mod").write_text("module x\n")     # svc language 自动探测 = go
+    os.makedirs(f"{W}/real/nb"); _git(f"{W}/real/nb", "init", "-q")
+    os.symlink(f"{W}/real/nb", f"{W}/ws/nb")            # 指向 git 仓的 symlink → 命中
+    Path(f"{W}/real/nb/go.mod").write_text("module nb\n")   # nb 探测=go,表格写 python → 验证覆盖
+
+    names = wsctx.discover_subproject_names(f"{W}/ws")
+    assert names == ["nb", "svc"]                       # 排序;docs/plaindir/.hidden 不在内
+
+    # 表格只给 nb 一行润色(别名 + role + 显式 language 覆盖);svc 表格里没有但文件系统有
+    Path(f"{W}/ws/AGENTS.md").write_text(
+        "# ws\n\n## 子项目清单\n\n| 目录 | 简称 | 语言 | 备注 |\n"
+        "|------|------|------|------|\n| `nb` | notebook | python | 笔记服务 |\n",
+        encoding="utf-8")
+    ctx = wsctx.WorkspaceContext.refresh(f"{W}/ws")
+    by = {s.name: s for s in ctx.subprojects}
+    assert set(by) == {"nb", "svc"}
+    assert "notebook" in by["nb"].aliases and by["nb"].role == "笔记服务"
+    assert by["nb"].language == "python"               # 表格显式值覆盖自动探测(go)
+    assert by["svc"].language == "go" and by["svc"].role is None  # 自发现 + 自动探测,无表格润色
+
+
 def test_resolve_repo_dir():
     """脚本 repo 解析与 cwd 解耦:显式路径 / 子项目名(模糊)/ cwd 所在仓库 /
     workspace last-active 四级;workspace 根 + 无活动记录 → 明确报错而非瞎猜。"""

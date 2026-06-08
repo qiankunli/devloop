@@ -43,11 +43,13 @@ def maybe_register_workspace(cwd: str | Path) -> str | None:
     """Auto-register `cwd` as a workspace when it self-evidently is one; return its
     root or None.
 
-    Qualification: NOT a git repo itself, but has an AGENTS.md with a parsed
-    Subprojects section. Exists because manual `init_workspace.py` proved too
-    fragile a dependency for the main path — nobody runs an optional step, and a
-    registration written into the versioned plugin dir didn't survive updates
-    anyway. Conservative on purpose: a plain repo or a random dir never qualifies.
+    Qualification: NOT a git repo itself, has an AGENTS.md, AND holds at least one
+    subproject — either discovered on the filesystem (a child that is/symlinks to a git
+    repo) or declared in an AGENTS.md Subprojects table. Filesystem discovery is the
+    primary signal now, so a symlink farm with no table still registers; the table check
+    keeps table-only legacy workspaces qualifying. Exists because manual
+    `init_workspace.py` proved too fragile for the main path — nobody runs an optional
+    step. Conservative on purpose: a plain repo or a random dir never qualifies.
     """
     root = Path(cwd).resolve()
     if not root.is_dir() or (root / ".git").exists():
@@ -56,7 +58,8 @@ def maybe_register_workspace(cwd: str | Path) -> str | None:
     if not agents_md.exists():
         return None
     from . import parsers  # local import: keep this module's import graph flat
-    if not parsers.parse_subprojects_section(agents_md):
+    from .context import workspace as wsctx
+    if not wsctx.discover_subproject_names(root) and not parsers.parse_subprojects_section(agents_md):
         return None
     register_workspace(root)
     return str(root)
