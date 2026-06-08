@@ -39,7 +39,8 @@ devloop/
 ├── hooks/
 │   ├── hooks.json                 # 事件注册
 │   ├── lib/                        # CLI-agnostic 纯逻辑（无协议依赖，sys.path 自定位）
-│   │   ├── hook_io.py             #   ★hook harness：guard / inject / observe / run 四个 runner
+│   │   ├── hook_io.py             #   ★hook harness：guard / inject / observe / run 四个 runner（CC 原生 event 侧）
+│   │   ├── events.py              #   ★event seam：非 hook 来源（monitor/轮询）的 Event + dispatch（producer 侧，hook_io 的兄弟）
 │   │   ├── gitcmd.py              #   ★统一 git runner（超时 + failure-safe，唯一 git 入口）
 │   │   ├── forge/                 #   ★统一 forge facade（GitHub/GitLab，按 repo 分发）
 │   │   │   ├── base.py            #     中立领域：PullRequest / Comment / Forge port（仅原语）/ build_window 策略 / pr_label / parse_pr_number
@@ -68,8 +69,19 @@ devloop/
 
 ## 关键约定
 
-### 1. hook harness（消样板）
-每个 hook = 一个函数 + 一个 runner（`hooks/lib/hook_io.py`）：`guard(decide)`（PreToolUse，返回 deny 理由或 None，异常→放行 fail-open）、`inject(produce, event)`（返回注入文本）、`observe(handle)`（副作用，恒输出 `{}`）、`run(build, event)`（富 payload，如 SessionStart 的 additionalContext+watchPaths）。runner 保证 hook 永不打断用户工具调用。
+### 1. hook harness + event seam（两个 producer 侧）
+- **hook 侧（CC 原生 event）→ `hooks/lib/hook_io.py`**：每个 hook = 一个函数 + 一个 runner：`guard(decide)`（PreToolUse，返回 deny 理由或 None，异常→放行 fail-open）、`inject(produce, event)`（返回注入文本）、`observe(handle)`（副作用，恒输出 `{}`）、`run(build, event)`（富 payload，如 SessionStart 的 additionalContext+watchPaths）。runner 保证 hook 永不打断用户工具调用。
+- **非 hook 侧（外部系统）→ `hooks/lib/events.py`**：forge / deploy / verdict 这类外部状态没有 CC 原生 event，monitor 轮询合成一个。`events.py` 是 hook_io 的兄弟：把变化归一成 `Event{source,type,subject,payload,summary,changed}`，`dispatch(event, handlers)` 扇出给 handler，fail-safe（一个 handler 抛错不阻断其它、不崩 monitor 循环）。handler 显式传入、无全局注册表。PR-sweep monitor 是其 producer，扇出两个 handler：`persist` 写 `.devloop/pr.json`、`notify` 变化时 emit→通知；deploy/verdict 源同样建 Event + dispatch 接入。
+
+扇出让一个变化同时驱动"喂状态中心（拉）"与"推给 agent"两条路：
+
+```
+hook    变化 ─────────────────────────▶ 状态中心 ─▶ 消费(inject 每轮 / guard 用工具时)   ← 拉
+monitor 变化 ─▶ Event ─▶ dispatch ─┬─ persist ─▶ 状态中心 ─▶ 消费                       ← 拉
+                                   └─ notify  ─▶ stdout→通知（唤醒 agent）               ← 推
+```
+
+hook 的后果通常是写一个段、直接写状态中心；event 层服务"无 CC 原生 event、且需扇出（尤其要推给 agent）"的外部源——persist 喂状态中心走拉路，notify 是另一条扇出支、直接推。
 
 ### 2. 三个统一 seam（集中、规范、可替换）
 - **git → `gitcmd`**：所有 git 子进程的唯一入口，超时 + failure-safe（rc=-1 不抛）。

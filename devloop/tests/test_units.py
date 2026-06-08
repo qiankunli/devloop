@@ -323,6 +323,44 @@ def test_pick_branch_pr():
     assert poll.pick_branch_pr([P(number=4, state="merged", sha="dead")], "r", "h") is None
 
 
+def test_events_dispatch_isolates_failures():
+    """dispatch fans out in order and isolates failures — one handler raising never
+    blocks the rest (fail-safe, like hook_io on the hook side)."""
+    from lib import events
+    seen: list = []
+    ev = events.Event(source="forge", type="pr.update", subject="r")
+    events.dispatch(ev, [
+        lambda e: seen.append(("a", e.type)),
+        lambda e: (_ for _ in ()).throw(RuntimeError("boom")),   # raises
+        lambda e: seen.append(("b", e.subject)),
+    ])
+    assert seen == [("a", "pr.update"), ("b", "r")]              # b ran despite boom
+
+
+def test_poll_handlers_persist_and_notify(capsys):
+    """forge handlers: persist always writes pr.json; notify (the wake) emits only on a
+    real change."""
+    from lib import events
+    from lib.context import base
+    poll = _load_script("poll_pr_status")
+    R = "/tmp/dlut_pollh"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q")
+    payload = {"branch": "f", "provider": "github", "pr_number": 7, "prs": []}
+
+    changed = events.Event(source="forge", type="pr.update", subject=R, payload=payload,
+                           summary="PR #7 merged (f) · 1 recent PR(s) tracked", changed=True)
+    poll.persist(changed)
+    assert base.load_segment(R, "pr")["pr_number"] == 7          # persisted
+    poll.notify(changed)
+    assert "devloop: PR #7 merged" in capsys.readouterr().out    # changed → wake
+
+    noop = events.Event(source="forge", type="pr.update", subject=R, payload=payload, changed=False)
+    poll.persist(noop)                                           # still writes
+    poll.notify(noop)
+    assert capsys.readouterr().out == ""                         # no change → silent
+
+
 def test_pullrequest_and_cadence():
     pr = PullRequest.from_dict({"number": 7, "state": "merged", "source_branch": "f", "target_branch": "m"})
     assert pr.inactive and PullRequest.from_dict({"number": 8, "state": "open"}).inactive is False

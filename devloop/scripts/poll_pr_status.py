@@ -28,7 +28,7 @@ sys.path.insert(0, str(HERE.parent / "hooks"))
 
 from dataclasses import asdict  # noqa: E402
 
-from lib import git_state, gitcmd, repo_layout, workspace  # noqa: E402
+from lib import events, git_state, gitcmd, repo_layout, workspace  # noqa: E402
 from lib.context import WorkspaceContext, base  # noqa: E402
 from lib.context.base import PR_POLL_INTERVAL_SEC  # noqa: E402
 from lib.forge import ForgeError, build_window, forge_for_repo, pr_label, vocab  # noqa: E402
@@ -58,9 +58,11 @@ def pick_branch_pr(branch_prs: list, repo: str, head_sha: str):
     return None
 
 
-def poll_once(repo: str) -> str | None:
-    """One poll: refresh prs + branch.pr_number. Returns a short change summary, or None
-    (no token / unsupported remote / nothing). Never raises."""
+def poll_once(repo: str) -> events.Event | None:
+    """One poll → a `forge` `Event` describing `repo`'s current PR window, or None when the
+    repo has no usable forge / remote. `changed` reflects whether the window moved since the
+    last saved segment; `summary` is set only on a change. Never raises. Side-effect-free —
+    persisting + notifying are the handlers' job (see `persist` / `notify`)."""
     forge = forge_for_repo(repo)
     if forge is None:
         return None
@@ -73,27 +75,48 @@ def poll_once(repo: str) -> str | None:
     except ForgeError:
         return None
 
-    # Write only the monitor-owned `pr` segment (branch-keyed). No load/merge of the
-    # whole context — disjoint from every other writer, so no lock and no lost update.
     prev_seg = base.load_segment(repo, "pr") or {}
     prev = (prev_seg.get("pr_number"),
             tuple((p.get("number"), p.get("state")) for p in (prev_seg.get("prs") or [])))
-    git_state.ensure_gitignore_excluded(repo)   # keep /.devloop/ out of git if pr.json is the first file
-    base.save_segment(repo, "pr", {
+    new = (anchor, tuple((p.number, p.state) for p in window))
+    changed = new != prev
+    payload = {
         "branch": branch,
         "provider": forge.provider,
         "pr_number": anchor,
         "prs": [asdict(p) for p in window],
-    })
-    new = (anchor, tuple((p.number, p.state) for p in window))
-    if new == prev:
-        return None
+    }
+    return events.Event(
+        source="forge", type="pr.update", subject=repo, payload=payload,
+        summary=_summary(forge, window, anchor) if changed else "", changed=changed,
+    )
+
+
+def _summary(forge, window: list, anchor) -> str:
     noun = vocab(forge.provider)[0]
     cur = next((p for p in window if p.number == anchor), None)
     if cur:
         return (f"{pr_label(forge.provider, cur.number)} {cur.state} ({cur.source_branch})"
                 f" · {len(window)} recent {noun}(s) tracked")
     return f"{len(window)} recent {noun}(s) tracked"
+
+
+# ── handlers (forge source) ───────────────────────────────────────────────────
+
+def persist(event: events.Event) -> None:
+    """Write the monitor-owned `pr` segment (branch-keyed) — the *sole* writer of
+    `.devloop/pr.json`, disjoint from every other writer-role, so no lock and no lost
+    update. Always writes (keeps the PR guard / injection fresh even on a no-op tick)."""
+    repo = event.subject
+    git_state.ensure_gitignore_excluded(repo)   # keep /.devloop/ out of git if pr.json is the first file
+    base.save_segment(repo, "pr", event.payload)
+
+
+def notify(event: events.Event) -> None:
+    """Surface a one-line change summary to stdout → the harness turns it into a chat
+    notification. Fires only on a real change. Registered unless `--quiet` (see `main`)."""
+    if event.changed and event.summary:
+        print(f"devloop: {event.summary}", flush=True)
 
 
 def repos_to_poll(target: str) -> list[str]:
@@ -146,20 +169,23 @@ def main(argv: list[str]) -> int:
     quiet = "--quiet" in argv
     args = [a for a in argv if a not in ("--once", "--quiet")]
     target = args[0] if args else "."
+    # event handlers: persist always; notify (the stdout→notification) only when not
+    # --quiet, per the rationale above. Each poll builds one Event and fans it out.
+    handlers: list[events.Handler] = [persist] if quiet else [persist, notify]
     if once:
         for r in repos_to_poll(target):
-            msg = poll_once(r)
-            if msg and not quiet:
-                print(f"devloop: {msg}")
+            ev = poll_once(r)
+            if ev:
+                events.dispatch(ev, handlers)
         return 0
     # monitor loop: each tick, poll every repo in scope (all subprojects in Mode A),
-    # emit on change, sleep. Never crashes the session.
+    # dispatch on each, sleep. Never crashes the session.
     while True:
         try:
             for r in repos_to_poll(target):
-                msg = poll_once(r)
-                if msg and not quiet:
-                    print(f"devloop: {msg}", flush=True)
+                ev = poll_once(r)
+                if ev:
+                    events.dispatch(ev, handlers)
         except Exception:
             pass
         time.sleep(PR_POLL_INTERVAL_SEC)
