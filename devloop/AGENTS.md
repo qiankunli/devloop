@@ -47,7 +47,8 @@ devloop/
 │   │   │   ├── _rest.py           #     唯一 HTTP 传输（urllib，可配 base/auth）
 │   │   │   ├── gitlab.py github.py#     两个 adapter（iid↔number / state 归一 / 路径差异）
 │   │   │   └── __init__.py        #     resolve_forge（origin+config+env 一处合一）+ forge_for_repo 分发
-│   │   ├── cmdparse.py            #   ★guard 用：shlex 分词 + git 全局选项识别（防引号误判 / 抓 git -C）
+│   │   ├── cmdtree/               #   ★命令解析子系统（可插拔后端）：base（中立命令树 IR + Parser 接口）+ parable（Parable AST→IR 后端）+ cmdparse（在 IR 上走 commands/git_invocations/cd-scope 的 walker+facade）；换 parser=改 cmdparse 一行 import
+│   │   ├── _vendor/               #   ★第三方原样 vendor（parable.py MIT + LICENSE/PROVENANCE）；永不手改
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py  session_lock.py
 │   │   └── context/               #   .devloop/ 状态层：repo 级按 owner 分段，workspace 级单文件（base / repo / workspace）

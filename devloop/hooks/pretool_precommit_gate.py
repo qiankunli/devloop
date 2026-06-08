@@ -12,7 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import cmdparse, config, hook_io, repo_layout  # noqa: E402
+from lib import config, hook_io, repo_layout  # noqa: E402
+from lib.cmdtree import cmdparse  # noqa: E402
 from lib.context import RepoContext  # noqa: E402
 
 

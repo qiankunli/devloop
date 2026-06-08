@@ -7,7 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import cmdparse, git_state, hook_io, repo_layout  # noqa: E402
+from lib import git_state, hook_io, repo_layout  # noqa: E402
+from lib.cmdtree import cmdparse  # noqa: E402
 from lib.context import RepoContext  # noqa: E402
 
 
