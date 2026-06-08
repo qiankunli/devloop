@@ -1,13 +1,20 @@
 """Unified config — `~/.devloop/config.json` plus optional local overrides.
 
 One file holds everything devloop depends on from the user / its environment, so
-the external dependencies (which GitLab, which token) are explicit in one place:
+the external dependencies (which forge, which token) are explicit in one place:
 
     {
       "workspaces": ["/abs/workspace/root", ...],   # Mode-A aggregate-workspace registry
-      "gitlab": {
-        "token": "glpat-...",   # canonical token source; env GITLAB_TOKEN overrides it
-        "host":  ""             # optional: override the host derived from the origin remote
+      "forges": {               # code-review hosts, keyed by the repo's origin host
+        "github.com": {
+          "token": "ghp_...",   # canonical token; env GITHUB_TOKEN/GH_TOKEN overrides it
+          "type":  "github"     # optional: inferred from the host when omitted
+        },
+        "gitlab.example.com": {
+          "token": "glpat-...",  # env GITLAB_TOKEN overrides it
+          "type":  "gitlab",
+          "api_host": ""         # optional: real API host when origin is an SSH alias / mirror
+        }
       },
       "precommit": {            # per-repo lint commit-gate (default off)
         "default": {"commit_gate_lint": false},
@@ -20,7 +27,7 @@ Layering (low → high precedence), each layer may be PARTIAL:
     _DEFAULTS  <  global (~/.devloop/config.json)  <  ancestor .devloop/config.json (closest wins)
 
 A repo or workspace can drop a `.devloop/config.json` next to its runtime state to
-override just a few keys (e.g. a different `gitlab.token`/`host` for that repo); the
+override just a few keys (e.g. a different `forges` token for that repo); the
 nearest one to `repo_dir` wins, everything else falls through to the global file.
 
 Global lives at a USER-LEVEL path (override the dir via `DEVLOOP_CONFIG_DIR`), never
@@ -36,10 +43,10 @@ import os
 from pathlib import Path
 
 # Section defaults — every load() deep-merges real layers over these, so a partial
-# config (e.g. only `workspaces`) still yields sane `gitlab` / `precommit`.
+# config (e.g. only `workspaces`) still yields sane `forges` / `precommit`.
 _DEFAULTS: dict = {
     "workspaces": [],
-    "gitlab": {"token": "", "host": ""},
+    "forges": {},
     "precommit": {"default": {}, "repos": {}},
 }
 
@@ -114,20 +121,31 @@ def set_workspaces(ws: list[str]) -> None:
     update(lambda d: d.__setitem__("workspaces", list(ws)))
 
 
-def gitlab_token(repo_dir: str | Path | None = None) -> str | None:
-    """Canonical token: env `GITLAB_TOKEN` wins (CI-friendly), else `gitlab.token`
-    from the config closest to `repo_dir`."""
-    env = os.environ.get("GITLAB_TOKEN")
-    if env and env.strip():
-        return env.strip()
-    tok = ((load(repo_dir).get("gitlab") or {}).get("token") or "").strip()
+def forges(repo_dir: str | Path | None = None) -> dict:
+    """The host-keyed forge registry from the config closest to `repo_dir`."""
+    return load(repo_dir).get("forges") or {}
+
+
+def forge_entry(host: str, repo_dir: str | Path | None = None) -> dict:
+    """Config entry for one origin host (`{token, type?, api_host?}`); `{}` if none."""
+    e = forges(repo_dir).get(host)
+    return e if isinstance(e, dict) else {}
+
+
+# Provider → the conventional env var names each ecosystem already uses. Env wins over
+# config (CI-friendly) and is keyed by provider, not host, since that's the standard.
+_TOKEN_ENV = {"github": ("GITHUB_TOKEN", "GH_TOKEN"), "gitlab": ("GITLAB_TOKEN",)}
+
+
+def forge_token(host: str, provider: str, repo_dir: str | Path | None = None) -> str | None:
+    """Token for `host`: the provider's conventional env var wins, else `forges[host].token`
+    from the config closest to `repo_dir`. None if absent."""
+    for var in _TOKEN_ENV.get(provider, ()):
+        v = os.environ.get(var)
+        if v and v.strip():
+            return v.strip()
+    tok = (forge_entry(host, repo_dir).get("token") or "").strip()
     return tok or None
-
-
-def gitlab_host(repo_dir: str | Path | None = None) -> str | None:
-    """Optional host override (config closest to `repo_dir`); None → derive from origin."""
-    host = ((load(repo_dir).get("gitlab") or {}).get("host") or "").strip()
-    return host or None
 
 
 def precommit(repo_dir: str | Path | None = None) -> dict:

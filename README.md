@@ -2,7 +2,7 @@
 
 # devloop
 
-**A guard-railed development loop for AI coding agents.** A cross-CLI plugin marketplace: `devloop` is the first (and flagship) plugin — a developer workflow built on native Claude Code events; `example` is a placeholder showing the repo is built to host *multiple* plugins.
+**A guard-railed development loop for AI coding agents.** A cross-CLI plugin marketplace: `devloop` is the first (and flagship) plugin — a developer workflow built on native Claude Code events, working with both **GitHub (PR)** and **GitLab (MR)** (picked per-repo from the origin remote); `example` is a placeholder showing the repo is built to host *multiple* plugins.
 
 > Currently Claude Code only. Design / architecture: [AGENTS.md](./AGENTS.md). Each plugin's own docs live in its directory.
 
@@ -28,12 +28,12 @@ Both levers share one hub: a structured state center under `.devloop/`. State wr
 |-------|---------|----------|
 | protected | main / master / release* | **hard-block** commit/push |
 | healthy | normal feature branch, in progress | allow |
-| in-flight | MR opened, awaiting human merge | **soft-hint** (inject one `IN-FLIGHT` line) |
-| inactive | MR merged / closed | **hard-block** Edit/Write |
+| in-flight | PR/MR opened, awaiting human merge | **soft-hint** (inject one `IN-FLIGHT` line) |
+| inactive | PR/MR merged / closed | **hard-block** Edit/Write |
 
-`protected` and `inactive` hard-block cleanly — editing there has no legitimate reason. `in-flight` only hints, because there's a legal exception (you might be amending your own MR) the machine can't reliably tell from new work, so it feeds the fact to the agent and lets it choose.
+`protected` and `inactive` hard-block cleanly — editing there has no legitimate reason. `in-flight` only hints, because there's a legal exception (you might be amending your own PR/MR) the machine can't reliably tell from new work, so it feeds the fact to the agent and lets it choose.
 
-**Structural guarantees, not just hints** — a new branch's base is decided by *intent, not by where HEAD happens to sit*: opening new work (`--branch`) always cuts from `origin/<target>`, and a freshly cut branch is asserted to carry only this run's commits before push/MR. So even if the agent ignores the `IN-FLIGHT` hint, forking off an in-flight branch can't smuggle its commits into the new MR.
+**Structural guarantees, not just hints** — a new branch's base is decided by *intent, not by where HEAD happens to sit*: opening new work (`--branch`) always cuts from `origin/<target>`, and a freshly cut branch is asserted to carry only this run's commits before push/PR. So even if the agent ignores the `IN-FLIGHT` hint, forking off an in-flight branch can't smuggle its commits into the new PR.
 
 **Aggregate-workspace & multi-session as first-class** — a workspace root holds many independent git subprojects (often symlinked). Scripts never trust shell `cwd` (they resolve the repo by explicit `--repo` → cwd's repo → last-active), and an *owner lock* keeps two concurrent sessions from mixing changes into one working tree. Plain single-repo mode is fully supported too — auto-detected, no manual switch.
 
@@ -44,9 +44,9 @@ Both levers share one hub: a structured state center under `.devloop/`. State wr
 | project-enter awareness | regex-parse `cd` | **`CwdChanged`** auto-enter |
 | survive compaction | TTL safety-net (timed guess) | **`PostCompact`** → re-inject |
 | `AGENTS.md` changes | mtime polling | **`FileChanged`** + `watchPaths` |
-| MR awareness / branch staleness | hook-heartbeat scheduler | **`monitors`** background poll |
+| PR/MR awareness / branch staleness | hook-heartbeat scheduler | **`monitors`** background poll |
 
-All git goes through one `gitcmd` seam, all GitLab through one `lib/gitlab` facade, all user config through one `lib/config` seam. Every guard is **fail-open** — a broken guardrail at worst fails to block; it never blocks your work.
+All git goes through one `gitcmd` seam, all code-review hosting through one `lib/forge` facade (GitHub / GitLab as peer adapters, picked per-repo), all user config through one `lib/config` seam. Every guard is **fail-open** — a broken guardrail at worst fails to block; it never blocks your work.
 
 ## Where it's heading
 
@@ -71,7 +71,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_workspace.py <your-aggregate-workspac
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_repo.py
 ```
 
-GitLab features (MR / state injection) need a GitLab token — see [devloop/README.md](./devloop/README.md) for the unified `~/.devloop/config.json`.
+Forge features (PR/MR creation + state injection) need a token for your host (`GITHUB_TOKEN` / `GITLAB_TOKEN`, or the `forges` block) — see [devloop/README.md](./devloop/README.md) for the unified `~/.devloop/config.json`.
 
 ### Codex / opencode
 
@@ -81,7 +81,7 @@ The marketplace layout is CLI-agnostic: a new CLI just needs a `.<cli>-plugin/ma
 
 | Plugin | What it is | README |
 |--------|-----------|--------|
-| `devloop` | Developer workflow: git/MR + cwd-aware enter + lint/test gates + live state injection + execution-level hard intercepts (Claude-only) | [devloop/README.md](./devloop/README.md) |
+| `devloop` | Developer workflow: git/PR (GitHub + GitLab) + cwd-aware enter + lint/test gates + live state injection + execution-level hard intercepts (Claude-only) | [devloop/README.md](./devloop/README.md) |
 | `example` | Placeholder demonstrating the multi-plugin marketplace structure | [example/README.md](./example/README.md) |
 
 ## Adding a plugin

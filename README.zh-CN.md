@@ -2,7 +2,7 @@
 
 # devloop
 
-**给 AI 编码搭一条带护栏的开发循环。** 一个跨 CLI 的 plugin marketplace：`devloop` 是第一个（也是主力）plugin——坐在 Claude Code 原生事件上的开发者工作流；`example` 是占位 plugin，表明本仓库从一开始就按**多 plugin marketplace** 设计。
+**给 AI 编码搭一条带护栏的开发循环。** 一个跨 CLI 的 plugin marketplace：`devloop` 是第一个（也是主力）plugin——坐在 Claude Code 原生事件上的开发者工作流，**GitHub（PR）与 GitLab（MR）都支持**（按 repo 的 origin 自动识别）；`example` 是占位 plugin，表明本仓库从一开始就按**多 plugin marketplace** 设计。
 
 > 当前仅支持 Claude Code。设计理念 / 架构见 [AGENTS.md](./AGENTS.md)，各 plugin 细节见各自目录的 README。
 
@@ -28,12 +28,12 @@
 |----|------|------|
 | protected | main / master / release* | **硬拦** commit/push |
 | healthy | 普通 feature 分支，还在开发 | 正常放行 |
-| in-flight | 已建 MR、等人工 merge | **软提示**（注入一行 `IN-FLIGHT`） |
-| inactive | MR 已 merged / closed | **硬拦** Edit/Write |
+| in-flight | 已建 PR/MR、等人工 merge | **软提示**（注入一行 `IN-FLIGHT`） |
+| inactive | PR/MR 已 merged / closed | **硬拦** Edit/Write |
 
-protected 和 inactive 能干净地硬拦——在它们上面编辑没有任何合法理由。in-flight 只能软提示，因为它有一个机器无法可靠区分的合法例外（你可能就是想 amend 自己这条 MR），于是把「这条分支在途」的事实喂给 AI，让它自己选。
+protected 和 inactive 能干净地硬拦——在它们上面编辑没有任何合法理由。in-flight 只能软提示，因为它有一个机器无法可靠区分的合法例外（你可能就是想 amend 自己这条 PR/MR），于是把「这条分支在途」的事实喂给 AI，让它自己选。
 
-**结构性保证，不只靠提示**——新分支的基点**由意图决定，不由 HEAD 当前停在哪决定**：只要是开新工作（`--branch`），就**永远**从 `origin/<target>` 切，且新分支在 push / 建 MR 前会被自检只带本轮提交。所以哪怕 AI 完全没看那行 `IN-FLIGHT` 提示，从在途分支 fork 也不会把它的提交夹带进新 MR。
+**结构性保证，不只靠提示**——新分支的基点**由意图决定，不由 HEAD 当前停在哪决定**：只要是开新工作（`--branch`），就**永远**从 `origin/<target>` 切，且新分支在 push / 建 PR 前会被自检只带本轮提交。所以哪怕 AI 完全没看那行 `IN-FLIGHT` 提示，从在途分支 fork 也不会把它的提交夹带进新 PR。
 
 **聚合工作区 + 多 session 是一等公民**——一个 workspace 根挂着多个独立 git 子项目（常以软链接聚合）。脚本一律**不信 shell 的 cwd**（按「显式 `--repo` → cwd 所在仓 → 最近活跃仓」解析），并用 *owner 锁* 防止两个并发 session 的改动混进同一个工作树。单仓库形态也完全支持——按用户级配置自动判定，无需手工切换。
 
@@ -44,9 +44,9 @@ protected 和 inactive 能干净地硬拦——在它们上面编辑没有任何
 | 进项目感知 | 正则解析 `cd` | **`CwdChanged`** 自动 enter |
 | 防 compaction 丢状态 | TTL 安全网（定时猜） | **`PostCompact`** → 重注入 |
 | `AGENTS.md` 变更 | mtime 轮询 | **`FileChanged`** + `watchPaths` |
-| MR 感知 / 分支失活 | hook 心跳 scheduler | **`monitors`** 后台轮询 |
+| PR/MR 感知 / 分支失活 | hook 心跳 scheduler | **`monitors`** 后台轮询 |
 
-所有 git 走唯一入口 `gitcmd`，所有 GitLab 走唯一 facade `lib/gitlab`，所有用户配置走唯一入口 `lib/config`。每个 guard 一律 **fail-open**——护栏坏了最坏是没拦住，但绝不堵死你的路。
+所有 git 走唯一入口 `gitcmd`，所有代码评审平台走唯一 facade `lib/forge`（GitHub / GitLab 平级 adapter，按 repo 分发），所有用户配置走唯一入口 `lib/config`。每个 guard 一律 **fail-open**——护栏坏了最坏是没拦住，但绝不堵死你的路。
 
 ## 往哪走
 
@@ -71,7 +71,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_workspace.py <your-aggregate-workspac
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_repo.py
 ```
 
-GitLab 相关功能（MR / 状态注入）需要一个 GitLab token——统一配置在 `~/.devloop/config.json`，见 [devloop/README.md](./devloop/README.md)。
+Forge 相关功能（PR/MR 创建 / 状态注入）需要对应平台的 token（环境变量 `GITHUB_TOKEN` / `GITLAB_TOKEN`，或 `forges` 配置块）——统一配置在 `~/.devloop/config.json`，见 [devloop/README.md](./devloop/README.md)。
 
 ### Codex / opencode
 
@@ -81,7 +81,7 @@ marketplace 结构是 CLI 无关的：新 CLI 接入只需在仓库根加 `.<cli
 
 | Plugin | 简介 | README |
 |--------|------|--------|
-| `devloop` | 开发者工作流：git/MR + cwd-aware enter + lint/test gates + 实时状态注入 + 执行级硬拦截（Claude-only） | [devloop/README.md](./devloop/README.md) |
+| `devloop` | 开发者工作流：git/PR（GitHub + GitLab）+ cwd-aware enter + lint/test gates + 实时状态注入 + 执行级硬拦截（Claude-only） | [devloop/README.md](./devloop/README.md) |
 | `example` | 占位 plugin，演示多 plugin marketplace 结构 | [example/README.md](./example/README.md) |
 
 ## 新增 plugin

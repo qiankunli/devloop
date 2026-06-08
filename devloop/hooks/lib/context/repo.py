@@ -1,5 +1,5 @@
 """`RepoContext` — per-repo state, persisted as per-owner segment files under
-`<git_root>/.devloop/` (`meta.json` / `branch.json` / `mr.json` / `validation.json` /
+`<git_root>/.devloop/` (`meta.json` / `branch.json` / `pr.json` / `validation.json` /
 `injection.json`). `RepoContext` is the in-memory *view* that `load()` assembles by
 merging them; each mutator writes back only its own segment.
 
@@ -10,13 +10,14 @@ update; one file per owner makes every write touch a disjoint file, so that whol
 is structurally impossible — no lock, atomic per-file writes (see base.py `_write_atomic`).
 
 Schema + operations (load/refresh/mark/emit) built on `base.py` leaves
-(`AgentsMd`/`MRRef`/`Cadence`/...) and the `gitcmd`-routed `git_state`. Notable schema choices:
+(`AgentsMd`/`PullRequest`/`Cadence`/...) and the `gitcmd`-routed `git_state`. Notable schema choices:
 
-- **MR model**: `branch.mr_iid` holds only the current branch's MR *number*; the recent-MR
-  window lives in `mrs`. Both are monitor-owned and persist in `mr.json`, which is
-  *branch-keyed* — on `load` the iid is joined in only if it was computed for the current
+- **PR model**: `branch.pr_number` holds only the current branch's PR/MR *number*; the
+  recent-PR window lives in `prs`. Both are monitor-owned and persist in `pr.json`, which is
+  *branch-keyed* — on `load` the number is joined in only if it was computed for the current
   branch, so a branch switch self-invalidates it with no writer. "branch inactive" is
-  *derived* (`branch_mr_inactive`) by joining mr_iid → mrs, never stored as a bool.
+  *derived* (`branch_pr_inactive`) by joining pr_number → prs, never stored as a bool. The
+  forge (GitHub/GitLab) is recorded per-PR so display picks the right vocabulary.
 - **No scheduler segment** — the MR sweep is a native `monitor` that self-paces.
 - All timestamps are float epoch (see base.py).
 """
@@ -33,9 +34,10 @@ from .base import (
     TURN_TTL_SEC,
     AgentsMd,
     Cadence,
-    MRRef,
+    PullRequest,
     Reference,
     WorktreeInfo,
+    vocab,
 )
 
 
@@ -65,7 +67,7 @@ class BranchState:
     target: str = "release"
     ahead: int = 0
     behind: int = 0
-    mr_iid: int | None = None          # current branch's MR number; join into mrs for the rest
+    pr_number: int | None = None       # current branch's PR/MR number; join into prs for the rest
     worktree: WorktreeInfo = field(default_factory=WorktreeInfo)
 
     @classmethod
@@ -77,7 +79,7 @@ class BranchState:
             target=d.get("target", "release"),
             ahead=int(d.get("ahead", 0) or 0),
             behind=int(d.get("behind", 0) or 0),
-            mr_iid=d.get("mr_iid"),
+            pr_number=d.get("pr_number"),
             worktree=WorktreeInfo.from_dict(d.get("worktree") or {}),
         )
 
@@ -119,7 +121,7 @@ class RepoContext:
     branch: BranchState = field(default_factory=BranchState)
     validation: Validation = field(default_factory=Validation)
     injection: Injection = field(default_factory=Injection)
-    mrs: list[MRRef] = field(default_factory=list)   # monitor-owned recent-MR window
+    prs: list[PullRequest] = field(default_factory=list)   # monitor-owned recent-PR window
     updated_at: float = 0.0
 
     # ── load (merge segments) ──────────────────────────────────────────────────
@@ -134,18 +136,18 @@ class RepoContext:
         if meta is None:
             return None
         branch = BranchState.from_dict(base.load_segment(repo_dir, "branch") or {})
-        mr = base.load_segment(repo_dir, "mr") or {}
-        # Join the monitor-owned mr_iid only when it was computed for the CURRENT branch.
-        # mr.json is branch-keyed, so a branch switch self-invalidates the stale iid with
+        pr = base.load_segment(repo_dir, "pr") or {}
+        # Join the monitor-owned pr_number only when it was computed for the CURRENT branch.
+        # pr.json is branch-keyed, so a branch switch self-invalidates the stale number with
         # nobody writing — the monitor re-establishes it on its next poll.
-        branch.mr_iid = mr.get("mr_iid") if mr.get("branch") == branch.current else None
+        branch.pr_number = pr.get("pr_number") if pr.get("branch") == branch.current else None
         ctx = cls(
             repo=RepoMeta.from_dict(meta.get("repo")),
             agents_md=AgentsMd.from_dict(meta.get("agents_md") or {}),
             branch=branch,
             validation=Validation.from_dict(base.load_segment(repo_dir, "validation") or {}),
             injection=Injection.from_dict(base.load_segment(repo_dir, "injection") or {}),
-            mrs=[MRRef.from_dict(m) for m in (mr.get("mrs") or []) if m.get("iid") is not None],
+            prs=[PullRequest.from_dict(p) for p in (pr.get("prs") or []) if p.get("number") is not None],
             updated_at=float(meta.get("updated_at", 0) or 0),
         )
         if not ctx.repo.repo_dir:
@@ -175,18 +177,20 @@ class RepoContext:
         if not self._root():
             return
         d = asdict(self.branch)
-        d.pop("mr_iid", None)   # mr_iid is monitor-owned → the `mr` segment, not here
+        d.pop("pr_number", None)   # pr_number is monitor-owned → the `pr` segment, not here
         base.save_segment(self._root(), "branch", d)
 
-    def _save_mr(self) -> None:
+    def _save_pr(self) -> None:
         """Monitor's write surface (also used by gcampr via a one-shot poll). Branch-keyed
-        so a later branch switch invalidates mr_iid on read without anyone clearing it."""
+        so a later branch switch invalidates pr_number on read without anyone clearing it.
+        `provider` is derived from the window so display keeps the right vocabulary."""
         if not self._root():
             return
-        base.save_segment(self._root(), "mr", {
+        base.save_segment(self._root(), "pr", {
             "branch": self.branch.current,
-            "mr_iid": self.branch.mr_iid,
-            "mrs": [asdict(m) for m in self.mrs],
+            "provider": self.prs[0].provider if self.prs else "",
+            "pr_number": self.branch.pr_number,
+            "prs": [asdict(p) for p in self.prs],
         })
 
     def _save_validation(self) -> None:
@@ -203,7 +207,7 @@ class RepoContext:
         """Full rebuild (normal-impl boundary: SessionStart / enter / TTL).
 
         Writes only the refresher-owned segments (meta + branch). validation /
-        injection / mr live in their own files and are left untouched — their values
+        injection / pr live in their own files and are left untouched — their values
         are merged in from disk only to keep the *returned* object complete."""
         repo_dir_in = str(Path(repo_dir))
         repo_dir_abs = str(Path(repo_dir).resolve())
@@ -225,9 +229,9 @@ class RepoContext:
             branch=_build_branch(repo_dir_abs, target),
             validation=prev.validation,
             injection=prev.injection,
-            mrs=prev.mrs,
+            prs=prev.prs,
         )
-        ctx.branch.mr_iid = prev.branch.mr_iid   # keep the join value on the returned object
+        ctx.branch.pr_number = prev.branch.pr_number   # keep the join value on the returned object
         ctx._save_meta()
         ctx._save_branch()
         return ctx
@@ -239,10 +243,10 @@ class RepoContext:
         ctx = cls.load(repo_dir)
         if ctx is None:
             return cls.refresh_all(repo_dir)
-        prev_iid = ctx.branch.mr_iid
+        prev_num = ctx.branch.pr_number
         target = ctx.branch.target or git_state.get_default_target(ctx.repo.real_repo_dir)
         ctx.branch = _build_branch(ctx.repo.real_repo_dir, target)
-        ctx.branch.mr_iid = prev_iid   # in-memory only; mr.json (the source of truth) is untouched
+        ctx.branch.pr_number = prev_num   # in-memory only; pr.json (the source of truth) is untouched
         ctx._save_branch()
         return ctx
 
@@ -267,36 +271,36 @@ class RepoContext:
         self.validation.last_test_at = base.now()
         self._save_validation()
 
-    def set_branch_mr_iid(self, iid: int | None) -> None:
-        """Write surface for the current branch's MR number (monitor + create_mr)."""
-        self.branch.mr_iid = iid
-        self._save_mr()
+    def set_branch_pr_number(self, number: int | None) -> None:
+        """Write surface for the current branch's PR/MR number (monitor + create flow)."""
+        self.branch.pr_number = number
+        self._save_pr()
 
-    def set_mrs(self, mrs: list[MRRef]) -> None:
-        """Monitor's sole write surface for the recent-MR window."""
-        self.mrs = list(mrs)
-        self._save_mr()
+    def set_prs(self, prs: list[PullRequest]) -> None:
+        """Monitor's sole write surface for the recent-PR window."""
+        self.prs = list(prs)
+        self._save_pr()
 
-    # ── MR derivation ─────────────────────────────────────────────────────────
-    def current_mr(self) -> MRRef | None:
-        if self.branch.mr_iid is None:
+    # ── PR derivation ─────────────────────────────────────────────────────────
+    def current_pr(self) -> PullRequest | None:
+        if self.branch.pr_number is None:
             return None
-        return next((m for m in self.mrs if m.iid == self.branch.mr_iid), None)
+        return next((p for p in self.prs if p.number == self.branch.pr_number), None)
 
-    def branch_mr_inactive(self) -> bool:
-        """True if the current branch's MR is merged/closed (derived, not stored).
+    def branch_pr_inactive(self) -> bool:
+        """True if the current branch's PR/MR is merged/closed (derived, not stored).
         The branch-merged guard reads this."""
-        m = self.current_mr()
-        return bool(m and m.inactive)
+        p = self.current_pr()
+        return bool(p and p.inactive)
 
-    def branch_mr_in_flight(self) -> bool:
-        """True if the current branch's MR is still open / awaiting human merge (derived).
+    def branch_pr_in_flight(self) -> bool:
+        """True if the current branch's PR/MR is still open / awaiting human merge (derived).
 
         The loop's between-rounds state. Surfaced so the orchestrator can note that committing
-        here continues an in-flight MR — and, more importantly, so starting NEW work is never
+        here continues an in-flight PR — and, more importantly, so starting NEW work is never
         stacked onto an in-flight feature branch by default (it re-bases off origin/<target>)."""
-        m = self.current_mr()
-        return bool(m and m.is_open)
+        p = self.current_pr()
+        return bool(p and p.is_open)
 
     # ── injection: turn / session cadences ─────────────────────────────────────
     def turn_text(self) -> str:
@@ -347,7 +351,7 @@ def _build_branch(repo_dir: str, target: str) -> BranchState:
         if ab:
             ahead, behind = ab
     is_linked, common_dir, main_branch = git_state.get_worktree_metadata(repo_dir)
-    # mr_iid is intentionally NOT set here — it's monitor-owned (the `mr` segment) and
+    # pr_number is intentionally NOT set here — it's monitor-owned (the `pr` segment) and
     # joined in by branch at load time, so a branch switch drops it without any writer.
     return BranchState(
         current=current,
@@ -370,17 +374,18 @@ def _format_turn(ctx: "RepoContext") -> str:
     extras = []
     if b.protected:
         extras.append("PROTECTED")
-    mr = ctx.current_mr()
-    if mr and mr.inactive:
+    pr = ctx.current_pr()
+    if pr and pr.inactive:
         extras.append(
-            f"INACTIVE (MR #{mr.iid} {mr.state}) — cut a new branch from latest origin/{b.target}"
+            f"INACTIVE ({pr.label} {pr.state}) — cut a new branch from latest origin/{b.target}"
         )
-    elif mr and mr.is_open:
-        # Soft hint, not a guard: an in-flight MR has one legitimate edit case (amending it for
+    elif pr and pr.is_open:
+        # Soft hint, not a guard: an in-flight PR has one legitimate edit case (amending it for
         # review), so we surface the state and let the agent choose rather than hard-blocking.
+        noun = vocab(pr.provider)[0]
         extras.append(
-            f"IN-FLIGHT (MR #{mr.iid} opened) — new work needs a fresh branch (gcampr --branch); "
-            f"edit here only to amend this MR"
+            f"IN-FLIGHT ({pr.label} open) — new work needs a fresh branch (gcampr --branch); "
+            f"edit here only to amend this {noun}"
         )
     extra_str = f" ⚠️ {'; '.join(extras)}" if extras else ""
     lines.append(f"Branch: {cur}{wt} (ahead {b.ahead}, behind {b.behind}, target={b.target}){extra_str}")
@@ -395,12 +400,13 @@ def _format_turn(ctx: "RepoContext") -> str:
     stale = f", {v.edits_since_lint} edits since" if v.edits_since_lint else ""
     lines.append(f"Validation: lint={base.fmt_ts(v.last_lint_at)}{stale}; test={base.fmt_ts(v.last_test_at)}")
 
-    if ctx.mrs:
+    if ctx.prs:
+        noun, sigil = vocab(ctx.prs[0].provider)
         parts = []
-        for m in ctx.mrs:
-            star = "*" if m.iid == b.mr_iid else ""
-            parts.append(f"#{m.iid}{star} {m.state or '?'}({m.source_branch or '?'})")
-        lines.append("Recent MRs: " + "  ".join(parts) + ("   (*=current branch)" if b.mr_iid else ""))
+        for p in ctx.prs:
+            star = "*" if p.number == b.pr_number else ""
+            parts.append(f"{sigil}{p.number}{star} {p.state or '?'}({p.source_branch or '?'})")
+        lines.append(f"Recent {noun}s: " + "  ".join(parts) + ("   (*=current branch)" if b.pr_number else ""))
 
     return " | ".join(lines)
 
