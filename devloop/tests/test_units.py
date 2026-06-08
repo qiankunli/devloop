@@ -720,6 +720,51 @@ def test_unified_config_gitlab_and_precommit():
             os.environ["GITLAB_TOKEN"] = old_tok
 
 
+def test_local_config_overrides_global():
+    """repo / workspace 的 .devloop/config.json 覆盖全局,离 repo 近的赢;只含部分配置时
+    缺的段落落回全局。写仍只落全局。"""
+    from lib import config
+    W = "/tmp/dlut_local"
+    shutil.rmtree(W, ignore_errors=True)
+    os.makedirs(f"{W}/cfg")                      # 全局(DEVLOOP_CONFIG_DIR)
+    os.makedirs(f"{W}/ws/repo/sub/.devloop")     # repo 级(最近)
+    os.makedirs(f"{W}/ws/.devloop")              # workspace 级(较远)
+    old_env = os.environ.get("DEVLOOP_CONFIG_DIR")
+    old_tok = os.environ.get("GITLAB_TOKEN")
+    os.environ["DEVLOOP_CONFIG_DIR"] = f"{W}/cfg"
+    os.environ.pop("GITLAB_TOKEN", None)
+    try:
+        Path(f"{W}/cfg/config.json").write_text(
+            '{"gitlab": {"token": "GLOBAL", "host": "global.example.com"}}')
+        Path(f"{W}/ws/.devloop/config.json").write_text(
+            '{"gitlab": {"token": "WS", "host": "ws.example.com"}}')
+        # repo 级只含 token(部分配置)→ host 落回更外层
+        Path(f"{W}/ws/repo/sub/.devloop/config.json").write_text(
+            '{"gitlab": {"token": "REPO"}}')
+        repo = f"{W}/ws/repo/sub"
+        assert config.gitlab_token(repo) == "REPO"            # 最近的赢
+        assert config.gitlab_host(repo) == "ws.example.com"   # repo 没配 host → 落 workspace 层
+        assert config.gitlab_token(f"{W}/ws") == "WS"         # 在 workspace 根 → workspace 层赢
+        assert config.gitlab_token(None) == "GLOBAL"          # 无 repo_dir → 仅全局
+        # env 仍最高优先
+        os.environ["GITLAB_TOKEN"] = "ENV"
+        assert config.gitlab_token(repo) == "ENV"
+        os.environ.pop("GITLAB_TOKEN", None)
+        # 写只落全局,不碰本地
+        config.set_workspaces(["/tmp/ws-x"])
+        assert "WS" in Path(f"{W}/ws/.devloop/config.json").read_text()   # 本地未被改写
+        assert config.gitlab_token(repo) == "REPO"                        # 本地覆盖仍生效
+    finally:
+        if old_env is None:
+            os.environ.pop("DEVLOOP_CONFIG_DIR", None)
+        else:
+            os.environ["DEVLOOP_CONFIG_DIR"] = old_env
+        if old_tok is None:
+            os.environ.pop("GITLAB_TOKEN", None)
+        else:
+            os.environ["GITLAB_TOKEN"] = old_tok
+
+
 def test_maybe_register_workspace():
     """workspace 自动注册:非 git 目录 + AGENTS.md 带子项目表 → 注册;普通 git 仓 /
     无 AGENTS.md 的目录绝不误判。手工 init_workspace 不再是主路径的前置条件。"""

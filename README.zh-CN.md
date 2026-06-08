@@ -71,7 +71,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_workspace.py <your-aggregate-workspac
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_repo.py
 ```
 
-GitLab 相关功能（MR / 状态注入）需要一个 GitLab token——统一配置在 `~/.config/devloop/config.json`，见 [devloop/README.md](./devloop/README.md)。
+GitLab 相关功能（MR / 状态注入）需要一个 GitLab token——统一配置在 `~/.devloop/config.json`，见 [devloop/README.md](./devloop/README.md)。
 
 ### Codex / opencode
 

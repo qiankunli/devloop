@@ -30,7 +30,7 @@ def main(argv: list[str]) -> int:
     repo = argv[1] if len(argv) > 1 else "."
     cl = GitLabClient.for_repo(repo)
     if cl is None:
-        print("read_mr: no GitLab token (set gitlab.token in ~/.config/devloop/config.json or $GITLAB_TOKEN) or not a GitLab repo", file=sys.stderr)
+        print("read_mr: no GitLab token (set gitlab.token in ~/.devloop/config.json or $GITLAB_TOKEN) or not a GitLab repo", file=sys.stderr)
         return 0
     mrs = MergeRequests(cl)
     try:

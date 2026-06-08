@@ -258,7 +258,7 @@ def warn_mixed_version_bump(repo: str, plan: list[str]) -> None:
 def reuse_or_create_mr(repo: str, source: str, target: str, title: str, plan: list[str]) -> dict:
     cl = GitLabClient.for_repo(repo)
     if cl is None:
-        raise SmartError("branch pushed, but no GitLab token (set gitlab.token in ~/.config/devloop/config.json or $GITLAB_TOKEN) / not a GitLab remote — create the MR manually.")
+        raise SmartError("branch pushed, but no GitLab token (set gitlab.token in ~/.devloop/config.json or $GITLAB_TOKEN) / not a GitLab remote — create the MR manually.")
     mrs = MergeRequests(cl)
     try:
         existing = mrs.for_branch(source)

@@ -35,7 +35,7 @@ def main(argv: list[str]) -> int:
         return 1
     cl = GitLabClient.for_repo(ns.repo_dir)
     if cl is None:
-        print("update_mr: no GitLab token (set gitlab.token in ~/.config/devloop/config.json or $GITLAB_TOKEN) or not a GitLab repo", file=sys.stderr)
+        print("update_mr: no GitLab token (set gitlab.token in ~/.devloop/config.json or $GITLAB_TOKEN) or not a GitLab repo", file=sys.stderr)
         return 0
     try:
         mr = MergeRequests(cl).update(int(m.group()), **fields)

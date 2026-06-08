@@ -24,7 +24,7 @@ enter 某子模块 → 提需求(可能跨多个 subproject) → 开发 → comm
 **实现取向**：native-first——承载这两个杠杆的机制全部坐到 Claude Code 原生事件（CwdChanged / PostCompact / FileChanged / monitors）+ 两个统一 facade（gitcmd / gitlab）上，代码自证、文档薄。独立 `.devloop/` 命名空间，状态与其它工具互不干扰。
 
 **边界**：
-- **两级模型**：聚合工作区（Mode A，多 subproject）与单仓库（Mode B）都支持，按用户级配置（`~/.config/devloop/config.json` 的 `workspaces`）自动判定，workspace 可选。配置**不放 plugin 目录**——那是版本化 cache，`/plugin update` 即清零；workspace 根（非 git 仓 + AGENTS.md 带子项目表）在 SessionStart / cd / resolve 时自动注册，手工 init 不是前置。
+- **两级模型**：聚合工作区（Mode A，多 subproject）与单仓库（Mode B）都支持，按全局配置（`~/.devloop/config.json` 的 `workspaces`）自动判定，workspace 可选。配置**不放 plugin 目录**——那是版本化 cache，`/plugin update` 即清零；workspace 根（非 git 仓 + AGENTS.md 带子项目表）在 SessionStart / cd / resolve 时自动注册，手工 init 不是前置。
 - **跨 subproject 需求是常态，但 0.1 的多 repo 协同（fanout / 发包依赖顺序）仍是占位**——当前以"逐个 enter subproject 开发"承载。
 - 只管循环里"在 subproject 内动手开发"这一段的 git / 工作区 / 验证效率；**不做**问题发现与 trace（as-ops / infra-ops 等）、部署、通用 git 教学。
 - 当前 **Claude-only**（CLI-agnostic by construction：hook 不读 plugin-root env、payload 只用公共子集、`${CLAUDE_PLUGIN_ROOT}` 占位；Codex 跟上加个 manifest 即可，0.1 不投入）。
@@ -59,7 +59,7 @@ devloop/
 ├── monitors/monitors.json          # ★MR-sweep 后台轮询（替代 hook 心跳 scheduler）
 ├── commands/                       # slash：enter / gcam / gcamp / gcampr / lint / test
 ├── skills/                         # git-ops / gcam / gcamp / gcampr / fix-lint / run-test
-└── config/                         # config.example.json 模板；运行时配置统一在用户级 ~/.config/devloop/config.json
+└── config/                         # config.example.json 模板；全局配置在 ~/.devloop/config.json，repo/workspace 可在 .devloop/config.json 就近覆盖
 ```
 
 ---
@@ -72,7 +72,7 @@ devloop/
 ### 2. 三个统一 seam（集中、规范、可替换）
 - **git → `gitcmd`**：所有 git 子进程的唯一入口，超时 + failure-safe（rc=-1 不抛）。
 - **GitLab → `lib/gitlab`**：所有 GitLab 访问的唯一入口。`client.py` 是唯一传输缝（auth / project 解析 / HTTP / 错误）；`mr.py` 操作名对齐 **python-gitlab SDK 与 GitLab MCP**，将来换 SDK/MCP 只改 `client.py`，调用点不动。脚本一律是 facade 的薄包装，**不散写 urllib**。
-- **用户配置 → `lib/config`**：所有对外部依赖的配置（GitLab token / host）+ workspace 注册表 + precommit 门禁的唯一入口，统一落 `~/.config/devloop/config.json`（用户级，`/plugin update` 不清；`DEVLOOP_CONFIG_DIR` 可覆写）。token 读取 env `GITLAB_TOKEN` 优先于 config；host 默认从 origin 推断、config `gitlab.host` 可覆写。`workspace` / `client` / precommit gate 都委托它，**不各自读文件**。
+- **用户配置 → `lib/config`**：所有对外部依赖的配置（GitLab token / host）+ workspace 注册表 + precommit 门禁的唯一入口。**分层读取**：`默认值 < 全局 ~/.devloop/config.json < 上层 .devloop/config.json（离 repo 最近的赢，可只含部分配置）`；写入只落全局（`/plugin update` 不清；`DEVLOOP_CONFIG_DIR` 可覆写全局目录）。本地覆盖靠 `load(repo_dir)` 从 repo_dir 向上收集 `.devloop/config.json`，故 token/host/precommit 访问器都带 `repo_dir` 参数；`workspaces` 是全局发现态、不参与就近覆盖。token 读取 env `GITLAB_TOKEN` 优先于 config；host 默认从 origin 推断、`gitlab.host` 可覆写。`workspace` / `client` / precommit gate 都委托它，**不各自读文件**。
 
 ### 3. native-first 事件映射（本插件的设计本质）
 每个能力坐在最原生的原语上；传统 hook 的"绕路"被原生事件取代：
