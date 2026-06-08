@@ -1,18 +1,19 @@
 """Unified forge facade — provider-neutral access to GitHub / GitLab, picked per-repo.
 
-    from lib.forge import forge_for_repo, ForgeError
+    from lib.forge import forge_for_repo, build_window, ForgeError
     f = forge_for_repo(repo_dir)              # None if no token / unsupported remote
     if f:
         pr = f.create(source_branch="feat/x", target_branch="main", title="...")
 
-`forge_for_repo` parses the repo's `origin`, decides the provider from the host (config
-can override the type for self-hosted / SSH-alias remotes), loads the right token, and
-returns the matching adapter. The aggregate-workspace case is first-class: each repo
-resolves its own provider, so a GitHub subproject and a GitLab one coexist.
+`forge_for_repo` resolves the repo's origin → (provider, host, token) in one place
+(`resolve_forge`), then builds the matching adapter. The aggregate-workspace case is
+first-class: each repo resolves its own provider, so a GitHub subproject and a GitLab one
+coexist. Cross-provider window *policy* is `build_window` (domain-level), not per-adapter.
 """
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from .. import config, gitcmd
@@ -23,6 +24,9 @@ from .base import (
     ForgeError,
     ForgeNotFound,
     PullRequest,
+    build_window,
+    parse_pr_number,
+    pr_label,
     vocab,
 )
 from .github import GitHubForge
@@ -59,22 +63,47 @@ def detect_provider(host: str, explicit_type: str | None) -> str:
     return "gitlab"
 
 
-def forge_for_repo(repo_dir: str | Path, *, timeout: int = 10) -> Forge | None:
-    """Build the forge adapter for this repo's origin. None if the remote is unresolvable
-    or no token is available (callers skip quietly — forge features are best-effort)."""
+@dataclass(frozen=True)
+class ForgeResolution:
+    """The repo's forge identity, resolved ONCE from the three sources (origin remote /
+    config / env). `token` is None when no usable credential exists."""
+    provider: str
+    host: str        # host parsed from origin (the config key)
+    api_host: str    # host to hit for the API (config `api_host` override, else `host`)
+    path: str        # owner/repo (GitHub) or group/subgroup/proj (GitLab)
+    token: str | None
+
+
+def resolve_forge(repo_dir: str | Path) -> ForgeResolution | None:
+    """origin + config + env → one ForgeResolution. None if origin is unresolvable.
+
+    Single place the three sources are combined, so call sites never re-derive provider /
+    host / token piecemeal.
+    """
     parsed = parse_origin(repo_dir)
     if parsed is None:
         return None
     host, path = parsed
     entry = config.forge_entry(host, repo_dir)
     provider = detect_provider(host, entry.get("type"))
-    token = config.forge_token(host, provider, repo_dir)
-    if not token:
+    return ForgeResolution(
+        provider=provider,
+        host=host,
+        api_host=entry.get("api_host") or host,
+        path=path,
+        token=config.forge_token(host, provider, repo_dir),
+    )
+
+
+def forge_for_repo(repo_dir: str | Path, *, timeout: int = 10) -> Forge | None:
+    """Build the forge adapter for this repo's origin. None if the remote is unresolvable
+    or no token is available (callers skip quietly — forge features are best-effort)."""
+    r = resolve_forge(repo_dir)
+    if r is None or not r.token:
         return None
-    api_host = entry.get("api_host") or host   # SSH-alias / mirror → real API host
-    if provider == "github":
-        owner, _, name = path.partition("/")
+    if r.provider == "github":
+        owner, _, name = r.path.partition("/")
         if not owner or not name:
             return None
-        return GitHubForge(api_host, owner, name, token, timeout=timeout)
-    return GitLabForge(api_host, path, token, timeout=timeout)
+        return GitHubForge(r.api_host, owner, name, r.token, timeout=timeout)
+    return GitLabForge(r.api_host, r.path, r.token, timeout=timeout)

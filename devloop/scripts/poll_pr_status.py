@@ -31,7 +31,7 @@ from dataclasses import asdict  # noqa: E402
 from lib import git_state, gitcmd, repo_layout, workspace  # noqa: E402
 from lib.context import WorkspaceContext, base  # noqa: E402
 from lib.context.base import PR_POLL_INTERVAL_SEC  # noqa: E402
-from lib.forge import ForgeError, forge_for_repo, vocab  # noqa: E402
+from lib.forge import ForgeError, build_window, forge_for_repo, pr_label, vocab  # noqa: E402
 
 
 def _is_ancestor(repo: str, sha: str | None, head: str) -> bool:
@@ -67,9 +67,9 @@ def poll_once(repo: str) -> str | None:
     branch = git_state.get_current_branch(repo)
     head = gitcmd.git(repo, "rev-parse", "HEAD").out
     try:
-        branch_pr = pick_branch_pr(forge.list(source_branch=branch, state="all"), repo, head) if branch else None
+        branch_pr = pick_branch_pr(forge.prs_for_branch(branch), repo, head) if branch else None
         anchor = branch_pr.number if branch_pr else None
-        window = forge.window(anchor)
+        window = build_window(forge, anchor)
     except ForgeError:
         return None
 
@@ -91,7 +91,8 @@ def poll_once(repo: str) -> str | None:
     noun = vocab(forge.provider)[0]
     cur = next((p for p in window if p.number == anchor), None)
     if cur:
-        return f"{cur.label} {cur.state} ({cur.source_branch}) · {len(window)} recent {noun}(s) tracked"
+        return (f"{pr_label(forge.provider, cur.number)} {cur.state} ({cur.source_branch})"
+                f" · {len(window)} recent {noun}(s) tracked")
     return f"{len(window)} recent {noun}(s) tracked"
 
 

@@ -42,10 +42,10 @@ devloop/
 │   │   ├── hook_io.py             #   ★hook harness：guard / inject / observe / run 四个 runner
 │   │   ├── gitcmd.py              #   ★统一 git runner（超时 + failure-safe，唯一 git 入口）
 │   │   ├── forge/                 #   ★统一 forge facade（GitHub/GitLab，按 repo 分发）
-│   │   │   ├── base.py            #     中立领域：PullRequest / Comment / Forge port / vocab
+│   │   │   ├── base.py            #     中立领域：PullRequest / Comment / Forge port（仅原语）/ build_window 策略 / pr_label / parse_pr_number
 │   │   │   ├── _rest.py           #     唯一 HTTP 传输（urllib，可配 base/auth）
 │   │   │   ├── gitlab.py github.py#     两个 adapter（iid↔number / state 归一 / 路径差异）
-│   │   │   └── __init__.py        #     forge_for_repo：origin host → provider 分发
+│   │   │   └── __init__.py        #     resolve_forge（origin+config+env 一处合一）+ forge_for_repo 分发
 │   │   ├── cmdparse.py            #   ★guard 用：shlex 分词 + git 全局选项识别（防引号误判 / 抓 git -C）
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py  session_lock.py
@@ -73,7 +73,7 @@ devloop/
 
 ### 2. 三个统一 seam（集中、规范、可替换）
 - **git → `gitcmd`**：所有 git 子进程的唯一入口，超时 + failure-safe（rc=-1 不抛）。
-- **forge → `lib/forge`**：所有代码评审平台（GitHub / GitLab）访问的唯一入口，**缝在 provider 层而非 transport 层**。`base.py` 是中立领域核心：领域对象 `PullRequest`（`number`/`state` 归一，不带任一家行话）+ `Forge` port + 展示词汇 `vocab()`；`gitlab.py` / `github.py` 是平级 adapter，只实现差异（iid↔number、state 归一、`!`↔`#`、API 路径），原生 JSON→`PullRequest` 的映射全困在各自 adapter；`_rest.py` 是唯一 HTTP 缝（urllib）。`forge_for_repo(repo)` 按 origin host 分发——**聚合工作区里一个子项目 GitHub、一个 GitLab 可共存**。脚本一律是 facade 的薄包装，**不散写 urllib、不写死 provider**。
+- **forge → `lib/forge`**：所有代码评审平台（GitHub / GitLab）访问的唯一入口，**缝在 provider 层而非 transport 层**。`base.py` 是中立领域核心：领域对象 `PullRequest`（`number`/`state` 归一，不带任一家行话、**不带 provider**——provider 是 repo 级)+ `Forge` port（**只暴露 `create/get/update/prs_for_branch/recent/comments` 取数原语**）+ 跨家一致的窗口**策略** `build_window`（组合在 `recent`+`get` 上，不让 adapter 各写一份)+ 展示 `pr_label`/`vocab`；`gitlab.py` / `github.py` 是平级 adapter，只实现差异（iid↔number、state 归一、API 路径），原生 JSON→`PullRequest` 的映射全困在各自 adapter；`_rest.py` 是唯一 HTTP 缝（urllib）。`resolve_forge(repo)` 把 origin/config/env 三源一处合一、`forge_for_repo` 据此分发——**聚合工作区里一个子项目 GitHub、一个 GitLab 可共存**。脚本一律是 facade 的薄包装，**不散写 urllib、不写死 provider**。
 - **用户配置 → `lib/config`**：所有对外部依赖的配置（`forges`：按 host 索引的 token/type/api_host）+ workspace 注册表 + precommit 门禁的唯一入口。**分层读取**：`默认值 < 全局 ~/.devloop/config.json < 上层 .devloop/config.json（离 repo 最近的赢，可只含部分配置）`；写入只落全局（`/plugin update` 不清；`DEVLOOP_CONFIG_DIR` 可覆写全局目录）。本地覆盖靠 `load(repo_dir)` 从 repo_dir 向上收集 `.devloop/config.json`，故 `forge_*`/precommit 访问器都带 `repo_dir` 参数；`workspaces` 是全局发现态、不参与就近覆盖。token 读取按 provider 的约定 env（`GITHUB_TOKEN`/`GH_TOKEN` / `GITLAB_TOKEN`）优先于 config；provider 由 host 推断、`forges[host].type` 可覆写。`workspace` / `forge` / precommit gate 都委托它，**不各自读文件**。
 
 ### 3. native-first 事件映射（本插件的设计本质）
