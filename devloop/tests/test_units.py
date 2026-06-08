@@ -96,25 +96,25 @@ def _git(repo, *a):
 
 def test_cmdparse_git_invocations():
     gi = cmdparse.git_invocations
-    assert [i["subcommand"] for i in gi("git commit -m x")] == ["commit"]
+    assert [i.subcommand for i in gi("git commit -m x")] == ["commit"]
     # false negative fixed: global options before the subcommand
-    assert gi("git -C /repo commit")[0]["subcommand"] == "commit"
-    assert gi("git -c user.name=x push")[0]["subcommand"] == "push"
-    assert gi("GIT_DIR=.git git commit")[0]["subcommand"] == "commit"
-    assert gi("/usr/bin/git push")[0]["subcommand"] == "push"
+    assert gi("git -C /repo commit")[0].subcommand == "commit"
+    assert gi("git -c user.name=x push")[0].subcommand == "push"
+    assert gi("GIT_DIR=.git git commit")[0].subcommand == "commit"
+    assert gi("/usr/bin/git push")[0].subcommand == "push"
     # false positive fixed: pattern inside quoted text is NOT a git invocation
     assert gi('echo "git add -A"') == []
     assert gi("grep -r 'git commit' .") == []
     # operator inside quotes must not split the command
-    assert [i["subcommand"] for i in gi('git commit -m "a && b"')] == ["commit"]
+    assert [i.subcommand for i in gi('git commit -m "a && b"')] == ["commit"]
     # chained commands
-    assert [i["subcommand"] for i in gi("cd r && git push")] == ["push"]
+    assert [i.subcommand for i in gi("cd r && git push")] == ["push"]
     # add -A detection (incl. -C form)
-    assert gi("git add -A")[0]["args"] == ["-A"]
-    assert gi("git -C r add -A")[0]["subcommand"] == "add"
+    assert gi("git add -A")[0].args == ["-A"]
+    assert gi("git -C r add -A")[0].subcommand == "add"
     # -C target captured so guards can judge the right repo
-    assert gi("git -C /repo commit")[0]["cwd"] == "/repo"
-    assert gi("git commit")[0]["cwd"] is None
+    assert gi("git -C /repo commit")[0].cwd == "/repo"
+    assert gi("git commit")[0].cwd is None
 
 
 def test_protect_branch_checks_dash_c_target():
@@ -503,7 +503,7 @@ def test_git_invocation_cd_prefix():
     cwd 停在 workspace 根,inp.cwd 不是命令真正触达的仓库;相对 cd 链按 shell 语义组合
     (`cd a && cd b` → a/b,旧 last-cd-wins 会错算成 b)。"""
     def cds(cmd):
-        return [inv["cd"] for inv in cmdparse.git_invocations(cmd)]
+        return [inv.cd for inv in cmdparse.git_invocations(cmd)]
     assert cds("cd /a/b && git commit -m 'x'") == ["/a/b"]
     assert cds("cd a && make && cd b && git push") == [os.path.join("a", "b")]
     assert cds("git commit -m 'cd /tmp'") == [None]    # 引号内不算
@@ -712,11 +712,11 @@ def test_cmdparse_contract_table():
         assert got == heads, f"{cmd!r}: {got} != {heads}"
     # git 调用归属:-C 绝对优先 / -C 相对叠在 cd 前缀上 / 后置 cd 不偷归属
     inv = cmdparse.git_invocations("FOO=1 git -C /tmp/r fetch")[0]
-    assert inv["subcommand"] == "fetch" and cmdparse.invocation_dir(inv, "/base") == "/tmp/r"
+    assert inv.subcommand == "fetch" and inv.run_dir("/base") == "/tmp/r"
     inv = cmdparse.git_invocations("cd sub && git -C nested commit -m x")[0]
-    assert cmdparse.invocation_dir(inv, "/base") == "/base/sub/nested"
+    assert inv.run_dir("/base") == "/base/sub/nested"
     inv = cmdparse.git_invocations("git push && cd /elsewhere")[0]
-    assert cmdparse.invocation_dir(inv, "/base") == "/base"
+    assert inv.run_dir("/base") == "/base"
 
 
 def test_protocol_files_schema():
@@ -803,7 +803,7 @@ def test_owner_lock_acquire_atomic():
 def test_cd_position_aware_attribution():
     """cd 前缀按位置生效,不是 last-cd-wins:`git checkout x && cd <非仓库>` 曾把
     checkout 归到 cd 目标,branch.json 不刷新、注入滞留已删分支;
-    `cd subrepo && git commit` 的前缀语义保持不变(guards 也经 invocation_dir 受益)。"""
+    `cd subrepo && git commit` 的前缀语义保持不变(guards 也经 run_dir 受益)。"""
     pgr = _load_hook("posttool_git_refresh")
     W = "/tmp/dlut_cdpos"
     shutil.rmtree(W, ignore_errors=True)
@@ -840,14 +840,14 @@ def test_cmdparse_subshell_scope():
     # `(` 不再掩码命令词:workspace guard 能同时看到 cd 与 uv(原误拦的 case)
     assert [s[0] for s in cmdparse.commands("(cd repo && uv run pytest)")] == ["cd", "uv"]
     # cd 在子 shell 内对同 shell 的命令生效……
-    assert [i["cd"] for i in cmdparse.git_invocations("(cd x && git push)")] == ["x"]
+    assert [i.cd for i in cmdparse.git_invocations("(cd x && git push)")] == ["x"]
     # ……但不外泄给子 shell 之后的兄弟命令(扁平模型做不到的 soundness)
-    assert [i["cd"] for i in cmdparse.git_invocations("(cd x); git push")] == [None]
+    assert [i.cd for i in cmdparse.git_invocations("(cd x); git push")] == [None]
     # brace group 的 cd 留在本 shell → 会外泄(与子 shell 相反)
-    assert [i["cd"] for i in cmdparse.git_invocations("{ cd y; git status; }")] == ["y"]
+    assert [i.cd for i in cmdparse.git_invocations("{ cd y; git status; }")] == ["y"]
     # 命令替换 `$(…)` 里的 git 也要被看见(否则 protect 守卫漏判),且其 cd 隔离
-    assert [i["subcommand"] for i in cmdparse.git_invocations("echo $(git push)")] == ["push"]
-    assert [i["cd"] for i in cmdparse.git_invocations("echo $(cd z && git push)")] == ["z"]
+    assert [i.subcommand for i in cmdparse.git_invocations("echo $(git push)")] == ["push"]
+    assert [i.cd for i in cmdparse.git_invocations("echo $(cd z && git push)")] == ["z"]
     assert cmdparse.git_invocations('echo "git push"') == []   # 引号内仍不算
 
 
@@ -858,6 +858,45 @@ def test_cmdtree_parser_protocol():
     from lib.cmdtree import parable as parable_backend
     assert isinstance(parable_backend.parser, base.Parser)        # runtime_checkable
     assert isinstance(parable_backend.parser.parse("git push"), base.Seq)
+
+
+def test_cmdparse_command_invocations():
+    """每个命令是一个 Invocation(argv + 作用域感知 cd),run_dir(base) 算出有效目录——守卫据此
+    判某命令实际在哪执行,而非只看"有没有 cd token"。"""
+    Inv = cmdparse.Invocation
+    ci = cmdparse.command_invocations
+    assert ci("cd x && uv run pytest") == [
+        Inv(argv=["cd", "x"], cd=None),
+        Inv(argv=["uv", "run", "pytest"], cd="x"),
+    ]
+    # 子 shell 的 cd 不归属其后的兄弟命令
+    uv = [v for v in ci("(cd sub); uv run pytest") if v.argv[0] == "uv"][0]
+    assert uv.cd is None
+    assert ci("PYTHONPATH=. pytest x")[0].argv[0] == "pytest"   # env 同 commands() 剥离
+    # run_dir 把 cd 叠在 base 上
+    assert Inv(argv=["uv"], cd="sub").run_dir("/ws") == "/ws/sub"
+    assert Inv(argv=["uv"], cd=None).run_dir("/ws") == "/ws"
+
+
+def test_workspace_cwd_guard_cd_scope():
+    """cmdtree cd-scope 让守卫变 sound:在 workspace 根直接跑子项目命令 → 拦;同 shell `cd <sub>`
+    进了真仓 → 放行;而 cd 在子 shell `(cd sub); uv`(对 uv 无效)→ 仍拦——粗判"有没有 cd"放过了它。"""
+    guard = _load_hook("pretool_workspace_cwd_guard")
+    root = "/tmp/dlut_wsg"; os.makedirs(root, exist_ok=True)
+    guard.workspace = type("W", (), {"load_workspaces": staticmethod(lambda: [root])})
+    guard.WorkspaceContext = type("WC", (), {"load": staticmethod(lambda p: None)})
+    guard.load_active_repo = lambda p: None
+
+    def at_root(cmd):
+        return guard.decide(_hook_input("Bash", {"cwd": root, "tool_input": {"command": cmd}}))
+
+    assert at_root("uv run pytest")                     # 裸命令在根 → 拦
+    assert at_root("make build")
+    assert at_root("cd sub && uv run pytest") is None   # cd 进子项目 → 放行
+    assert at_root("(cd sub); uv run pytest")           # 子 shell cd 不外泄 → 仍拦(修复点)
+    assert at_root("git status") is None                # 非子项目命令 → 放行
+    # 不在 workspace 根 → 与本守卫无关
+    assert guard.decide(_hook_input("Bash", {"cwd": "/tmp", "tool_input": {"command": "uv run x"}})) is None
 
 
 def _hook_input(tool: str, raw: dict):

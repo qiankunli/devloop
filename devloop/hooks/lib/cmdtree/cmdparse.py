@@ -18,12 +18,14 @@ module exposing a conforming `parser` and change that import — the walker and 
 stay untouched.
 
 Best-effort by design: guards are the secondary net; the smart_*.sh scripts are primary
-(AGENTS.md §3). Requires Python 3.12+. Public API — `commands` / `git_invocations` /
-`first_token_is` / `segments` / `invocation_dir` — unchanged.
+(AGENTS.md §3). Requires Python 3.12+. Public API — `commands` / `command_invocations` /
+`git_invocations` (→ `Invocation` / `GitInvocation`, with `.run_dir(base)`) / `first_token_is`
+/ `segments`.
 """
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from lib.cmdtree import base as cmdtree
@@ -35,6 +37,46 @@ from lib.cmdtree.parable import parser as _parser
 _GIT_GLOBAL_WITH_ARG = {
     "-C", "--git-dir", "--work-tree", "--namespace", "-c", "--exec-path", "--super-prefix",
 }
+
+
+@dataclass
+class Invocation:
+    """One command invocation: its `argv` (leading `VAR=` env assignments stripped) and the
+    `cd` prefix in effect — a scope-aware path *fragment*, not a resolved dir; call
+    `run_dir(base)` to layer it over a base. A git call is the `GitInvocation` subtype,
+    enriched with its subcommand/args and `-C` target."""
+
+    argv: list[str]
+    cd: str | None = None
+
+    def run_dir(self, base: str | Path) -> str:
+        """Effective directory this invocation runs in: the cd prefix layered over `base`
+        (relative composes, absolute resets). Guards judge each call against THIS dir, not
+        the session cwd."""
+        return _layer(base, self.cd)
+
+
+@dataclass
+class GitInvocation(Invocation):
+    """A git call enriched with the resolved `subcommand`, its `args`, and the `-C` target
+    (`cwd`), which overrides the cd prefix for the run dir."""
+
+    subcommand: str | None = None
+    args: list[str] = field(default_factory=list)
+    cwd: str | None = None  # `-C` target
+
+    def run_dir(self, base: str | Path) -> str:
+        return _layer(base, self.cd, self.cwd)  # `-C` over (cd over base)
+
+
+def _layer(base: str | Path, *parts: str | None) -> str:
+    """Layer path fragments over `base`: each relative part composes, each absolute resets."""
+    d = str(base)
+    for part in parts:
+        if part:
+            p = Path(os.path.expanduser(os.path.expandvars(part)))
+            d = str(p if p.is_absolute() else Path(d) / p)
+    return d
 
 
 def _strip_env(tokens: list[str]) -> list[str]:
@@ -57,9 +99,9 @@ def _compose_cd(prefix: str | None, target: str) -> str:
     return target
 
 
-def _git_inv(toks: list[str], cd_prefix: str | None) -> dict:
-    """A git command's tokens → {subcommand, args, cwd(-C target), cd(prefix in effect)}.
-    Global options (-C/-c/--git-dir/...) skipped so the real subcommand is found."""
+def _git_inv(toks: list[str], cd_prefix: str | None) -> GitInvocation:
+    """A git command's tokens → a `GitInvocation`. Global options (-C/-c/--git-dir/...) are
+    skipped so the real subcommand is found; `-C` is captured as the run-dir override."""
     j = 1
     cdir: str | None = None
     while j < len(toks):
@@ -75,44 +117,42 @@ def _git_inv(toks: list[str], cd_prefix: str | None) -> dict:
             j += 1
             continue
         break
-    return {"subcommand": toks[j] if j < len(toks) else None, "args": toks[j + 1:],
-            "cwd": cdir, "cd": cd_prefix}
+    return GitInvocation(argv=toks, cd=cd_prefix, cwd=cdir,
+                         subcommand=toks[j] if j < len(toks) else None, args=toks[j + 1:])
 
 
-def _walk(node: cmdtree.Node, cd: str | None, cmds: list[list[str]], gits: list[dict]) -> str | None:
-    """Append each command's tokens to `cmds` and each git call to `gits`, tracking the cd
-    prefix with correct shell scope. Returns the cd prefix AFTER `node` (for sequential
+def _walk(node: cmdtree.Node, cd: str | None, invs: list[Invocation]) -> str | None:
+    """Append each command to `invs` (a git call as the `GitInvocation` subtype), tracking the
+    cd prefix with correct shell scope. Returns the cd prefix AFTER `node` (for sequential
     composition in a Seq); a subshell / pipeline / compound never leaks its cd out."""
     if isinstance(node, cmdtree.Command):
         toks = _strip_env(node.words)
         result = cd
         if toks:
-            cmds.append(toks)
             base = os.path.basename(toks[0])
+            invs.append(_git_inv(toks, cd) if base == "git" else Invocation(argv=toks, cd=cd))
             if base == "cd" and len(toks) >= 2 and not toks[1].startswith("-"):
                 result = _compose_cd(cd, toks[1])
-            elif base == "git":
-                gits.append(_git_inv(toks, cd))
         for sub in node.subs:  # `$(…)` / `<(…)` run in a fresh subshell → isolated cd
-            _walk(sub, None, cmds, gits)
+            _walk(sub, None, invs)
         return result
     if isinstance(node, cmdtree.Seq):
         cur = cd
         for item in node.items:
-            cur = _walk(item, cur, cmds, gits)
+            cur = _walk(item, cur, invs)
         return cur  # threads cd to the next statement (`cd a; git push` → push in a)
     if isinstance(node, cmdtree.Subshell):
-        _walk(node.body, cd, cmds, gits)
+        _walk(node.body, cd, invs)
         return cd  # `( … )` cd does NOT escape
     if isinstance(node, cmdtree.Group):
-        return _walk(node.body, cd, cmds, gits)  # `{ …; }` cd escapes
+        return _walk(node.body, cd, invs)  # `{ …; }` cd escapes
     if isinstance(node, cmdtree.Pipeline):
         for stage in node.stages:
-            _walk(stage, cd, cmds, gits)  # each stage its own shell → no cd escape
+            _walk(stage, cd, invs)  # each stage its own shell → no cd escape
         return cd
     # Compound (for/while/if/case/function/…): find commands in the current cwd, don't propagate
     for child in node.children:
-        _walk(child, cd, cmds, gits)
+        _walk(child, cd, invs)
     return cd
 
 
@@ -123,22 +163,28 @@ def _tree(command: str) -> cmdtree.Node:
         return cmdtree.Seq([])
 
 
-def _walk_all(command: str) -> tuple[list[list[str]], list[dict]]:
-    cmds: list[list[str]] = []
-    gits: list[dict] = []
-    _walk(_tree(command), None, cmds, gits)
-    return cmds, gits
+def _walk_all(command: str) -> list[Invocation]:
+    invs: list[Invocation] = []
+    _walk(_tree(command), None, invs)
+    return invs
 
 
 def commands(command: str) -> list[list[str]]:
     """Each command's tokens (leading `VAR=` env assignments stripped), in execution order."""
-    return _walk_all(command)[0]
+    return [inv.argv for inv in _walk_all(command)]
 
 
-def git_invocations(command: str) -> list[dict]:
-    """Each git call: ``{'subcommand', 'args', 'cwd' (-C target), 'cd' (prefix in effect)}``.
-    `cd` is scope-aware — a subshell `(cd x)` does not attribute later siblings to x."""
-    return _walk_all(command)[1]
+def command_invocations(command: str) -> list[Invocation]:
+    """Each command as an `Invocation` (git calls as the `GitInvocation` subtype), in execution
+    order — `inv.run_dir(base)` resolves where each one runs. `cd` is scope-aware: a subshell
+    `(cd x)` does not attribute later siblings to x."""
+    return _walk_all(command)
+
+
+def git_invocations(command: str) -> list[GitInvocation]:
+    """The git calls among `command_invocations` — each a `GitInvocation` (`.subcommand`,
+    `.args`, `.cwd` = `-C` target, `.cd` = prefix in effect, scope-aware)."""
+    return [inv for inv in _walk_all(command) if isinstance(inv, GitInvocation)]
 
 
 def first_token_is(command: str, *names: str) -> bool:
@@ -171,14 +217,3 @@ def segments(command: str) -> list[list[str]]:
 
     collect(_tree(command))
     return out
-
-
-def invocation_dir(inv: dict, base: str | Path) -> str:
-    """Effective dir of one `git_invocations` entry: the `-C` target over the cd prefix in
-    effect, over `base` — guards judge each git call against THIS dir, not the session cwd."""
-    d = str(base)
-    for part in (inv.get("cd"), inv.get("cwd")):
-        if part:
-            p = Path(os.path.expanduser(os.path.expandvars(part)))
-            d = str(p if p.is_absolute() else Path(d) / p)
-    return d

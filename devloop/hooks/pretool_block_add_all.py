@@ -18,7 +18,7 @@ def decide(inp: hook_io.HookInput) -> str | None:
         return None
     # Parsed (not regex): catches `git -C repo add -A`, ignores quoted occurrences.
     for inv in cmdparse.git_invocations(inp.command):
-        if inv["subcommand"] == "add" and (_ADD_ALL_ARGS & set(inv["args"])):
+        if inv.subcommand == "add" and (_ADD_ALL_ARGS & set(inv.args)):
             return (
                 "⚠️  Refusing `git add -A` / `git add --all` / `git add .`.\n"
                 "These globs often capture IDE configs (.idea/), env files (.env), or unrelated "

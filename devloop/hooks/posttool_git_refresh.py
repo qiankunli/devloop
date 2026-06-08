@@ -25,15 +25,15 @@ def affected_roots(command: str, cwd: str) -> set[str]:
 
     Parsed via `cmdparse.git_invocations` (not a regex) so `git -C repo commit` and
     quoted-text false positives are handled. Each invocation is judged in its own
-    effective dir — `invocation_dir` layers `-C` over the position-aware cd-prefix
+    effective dir — `run_dir` layers `-C` over the position-aware cd-prefix
     over `cwd`, so `cd repo && git push` resolves to repo while a cd AFTER the git
     call can't steal its attribution.
     """
     roots: set[str] = set()
     for inv in cmdparse.git_invocations(command):
-        if inv.get("subcommand") not in _STATE_SUBCOMMANDS:
+        if inv.subcommand not in _STATE_SUBCOMMANDS:
             continue
-        root = repo_layout.find_git_root(cmdparse.invocation_dir(inv, cwd))
+        root = repo_layout.find_git_root(inv.run_dir(cwd))
         if root:
             roots.add(root)
     return roots
