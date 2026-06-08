@@ -300,6 +300,16 @@ def test_reuse_or_create_pr_over_narrowed_port():
         sgo.forge_for_repo = orig
 
 
+def test_refresh_pr_state_failopen():
+    """refresh_pr_state (the live-state preflight for push/mr) is best-effort: a repo with no
+    forge remote/token just no-ops rather than raising — the gate falls back to cache."""
+    sgo = _load_script("smart_git_ops")
+    R = "/tmp/dlut_refresh"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q")
+    sgo.refresh_pr_state(R)   # no origin/token → no-op, no exception
+
+
 def test_pick_branch_pr():
     poll = _load_script("poll_pr_status")
     P = lambda **kw: PullRequest(**kw)  # noqa: E731
