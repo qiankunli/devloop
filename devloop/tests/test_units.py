@@ -113,8 +113,8 @@ def test_cmdparse_git_invocations():
     assert gi("git add -A")[0].args == ["-A"]
     assert gi("git -C r add -A")[0].subcommand == "add"
     # -C target captured so guards can judge the right repo
-    assert gi("git -C /repo commit")[0].cwd == "/repo"
-    assert gi("git commit")[0].cwd is None
+    assert gi("git -C /repo commit")[0].dash_c == "/repo"
+    assert gi("git commit")[0].dash_c is None
 
 
 def test_protect_branch_checks_dash_c_target():
@@ -716,6 +716,9 @@ def test_cmdparse_contract_table():
     inv = cmdparse.git_invocations("cd sub && git -C nested commit -m x")[0]
     assert inv.run_dir("/base") == "/base/sub/nested"
     inv = cmdparse.git_invocations("git push && cd /elsewhere")[0]
+    assert inv.run_dir("/base") == "/base"
+    # run_dir 规范化 `..`(否则 find_git_root 从带 .. 的路径起步会偏)
+    inv = cmdparse.git_invocations("cd a && cd .. && git status")[0]
     assert inv.run_dir("/base") == "/base"
 
 

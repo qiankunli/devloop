@@ -58,25 +58,26 @@ class Invocation:
 
 @dataclass
 class GitInvocation(Invocation):
-    """A git call enriched with the resolved `subcommand`, its `args`, and the `-C` target
-    (`cwd`), which overrides the cd prefix for the run dir."""
+    """A git call enriched with the resolved `subcommand`, its `args`, and `dash_c` — the
+    `git -C <dir>` target, which overrides the cd prefix for the run dir (None if no `-C`)."""
 
     subcommand: str | None = None
     args: list[str] = field(default_factory=list)
-    cwd: str | None = None  # `-C` target
+    dash_c: str | None = None  # `git -C` target
 
     def run_dir(self, base: str | Path) -> str:
-        return _layer(base, self.cd, self.cwd)  # `-C` over (cd over base)
+        return _layer(base, self.cd, self.dash_c)  # `-C` over (cd over base)
 
 
 def _layer(base: str | Path, *parts: str | None) -> str:
-    """Layer path fragments over `base`: each relative part composes, each absolute resets."""
+    """Layer path fragments over `base` (each relative part composes, each absolute resets),
+    returning a normalized path so callers needn't `..`-collapse it themselves."""
     d = str(base)
     for part in parts:
         if part:
             p = Path(os.path.expanduser(os.path.expandvars(part)))
             d = str(p if p.is_absolute() else Path(d) / p)
-    return d
+    return os.path.normpath(d)
 
 
 def _strip_env(tokens: list[str]) -> list[str]:
@@ -117,7 +118,7 @@ def _git_inv(toks: list[str], cd_prefix: str | None) -> GitInvocation:
             j += 1
             continue
         break
-    return GitInvocation(argv=toks, cd=cd_prefix, cwd=cdir,
+    return GitInvocation(argv=toks, cd=cd_prefix, dash_c=cdir,
                          subcommand=toks[j] if j < len(toks) else None, args=toks[j + 1:])
 
 
@@ -183,7 +184,7 @@ def command_invocations(command: str) -> list[Invocation]:
 
 def git_invocations(command: str) -> list[GitInvocation]:
     """The git calls among `command_invocations` — each a `GitInvocation` (`.subcommand`,
-    `.args`, `.cwd` = `-C` target, `.cd` = prefix in effect, scope-aware)."""
+    `.args`, `.dash_c` = `-C` target, `.cd` = prefix in effect, scope-aware)."""
     return [inv for inv in _walk_all(command) if isinstance(inv, GitInvocation)]
 
 
