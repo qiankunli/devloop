@@ -19,6 +19,12 @@ Paths use `<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code.
 | commit + push | `bash <PLUGIN_ROOT>/scripts/smart_gcamp.sh --message "<msg>" [...]` |
 | commit + push + PR/MR | `bash <PLUGIN_ROOT>/scripts/smart_gcampr.sh --message "<msg>" [...]` |
 
+**Message**: one-line / simple → inline single-quoted (`--message 'fix: …'`). Multi-line, or
+containing quotes / `$` / backticks → write it with the **Write tool** to
+`<repo>/.devloop/commit_msg` (gitignored scratch) and pass `--message-file <path>` (alias `-F`;
+`-F -` reads stdin) — no shell escaping, mirroring `git commit -F` / `gh --body-file`. `--title`
+defaults to the message's first line.
+
 Shared flags: `--repo <name|path>` (target repo; no `cd` prefix needed — default is
 cwd's repo, falling back to the workspace's last-active repo), `--branch <name>`
 (required when the context shows **PROTECTED** / **INACTIVE** — the script cuts a

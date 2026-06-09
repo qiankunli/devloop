@@ -1301,6 +1301,66 @@ def test_inject_at_workspace_root_uses_active_repo():
     assert out and "Branch: feat/x" in out                 # active repo's turn context reached the prompt
 
 
+def test_message_file_and_stdin_input():
+    """Commit message via --message-file (path) or -F - (stdin) — the shell-escaping-free path
+    for multi-line / quote-heavy messages (mirrors git -F / gh --body-file). Content round-trips
+    exactly, including the chars that break inline shell quoting."""
+    import io
+    sgo = _load_script("smart_git_ops")
+    ap = sgo._build_parser()
+    msg = 'feat(x): subj\n\nbody "dq" (paren) $VAR `bt` \'apos\'.'
+    p = "/tmp/dlut_msgfile.txt"
+    Path(p).write_text(msg, encoding="utf-8")
+    assert sgo._resolve_message(ap.parse_args(["mr", "--message-file", p]), ap) == msg
+    # -F - reads stdin
+    old = sys.stdin
+    sys.stdin = io.StringIO("from stdin\nbody")
+    try:
+        assert sgo._resolve_message(ap.parse_args(["mr", "-F", "-"]), ap) == "from stdin\nbody"
+    finally:
+        sys.stdin = old
+
+
+def test_inline_message_still_supported():
+    """Back-compat: inline --message / -m is unchanged (just no longer the only option)."""
+    sgo = _load_script("smart_git_ops")
+    ap = sgo._build_parser()
+    assert sgo._resolve_message(ap.parse_args(["mr", "--message", "fix: x"]), ap) == "fix: x"
+    assert sgo._resolve_message(ap.parse_args(["mr", "-m", "fix: y"]), ap) == "fix: y"
+
+
+def test_message_required_with_hint():
+    """Neither --message nor --message-file → exits with an actionable hint, not a bare usage dump."""
+    import contextlib
+    import io
+    sgo = _load_script("smart_git_ops")
+    ap = sgo._build_parser()
+    err = io.StringIO()
+    raised = False
+    try:
+        with contextlib.redirect_stderr(err):
+            sgo._resolve_message(ap.parse_args(["mr"]), ap)
+    except SystemExit:
+        raised = True
+    assert raised and "--message-file" in err.getvalue()
+
+
+def test_title_defaults_to_message_first_line():
+    """--title omitted → PR title is the message's FIRST line, so a multi-line body can't yield a
+    multi-line (invalid) PR title — the gcampr 422 that bit us."""
+    sgo = _load_script("smart_git_ops")
+    R = "/tmp/dlut_title"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    ap = sgo._build_parser()
+    ns = ap.parse_args(["mr", "--message", "feat: subject\n\nlong body line", "--repo", R])
+    ns.message = sgo._resolve_message(ns, ap)
+    intent = sgo.resolve_intent(ns, R)
+    assert intent.title == "feat: subject" and intent.message.endswith("long body line")
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = []
