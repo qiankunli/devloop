@@ -73,6 +73,26 @@ Claude Code 的 **channels**（research preview，v2.1.80+；[channels-reference
 - **不强制 TS**：channel = MCP server，MCP 也有 **Python SDK**，devloop 可用 Python 写 forge channel、复用现有 forge facade / `pr.json`，**不必换栈**（官方示例是 TS/Bun 只是生态熟路，非技术约束）。
 - **保留**：preview，自定义 channel 要 `--dangerously-load-development-channels`、不在 allowlist、Team/Enterprise 需管理员开 → 故保留下面的 fallback。
 
+### 代码落点（devloop）
+
+通知机制抽成一个**端口**，channel 只是第一种实现（deploy / verdict 以后复用同端口）：
+
+- **`hooks/lib/notify/`** —— notify 端口。`base.py`：`Notification`（content/kind/meta，只说"surface 什么"）+ `Notifier` 协议（`deliver`）；`channel.py`：`ChannelNotifier`（push 成 `notifications/claude/channel`）+ `run_channel`（MCP server handshake + `claude/channel` 能力的复用壳）。`mcp` lazy import，无依赖也能导入 / 测。
+- **`scripts/forge_channel.py`** —— forge **生产者**（薄）。复用 monitor 的 `repos_to_poll` + `.devloop/pr.json` 与同一 change-key，变化时 build `Notification` 交给 `Notifier` deliver——只加通知，不二次 poll forge。
+- 加一个 deploy / verdict channel = 写个生产者 + `run_channel(...)`，不碰 `notify/channel`。
+
+**实验启用**（channel 是 preview，**不自动挂载**——以免给非 channel 用户起 MCP server / 强加 `mcp` 依赖）：需 `mcp` 包，并以 dev flag 起会话：
+
+```json
+{ "mcpServers": { "forge": {
+  "command": "python3",
+  "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/forge_channel.py", "${CLAUDE_PROJECT_DIR}"]
+}}}
+```
+```bash
+claude --dangerously-load-development-channels server:forge
+```
+
 ### 唤醒机制（fallback）：一次性后台任务"退出"
 
 无 channel（未开 preview / 纯 Python 环境）时退回这条：
