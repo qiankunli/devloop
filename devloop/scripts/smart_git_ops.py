@@ -34,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
 from lib import git_state, gitcmd, repo_resolve  # noqa: E402
-from lib.context import RepoContext, record_active_repo  # noqa: E402
+from lib.context import RepoContext, gate, prstate, record_active_repo  # noqa: E402
 from lib.forge import ForgeError, forge_for_repo, pr_label  # noqa: E402
 
 
@@ -256,18 +256,6 @@ def warn_mixed_version_bump(repo: str, plan: list[str]) -> None:
         )
 
 
-def refresh_pr_state(repo: str) -> None:
-    """Refresh the monitor-owned `pr` segment from the LIVE forge (current branch) so the
-    branch-positioning gate / PLAN notes decide on authoritative state, not a stale cache.
-    Reuses the monitor's own single-writer poll; best-effort (fail-open to existing cache)."""
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from poll_pr_status import poll_once
-        poll_once(repo)
-    except Exception:
-        pass
-
-
 def reuse_or_create_pr(repo: str, source: str, target: str, title: str, plan: list[str]):
     """Open a PR/MR for `source`→`target`, reusing the branch's open one if present.
     Provider-neutral: the forge is resolved from the repo's origin (GitHub or GitLab)."""
@@ -313,27 +301,31 @@ def resolve_intent(ns: argparse.Namespace, invoke_cwd: str) -> GitIntent:
     )
 
 
-def prepare_branch(intent: GitIntent, ctx: RepoContext, current: str | None, plan: list[str]) -> BranchResult:
+def prepare_branch(intent: GitIntent, gv: gate.GateView, plan: list[str]) -> BranchResult:
     """Phase 2: position the working branch — intent-driven, independent of where HEAD sits
-    (see decide_branch for the cut/continue/error policy)."""
-    protected = git_state.is_protected_branch(current)
-    stale = ctx.branch_pr_inactive()
+    (see decide_branch for the cut/continue/error policy). Decides on gate truth (LIVE branch +
+    SHA-validated PR state), never the cached RepoContext."""
     action, detail = decide_branch(
-        current, intent.requested_branch, protected=protected, stale=stale, base=intent.base,
+        gv.branch, intent.requested_branch, protected=gv.protected(), stale=gv.inactive(), base=intent.base,
     )
     if action == "error":
         raise SmartError(
-            f"on '{current}' ({detail}) — pass --branch <name> to cut a fresh branch off {intent.base}."
+            f"on '{gv.branch}' ({detail}) — pass --branch <name> to cut a fresh branch off {intent.base}."
         )
     if action == "cut":
         cut_new_branch(intent.repo, intent.requested_branch, intent.base, plan)
+        # Record where we forked from — git doesn't durably keep it, so devloop captures it at
+        # the one moment it's known exactly. Sticky across later refreshes (see repo.py).
+        fork = intent.base.split("/", 1)[1] if intent.base.startswith("origin/") else intent.base
+        RepoContext.refresh_branch(intent.repo).set_fork_from(fork)
+        plan.append(f"recorded fork_from={fork}")
         return BranchResult(branch=intent.requested_branch, cut=True)
-    if ctx.branch_pr_in_flight():
+    if gv.in_flight():
         # continuing onto a branch whose PR is still open — the loop's between-rounds state.
-        pr = ctx.current_pr()
-        label = pr_label(ctx.provider, pr.number) if pr else "PR"
-        plan.append(f"continuing in-flight {label} on '{current}'")
-    return BranchResult(branch=current or "", cut=False)
+        pr = gv.active_pr
+        label = pr_label(gv.provider, pr.number) if pr else "PR"
+        plan.append(f"continuing in-flight {label} on '{gv.branch}'")
+    return BranchResult(branch=gv.branch or "", cut=False)
 
 
 def stage_and_commit(intent: GitIntent, plan: list[str]) -> StageResult:
@@ -379,8 +371,9 @@ def publish(intent: GitIntent, branch: BranchResult, staged: StageResult, plan: 
         reuse_or_create_pr(repo, current, target, intent.title, plan)
         RepoContext.refresh_branch(repo)
         # Don't write pr_number here — keep the `pr` segment single-owner. Trigger one
-        # monitor poll so it (the sole writer) populates number + window for the new branch.
-        refresh_pr_state(repo)
+        # authoritative poll so it (the sole writer) populates number + window for the new
+        # branch — and this one PERSISTS (the old refresh_pr_state discarded the poll).
+        prstate.refresh_pr(repo)
 
 
 def main(argv: list[str]) -> int:
@@ -409,21 +402,17 @@ def main(argv: list[str]) -> int:
         print(f"smart_git_ops: {e}", file=sys.stderr)  # no PLAN yet — nothing was attempted
         return 1
 
-    ctx = RepoContext.load(intent.repo) or RepoContext.refresh_all(intent.repo)
-    current = git_state.get_current_branch(intent.repo)
+    # Gate truth (LIVE branch + SHA-validated PR state). For push/mr — outward, hard to
+    # reverse — pass live_refresh so an authoritative forge poll runs first: a PR merged on the
+    # server the monitor hasn't caught yet still blocks committing onto the dead branch (the
+    # exact lag devloop exists to kill). The cached RepoContext stays for prompt hints only.
+    gv = gate.evaluate(intent.repo, live_refresh=(intent.mode in ("push", "mr")))
     plan: list[str] = [
         f"mode={intent.mode} repo={Path(intent.repo).name} ({intent.source}) "
-        f"branch={current} target={intent.target}"
+        f"branch={gv.branch} target={intent.target}"
     ]
-    if intent.mode in ("push", "mr"):
-        # Gate branch positioning on LIVE PR state, not a possibly-stale cache: a PR merged
-        # on the server the monitor hasn't caught yet must still block committing onto the
-        # dead branch (the exact lag devloop exists to kill). Cached state is fine for prompt
-        # hints; a decision that gates an outward push deserves authoritative state.
-        refresh_pr_state(intent.repo)
-        ctx = RepoContext.load(intent.repo) or ctx
     try:
-        branch = prepare_branch(intent, ctx, current, plan)
+        branch = prepare_branch(intent, gv, plan)
         staged = stage_and_commit(intent, plan)
         publish(intent, branch, staged, plan)
         RepoContext.refresh_branch(intent.repo)

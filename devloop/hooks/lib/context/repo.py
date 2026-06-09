@@ -1,25 +1,28 @@
 """`RepoContext` — per-repo state, persisted as per-owner segment files under
-`<git_root>/.devloop/` (`meta.json` / `branch.json` / `pr.json` / `validation.json` /
-`injection.json`). `RepoContext` is the in-memory *view* that `load()` assembles by
-merging them; each mutator writes back only its own segment.
+`<git_root>/.devloop/` (`meta.json` / `branch.json` / `remote_branches.json` / `pr.json` /
+`validation.json` / `injection.json`). `RepoContext` is the in-memory *view* that `load()`
+assembles by merging them; each mutator writes back only its own segment.
 
-Why one file per owner: the state has several independent writer-roles (the refresh,
-the MR monitor, validation marks, injection marks) running in different processes. A
-single shared file would force a read-modify-write that can lose a concurrent writer's
-update; one file per owner makes every write touch a disjoint file, so that whole class
-is structurally impossible — no lock, atomic per-file writes (see base.py `_write_atomic`).
+Why one file per owner: the state has several independent writer-roles (the refresh, the MR
+monitor, validation marks, injection marks) running in different processes. A single shared
+file would force a read-modify-write that can lose a concurrent writer's update; one file per
+owner makes every write touch a disjoint file, so that whole class is structurally impossible
+— no lock, atomic per-file writes (see base.py `_write_atomic`).
 
-Schema + operations (load/refresh/mark/emit) built on `base.py` leaves
-(`AgentsMd`/`PullRequest`/`Cadence`/...) and the `gitcmd`-routed `git_state`. Notable schema choices:
+Branch model — three freshness tiers (see docs/branch-state.md):
+- **identity** (`branch.local`: name + HEAD sha): cheap, volatile, owned by the *refresh*
+  (local git events). This is the DISPLAY copy; write-gates re-derive identity LIVE
+  (`lib.context.gate`) instead of trusting this snapshot.
+- **read-freshness** (`branch.remotes`: the server's trunk tips + `remotes_fetched_at`): trunk
+  moves under you when a colleague pushes — an unobservable channel — so it is owned by the
+  *monitor* (`remote_branches.json`), never written by a refresh/script. ahead/behind is a
+  *relationship*, derived on read against these tips, never stored.
+- **write-gate** (`branch.pr_number` joined from `pr.json`): the current branch's PR/MR, also
+  monitor-owned. "inactive"/"in-flight" are *derived* by joining number → prs, never stored.
 
-- **PR model**: `branch.pr_number` holds only the current branch's PR/MR *number*; the
-  recent-PR window lives in `prs`. Both are monitor-owned and persist in `pr.json`, which is
-  *branch-keyed* — on `load` the number is joined in only if it was computed for the current
-  branch, so a branch switch self-invalidates it with no writer. "branch inactive" is
-  *derived* (`branch_pr_inactive`) by joining pr_number → prs, never stored as a bool. The
-  forge (GitHub/GitLab) is recorded per-PR so display picks the right vocabulary.
-- **No scheduler segment** — the MR sweep is a native `monitor` that self-paces.
-- All timestamps are float epoch (see base.py).
+`branch.local.fork_from` is the one fact git does not durably record: known exactly only when
+devloop cut the branch (gcampr writes it), so the refresh PRESERVES it across rebuilds (like
+pr_number) rather than recomputing it from git.
 """
 from __future__ import annotations
 
@@ -36,7 +39,6 @@ from .base import (
     Cadence,
     PullRequest,
     Reference,
-    WorktreeInfo,
     pr_label,
     vocab,
 )
@@ -62,27 +64,67 @@ class RepoMeta:
 
 
 @dataclass
-class BranchState:
-    current: str | None = None
-    protected: bool = False
-    target: str = "release"
-    ahead: int = 0
-    behind: int = 0
-    pr_number: int | None = None       # current branch's PR/MR number; join into prs for the rest
-    worktree: WorktreeInfo = field(default_factory=WorktreeInfo)
+class Branch:
+    """One branch's facts — its name, its tip commit, where it forked from, and (for a
+    worktree entry) its path. A pure value object: "how fresh is this view" is a property of
+    whoever holds it (the segment's `fetched_at`), not of the branch itself."""
+    name: str | None = None
+    commit: str = ""               # tip sha
+    fork_from: str | None = None   # branch it forked from; recorded by gcampr at cut, else inferred/None
+    path: str = ""                 # worktree path (empty for the non-worktree local / remote views)
 
     @classmethod
-    def from_dict(cls, d: dict | None) -> "BranchState":
+    def from_dict(cls, d: dict | None) -> "Branch":
         d = d or {}
         return cls(
-            current=d.get("current"),
-            protected=bool(d.get("protected")),
-            target=d.get("target", "release"),
-            ahead=int(d.get("ahead", 0) or 0),
-            behind=int(d.get("behind", 0) or 0),
-            pr_number=d.get("pr_number"),
-            worktree=WorktreeInfo.from_dict(d.get("worktree") or {}),
+            name=d.get("name"),
+            commit=d.get("commit", ""),
+            fork_from=d.get("fork_from"),
+            path=d.get("path", ""),
         )
+
+    def is_protected(self) -> bool:
+        return git_state.is_protected_branch(self.name)
+
+
+@dataclass
+class BranchTopology:
+    """The repo's branch topology across vantages — assembled by `RepoContext.load()` from
+    owner-disjoint segments (see module docstring). `local` is the working checkout
+    (refresh-owned, the DISPLAY copy); `remotes` are the server trunk tips (monitor-owned);
+    `worktrees` are the local linked worktrees (refresh-owned). `pr_number` / `remotes_fetched_at`
+    carry from their owning segments at load time."""
+    local: Branch = field(default_factory=Branch)
+    remotes: list[Branch] = field(default_factory=list)        # monitor-owned (remote_branches.json)
+    worktrees: list[Branch] = field(default_factory=list)
+    target: str = "release"                                    # canonical trunk to MR into / fork from
+    pr_number: int | None = None                               # joined from pr.json (monitor-owned)
+    remotes_fetched_at: float | None = None                    # provenance of `remotes`
+
+    @classmethod
+    def from_local_dict(cls, d: dict | None) -> "BranchTopology":
+        """Build the refresh-owned half (local + worktrees + target) from branch.json. remotes /
+        remotes_fetched_at / pr_number are merged in by `load` from their own segments.
+
+        Back-compat: a pre-existing flat branch.json (old `current`/`worktree` schema written by an
+        earlier devloop) has no `local` key — read its `current` into `local.name` so display and
+        the pr-join don't blank to 'Branch: ?' in the window between an upgrade and the next
+        git-state refresh (the cache is gitignored and regenerates fully then)."""
+        d = d or {}
+        local = Branch.from_dict(d["local"]) if "local" in d else Branch(name=d.get("current"))
+        return cls(
+            local=local,
+            worktrees=[Branch.from_dict(w) for w in (d.get("worktrees") or [])],
+            target=d.get("target", "release"),
+        )
+
+    def base_branch(self) -> str:
+        """The trunk this branch is measured against — its recorded fork point, else the
+        repo's canonical target."""
+        return self.local.fork_from or self.target
+
+    def remote_tip(self, name: str | None) -> Branch | None:
+        return next((r for r in self.remotes if r.name == name), None)
 
 
 @dataclass
@@ -119,7 +161,7 @@ class Injection:
 class RepoContext:
     repo: RepoMeta = field(default_factory=RepoMeta)
     agents_md: AgentsMd = field(default_factory=AgentsMd)
-    branch: BranchState = field(default_factory=BranchState)
+    branch: BranchTopology = field(default_factory=BranchTopology)
     validation: Validation = field(default_factory=Validation)
     injection: Injection = field(default_factory=Injection)
     prs: list[PullRequest] = field(default_factory=list)   # monitor-owned recent-PR window
@@ -137,12 +179,16 @@ class RepoContext:
         meta = base.load_segment(repo_dir, "meta")
         if meta is None:
             return None
-        branch = BranchState.from_dict(base.load_segment(repo_dir, "branch") or {})
+        branch = BranchTopology.from_local_dict(base.load_segment(repo_dir, "branch") or {})
+        # monitor-owned remote trunk tips (remote_branches.json) + their provenance stamp.
+        rb = base.load_segment(repo_dir, "remote_branches") or {}
+        branch.remotes = [Branch.from_dict(r) for r in (rb.get("remotes") or [])]
+        branch.remotes_fetched_at = rb.get("fetched_at")
+        # Join the monitor-owned pr_number only when it was computed for the CURRENT (cached)
+        # branch — DISPLAY-grade; write-gates re-derive against LIVE branch (lib.context.gate).
+        # pr.json is branch-keyed, so a branch switch self-invalidates the stale number.
         pr = base.load_segment(repo_dir, "pr") or {}
-        # Join the monitor-owned pr_number only when it was computed for the CURRENT branch.
-        # pr.json is branch-keyed, so a branch switch self-invalidates the stale number with
-        # nobody writing — the monitor re-establishes it on its next poll.
-        branch.pr_number = pr.get("pr_number") if pr.get("branch") == branch.current else None
+        branch.pr_number = pr.get("pr_number") if pr.get("branch") == branch.local.name else None
         ctx = cls(
             repo=RepoMeta.from_dict(meta.get("repo")),
             agents_md=AgentsMd.from_dict(meta.get("agents_md") or {}),
@@ -177,11 +223,15 @@ class RepoContext:
         git_state.ensure_gitignore_excluded(root)   # keep /.devloop/ out of git
 
     def _save_branch(self) -> None:
+        """Refresh-owned: the LOCAL half only (local + worktrees + target). `remotes` is the
+        monitor's (remote_branches.json) and `pr_number` is pr.json's — never written here."""
         if not self._root():
             return
-        d = asdict(self.branch)
-        d.pop("pr_number", None)   # pr_number is monitor-owned → the `pr` segment, not here
-        base.save_segment(self._root(), "branch", d)
+        base.save_segment(self._root(), "branch", {
+            "local": asdict(self.branch.local),
+            "worktrees": [asdict(w) for w in self.branch.worktrees],
+            "target": self.branch.target,
+        })
 
     def _save_pr(self) -> None:
         """Monitor's write surface (also used by gcampr via a one-shot poll). Branch-keyed
@@ -191,7 +241,7 @@ class RepoContext:
         if not self._root():
             return
         base.save_segment(self._root(), "pr", {
-            "branch": self.branch.current,
+            "branch": self.branch.local.name,
             "provider": self.provider,
             "pr_number": self.branch.pr_number,
             "prs": [asdict(p) for p in self.prs],
@@ -210,9 +260,9 @@ class RepoContext:
     def refresh_all(cls, repo_dir: str | Path) -> "RepoContext":
         """Full rebuild (normal-impl boundary: SessionStart / enter / TTL).
 
-        Writes only the refresher-owned segments (meta + branch). validation /
-        injection / pr live in their own files and are left untouched — their values
-        are merged in from disk only to keep the *returned* object complete."""
+        Writes only the refresher-owned segments (meta + branch). validation / injection /
+        pr / remote_branches live in their own files and are left untouched — their values
+        are merged in (via prev) only to keep the *returned* object complete."""
         repo_dir_in = str(Path(repo_dir))
         repo_dir_abs = str(Path(repo_dir).resolve())
         code_dir = repo_layout.find_repo_code_dir(repo_dir_abs)
@@ -230,28 +280,25 @@ class RepoContext:
                 references=[Reference(title=r.get("title", ""), path=r.get("path", ""),
                                       hook=r.get("description")) for r in items],
             ),
-            branch=_build_branch(repo_dir_abs, target),
+            branch=_build_topology(repo_dir_abs, target, prev.branch),
             validation=prev.validation,
             injection=prev.injection,
             prs=prev.prs,
             provider=prev.provider,
         )
-        ctx.branch.pr_number = prev.branch.pr_number   # keep the join value on the returned object
         ctx._save_meta()
         ctx._save_branch()
         return ctx
 
     @classmethod
     def refresh_branch(cls, repo_dir: str | Path) -> "RepoContext":
-        """Incremental branch refresh (fast; after git state change). No AGENTS.md re-parse.
-        Writes only branch.json. Not-yet-initialized → fall back to a full build."""
+        """Incremental branch refresh (fast; after a local git state change). No AGENTS.md
+        re-parse. Writes only branch.json. Not-yet-initialized → fall back to a full build."""
         ctx = cls.load(repo_dir)
         if ctx is None:
             return cls.refresh_all(repo_dir)
-        prev_num = ctx.branch.pr_number
         target = ctx.branch.target or git_state.get_default_target(ctx.repo.real_repo_dir)
-        ctx.branch = _build_branch(ctx.repo.real_repo_dir, target)
-        ctx.branch.pr_number = prev_num   # in-memory only; pr.json (the source of truth) is untouched
+        ctx.branch = _build_topology(ctx.repo.real_repo_dir, target, ctx.branch)
         ctx._save_branch()
         return ctx
 
@@ -286,7 +333,14 @@ class RepoContext:
         self.prs = list(prs)
         self._save_pr()
 
-    # ── PR derivation ─────────────────────────────────────────────────────────
+    def set_fork_from(self, fork_from: str | None) -> None:
+        """gcampr's surface: record where the (just-cut) current branch forked from — the one
+        branch fact git doesn't durably keep. Sticky: `_build_topology` preserves it across
+        refreshes, so a later rebuild-from-git won't clobber it."""
+        self.branch.local.fork_from = fork_from
+        self._save_branch()
+
+    # ── PR derivation (DISPLAY-grade; write-gates use lib.context.gate) ─────────
     def current_pr(self) -> PullRequest | None:
         if self.branch.pr_number is None:
             return None
@@ -294,16 +348,17 @@ class RepoContext:
 
     def branch_pr_inactive(self) -> bool:
         """True if the current branch's PR/MR is merged/closed (derived, not stored).
-        The branch-merged guard reads this."""
+
+        DISPLAY-grade — keyed off the *cached* branch name. The hard gates do NOT read this;
+        they re-derive against the LIVE branch + HEAD via `lib.context.gate` (a cached branch
+        name could be stale after an unobserved checkout). See docs/branch-state.md."""
         p = self.current_pr()
         return bool(p and p.inactive)
 
     def branch_pr_in_flight(self) -> bool:
         """True if the current branch's PR/MR is still open / awaiting human merge (derived).
-
-        The loop's between-rounds state. Surfaced so the orchestrator can note that committing
-        here continues an in-flight PR — and, more importantly, so starting NEW work is never
-        stacked onto an in-flight feature branch by default (it re-bases off origin/<target>)."""
+        DISPLAY-grade (see `branch_pr_inactive`). Surfaced so the orchestrator notes that
+        committing here continues an in-flight PR, and new work re-bases off origin/<target>."""
         p = self.current_pr()
         return bool(p and p.is_open)
 
@@ -348,36 +403,59 @@ class RepoContext:
 
 
 # ── private builders / renderers ──────────────────────────────────────────────
-def _build_branch(repo_dir: str, target: str) -> BranchState:
-    current = git_state.get_current_branch(repo_dir)
-    ahead, behind = 0, 0
-    if git_state.target_exists(repo_dir, target):
-        ab = git_state.get_ahead_behind(repo_dir, target)
-        if ab:
-            ahead, behind = ab
-    is_linked, common_dir, main_branch = git_state.get_worktree_metadata(repo_dir)
-    # pr_number is intentionally NOT set here — it's monitor-owned (the `pr` segment) and
-    # joined in by branch at load time, so a branch switch drops it without any writer.
-    return BranchState(
-        current=current,
-        protected=git_state.is_protected_branch(current),
+def _build_topology(repo_dir: str, target: str, prev: BranchTopology | None) -> BranchTopology:
+    """Rebuild the LOCAL half (identity + worktrees) from live git, preserving the
+    monitor-owned and git-unrecorded facts from `prev` so the returned object stays whole.
+
+    `fork_from` is git-unrecorded → carried from `prev` ONLY when the branch name is unchanged
+    (a switch drops the old branch's fork point; gcampr re-records on the next cut). remotes /
+    remotes_fetched_at / pr_number are merged from prev (load re-reads them from disk anyway)."""
+    name = git_state.get_current_branch(repo_dir)
+    commit = git_state.get_head_sha(repo_dir)
+    fork_from = prev.local.fork_from if (prev is not None and prev.local.name == name) else None
+    worktrees = [Branch(name=b, commit=sha, path=p) for (p, sha, b) in git_state.list_worktrees(repo_dir)]
+    topo = BranchTopology(
+        local=Branch(name=name, commit=commit, fork_from=fork_from),
+        worktrees=worktrees,
         target=target,
-        ahead=ahead,
-        behind=behind,
-        worktree=WorktreeInfo(is_linked=is_linked, common_dir=common_dir, main_branch=main_branch),
     )
+    if prev is not None:
+        topo.remotes = prev.remotes
+        topo.remotes_fetched_at = prev.remotes_fetched_at
+        topo.pr_number = prev.pr_number
+    return topo
+
+
+def _branch_staleness(repo_dir: str, b: BranchTopology) -> dict:
+    """ahead/behind of local vs its trunk baseline, plus a freshness qualifier.
+
+    ahead/behind is computed against the LOCAL `origin/<base>` mirror (no network). The monitor's
+    TRUE tip (`b.remotes`) is compared to that mirror to detect 'trunk moved since you last
+    fetched' — the silent-staleness the count alone hides (see docs/branch-state.md §read-freshness)."""
+    base_name = b.base_branch()
+    ahead, behind = git_state.get_ahead_behind(repo_dir, base_name) or (0, 0)
+    remote = b.remote_tip(base_name)
+    if remote and remote.commit:
+        # we have the server's TRUE tip for this baseline → a real freshness signal. Claim
+        # "as of" ONLY here: if the baseline isn't among the monitor's tracked tips, saying
+        # "as of <t>" would falsely imply this count reflects the latest remote.
+        local_mirror = git_state.rev_parse(repo_dir, f"origin/{base_name}")
+        if local_mirror and local_mirror != remote.commit:
+            asof = f", ⚠ trunk moved since fetch {base.fmt_ts(b.remotes_fetched_at)} — fetch to recount"
+        else:
+            asof = f", as of {base.fmt_ts(b.remotes_fetched_at)}"
+    else:
+        asof = ""
+    return {"base": base_name, "ahead": ahead, "behind": behind, "asof": asof}
 
 
 def _format_turn(ctx: "RepoContext") -> str:
     lines = [f"[Current repo: {ctx.repo.code_dir} ({ctx.repo.language or '?'})]"]
     b = ctx.branch
-    cur = b.current or "?"
-    if b.worktree.is_linked:
-        wt = f" (worktree, main={b.worktree.main_branch})" if b.worktree.main_branch else " (worktree)"
-    else:
-        wt = ""
+    cur = b.local.name or "?"
+    wt = " (worktree)" if git_state.is_linked_worktree(ctx.repo.real_repo_dir) else ""
     extras = []
-    if b.protected:
+    if b.local.is_protected():
         extras.append("PROTECTED")
     pr = ctx.current_pr()
     if pr and pr.inactive:
@@ -393,7 +471,11 @@ def _format_turn(ctx: "RepoContext") -> str:
             f"edit here only to amend this {noun}"
         )
     extra_str = f" ⚠️ {'; '.join(extras)}" if extras else ""
-    lines.append(f"Branch: {cur}{wt} (ahead {b.ahead}, behind {b.behind}, target={b.target}){extra_str}")
+    st = _branch_staleness(ctx.repo.real_repo_dir or ctx.repo.repo_dir, b)
+    lines.append(
+        f"Branch: {cur}{wt} (ahead {st['ahead']}, behind {st['behind']} vs {st['base']}{st['asof']}, target={b.target})"
+        f"{extra_str}"
+    )
 
     raw = git_state.get_workspace_status(ctx.repo.real_repo_dir or ctx.repo.repo_dir)
     if raw.get("dirty"):

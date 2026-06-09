@@ -25,7 +25,7 @@ def main() -> int:
     print(f"devloop initialized: {git_root}")
     print(f"  code_dir   = {ctx.repo.code_dir}")
     print(f"  language   = {ctx.repo.language}")
-    print(f"  branch     = {ctx.branch.current} (protected={ctx.branch.protected}, target={ctx.branch.target})")
+    print(f"  branch     = {ctx.branch.local.name} (protected={ctx.branch.local.is_protected()}, target={ctx.branch.target})")
     print(f"  agents_md  = {ctx.agents_md.path} ({len(ctx.agents_md.references)} references)")
     return 0
 

@@ -42,7 +42,7 @@ INSTRUCTIONS = (
 
 def seg_key(seg: dict | None):
     """The monitor's change-key for a `pr` segment: pr_number + each PR's (number, state).
-    None when missing — mirrors `poll_pr_status.poll_once` so we react to the same changes."""
+    None when missing — mirrors `prstate.poll_pr` so we react to the same changes."""
     if not seg:
         return None
     return (seg.get("pr_number"),
