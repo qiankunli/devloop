@@ -97,7 +97,7 @@ claude --dangerously-load-development-channels server:forge
 
 无 channel（未开 preview / 纯 Python 环境）时退回这条：
 
-- **不能**用长驻 monitor 的 stdout 唤醒：CC 把**运行中**长驻任务的最新 stdout **每回合重投**（实测一事件 69 分钟 362 次，`#66219`）→ 长驻 monitor 一律 `--quiet`，**只 persist 不通知**。
+- **不能**用长驻 monitor 的 stdout 唤醒：CC 把**运行中**长驻任务的最新 stdout **每回合重投**（实测一事件 69 分钟 362 次，`#66219`）→ 故 monitor 设计成 **persist-only、不发 stdout 通知**（唤醒交给 channel，或下面的 waiter）。
 - **改用一次性进程** `scripts/wait_for_pr_change.py`：盯 `.devloop/pr.json` 的 delta，**变了就 print + 退出** = 一条终态通知，**重唤恰好一次**（已验证不重投）。
 - 与 channel 的差别：waiter 只 signal"变了"，Execute 得**自己回读 `pr.json`**；channel 则 inform 即带内容。
 - 角色：**Perceive** = `scripts/poll_pr_status.py`；**Wake** = waiter，会话留 follow-up 时 `run_in_background` arm。
@@ -116,7 +116,7 @@ claude --dangerously-load-development-channels server:forge
 
 ### 与现有机制的接口
 
-- 长在已有 event seam（`hooks/lib/events.py` 的 `Event` + `dispatch`）上——seam 注释已预留"wake / 匹配 pending intent 是 **handler 的事**"。channel 与 waiter 都只是这条 seam 的不同**出口**。
+- 推给 agent 走 **notify 端口**（`hooks/lib/notify`：`Notification` + `Notifier`）——channel 是第一种投递（`ChannelNotifier` + `run_channel`）；producer（`scripts/forge_channel.py`）盯状态中心的变化、build `Notification` 交给 `Notifier`。channel 与 waiter 是这条推路的不同**出口**（前者带内容、后者裸 wake）。
 - 状态总线 = `.devloop/`：monitor 写 `pr.json`；follow-up 意图、（fallback 下）持久化 mode 各一个 segment。
 
 ### 已知局限 / 仍待平台
