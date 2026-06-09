@@ -30,7 +30,7 @@ def decide(inp: hook_io.HookInput) -> str | None:
         if not git_state.is_protected_branch(branch):
             continue
         mr_target = ctx.branch.target if ctx else "release"
-        where = f" in repo '{Path(git_root).name}'" if inv.cwd else ""
+        where = f" in repo '{Path(git_root).name}'" if inv.dash_c else ""
         return (
             f"⚠️  Refusing `git commit/push` on protected branch '{branch or '?'}'{where}.\n"
             f"Create a feature branch first: `git checkout -b <name> origin/{mr_target}` "

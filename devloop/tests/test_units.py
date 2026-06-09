@@ -113,8 +113,8 @@ def test_cmdparse_git_invocations():
     assert gi("git add -A")[0].args == ["-A"]
     assert gi("git -C r add -A")[0].subcommand == "add"
     # -C target captured so guards can judge the right repo
-    assert gi("git -C /repo commit")[0].cwd == "/repo"
-    assert gi("git commit")[0].cwd is None
+    assert gi("git -C /repo commit")[0].dash_c == "/repo"
+    assert gi("git commit")[0].dash_c is None
 
 
 def test_protect_branch_checks_dash_c_target():
@@ -712,11 +712,14 @@ def test_cmdparse_contract_table():
         assert got == heads, f"{cmd!r}: {got} != {heads}"
     # git 调用归属:-C 绝对优先 / -C 相对叠在 cd 前缀上 / 后置 cd 不偷归属
     inv = cmdparse.git_invocations("FOO=1 git -C /tmp/r fetch")[0]
-    assert inv.subcommand == "fetch" and inv.run_dir("/base") == "/tmp/r"
+    assert inv.subcommand == "fetch" and inv.run_dir("/base") == Path("/tmp/r")
     inv = cmdparse.git_invocations("cd sub && git -C nested commit -m x")[0]
-    assert inv.run_dir("/base") == "/base/sub/nested"
+    assert inv.run_dir("/base") == Path("/base/sub/nested")
     inv = cmdparse.git_invocations("git push && cd /elsewhere")[0]
-    assert inv.run_dir("/base") == "/base"
+    assert inv.run_dir("/base") == Path("/base")
+    # run_dir 规范化 `..`(否则 find_git_root 从带 .. 的路径起步会偏)
+    inv = cmdparse.git_invocations("cd a && cd .. && git status")[0]
+    assert inv.run_dir("/base") == Path("/base")
 
 
 def test_protocol_files_schema():
@@ -874,8 +877,8 @@ def test_cmdparse_command_invocations():
     assert uv.cd is None
     assert ci("PYTHONPATH=. pytest x")[0].argv[0] == "pytest"   # env 同 commands() 剥离
     # run_dir 把 cd 叠在 base 上
-    assert Inv(argv=["uv"], cd="sub").run_dir("/ws") == "/ws/sub"
-    assert Inv(argv=["uv"], cd=None).run_dir("/ws") == "/ws"
+    assert Inv(argv=["uv"], cd="sub").run_dir("/ws") == Path("/ws/sub")
+    assert Inv(argv=["uv"], cd=None).run_dir("/ws") == Path("/ws")
 
 
 def test_workspace_cwd_guard_cd_scope():
