@@ -939,7 +939,6 @@ def test_edit_owner_guard():
     """并发 session 防线的补全:owner 锁随'第一笔编辑'建立(acquire-follows-activity),
     guest 直接改 owner 工作树的文件被硬拦并引导 worktree——此前只有 git switch 被拦,
     第二个 session 直接 Edit 同一 checkout 畅通无阻。"""
-    import importlib.util as _il
     guard = _load_hook("pretool_edit_owner_guard")
     from lib import session_lock
     R = "/tmp/dlut_eog"
@@ -1245,6 +1244,61 @@ def test_remote_branches_segment_is_monitor_owned():
     assert topo.remotes_fetched_at == 123.0 and topo.remote_tip("main").commit == "abc"
     RepoContext.refresh_branch(R)                       # refresh writes branch.json only
     assert RepoContext.load(R).branch.remote_tip("main").commit == "abc"
+
+
+def test_branch_json_backcompat_old_schema():
+    """A pre-existing flat branch.json (old current/worktree schema) loads without blanking to
+    'Branch: ?' — `current` migrates into local.name until the next refresh rewrites it (Codex P2)."""
+    from lib.context import RepoContext, base
+    R = "/tmp/dlut_oldschema"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+    base.save_segment(R, "branch", {"current": "feat/legacy", "protected": False, "target": "main",
+                                    "ahead": 0, "behind": 0, "worktree": {"is_linked": False}})
+    topo = RepoContext.load(R).branch
+    assert topo.local.name == "feat/legacy" and topo.target == "main"
+
+
+def test_remote_baseline_includes_target_and_fork_from():
+    """Remote-tip polling tracks the repo's actual baseline (target + fork_from), not just the
+    conventional trunks — so a develop/staging baseline gets a 'trunk moved' signal (Codex P2)."""
+    from lib.context import base, prstate
+    R = "/tmp/dlut_baseline"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/.devloop")
+    base.save_segment(R, "branch", {"local": {"name": "feat/x", "fork_from": "develop"}, "target": "staging"})
+    bases = prstate._baseline_branches(R)
+    assert "develop" in bases and "staging" in bases
+    assert bases[:len(prstate.TRUNK_CANDIDATES)] == prstate.TRUNK_CANDIDATES   # conventional trunks first
+
+
+def test_inject_at_workspace_root_uses_active_repo():
+    """At the aggregate-workspace root (cwd not a git repo), inject falls back to the workspace's
+    last-active repo so the turn context (branch topology / freshness / hints) still reaches the
+    prompt — the most common usage, where a naive cwd-only lookup injects nothing (Codex P1)."""
+    ui = _load_hook("userprompt_inject")
+
+    class _Ctx:
+        def emit_session_if_changed(self): return ""
+        def mark_session_emitted(self, s): pass
+        def emit_turn_if_changed(self): return "Branch: feat/x (ahead 0, behind 0 vs main, as of 1)"
+        def mark_turn_emitted(self, s): pass
+
+    saved = (ui.repo_layout, ui.workspace, ui.WorkspaceContext, ui.RepoContext, ui.load_active_repo)
+    seen = {}
+    try:
+        ui.repo_layout = type("M", (), {"find_git_root": staticmethod(lambda p: None)})
+        ui.workspace = type("M", (), {"find_containing_workspace": staticmethod(lambda p: "/ws")})
+        ui.WorkspaceContext = type("M", (), {"load": staticmethod(lambda r: None)})
+        ui.load_active_repo = lambda r: seen.setdefault("active_arg", r) or "/active/repo"
+        ui.RepoContext = type("M", (), {"load": staticmethod(lambda r: _Ctx())})
+        out = ui.produce(_hook_input("UserPromptSubmit", {"cwd": "/ws"}))
+    finally:
+        ui.repo_layout, ui.workspace, ui.WorkspaceContext, ui.RepoContext, ui.load_active_repo = saved
+    assert seen.get("active_arg") == "/ws"                 # fell back via the workspace root
+    assert out and "Branch: feat/x" in out                 # active repo's turn context reached the prompt
 
 
 def _run_all():

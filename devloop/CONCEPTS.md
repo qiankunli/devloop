@@ -10,7 +10,7 @@ devloop 内多个 skill / 脚本共用的术语。架构理念见 [`AGENTS.md`](
 
 ## 保护分支
 
-repo 级结构化状态里 `branch.json` 的 `protected=true` 时，注入头部以 `⚠️ PROTECTED` 提示，guard 据此拦截 commit/push。判定（`hooks/lib/git_state.py`）：`main` / `master` 严格匹配；`release` 严格匹配或以 `release` 开头 / 结尾；`release` 出现在中间不算（`feat/release-notes` 不受保护）。
+分支是否受保护是**派生**的（`Branch.is_protected()`，**不存进** `branch.json`）：注入头部据此打 `⚠️ PROTECTED`，而 `protect_branch` 硬 gate 走 `gate.evaluate()` 按 **live 分支名**判——缓存陈旧（观测不到的 checkout 后）也不会漏判保护分支。判定规则（`hooks/lib/git_state.py`）：`main` / `master` 严格匹配；`release` 严格匹配或以 `release` 开头 / 结尾；`release` 出现在中间不算（`feat/release-notes` 不受保护）。
 
 ## PR 模型（PR/MR 统一概念）
 

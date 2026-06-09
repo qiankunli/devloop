@@ -19,10 +19,28 @@ from .. import git_state
 from ..forge import ForgeError, build_window, forge_for_repo
 from . import base
 
-# Candidate trunk names to track remote tips for. ls-remote returns only those that exist, so
-# tracking all conventional trunks (a) survives `origin/HEAD` pointing at a dead placeholder
-# and (b) covers repos with more than one protected branch (e.g. release + master).
+# Conventional trunk names to track remote tips for. ls-remote returns only those that exist, so
+# tracking all of them (a) survives `origin/HEAD` pointing at a dead placeholder and (b) covers
+# repos with more than one protected branch (e.g. release + master). The repo's actual baseline
+# (its `target` / recorded `fork_from`, which may be `develop` / `release/x` / `staging`) is
+# unioned in by `_baseline_branches` so the staleness signal isn't limited to these defaults.
 TRUNK_CANDIDATES = ("main", "master", "release")
+
+
+def _baseline_branches(repo: str) -> tuple[str, ...]:
+    """The branches whose remote tip matters for THIS repo: the conventional trunks plus the
+    configured `target` and the recorded `fork_from` (read from the branch segment). Without this
+    a non-conventional baseline would have no tracked tip and the 'trunk moved' signal would never
+    fire for it (Codex P2)."""
+    bseg = base.load_segment(repo, "branch") or {}
+    extra = (bseg.get("target"), (bseg.get("local") or {}).get("fork_from"))
+    seen: set[str] = set()
+    out: list[str] = []
+    for b in (*TRUNK_CANDIDATES, *(e for e in extra if e)):
+        if b not in seen:
+            seen.add(b)
+            out.append(b)
+    return tuple(out)
 
 
 # ── PR selection (SHA-ancestry validated; reused by the monitor AND the gate) ──
@@ -105,9 +123,11 @@ def persist_remote_branches(repo: str, payload: dict) -> None:
     base.save_segment(repo, "remote_branches", payload)
 
 
-def refresh_remote_branches(repo: str, branches: tuple[str, ...] = TRUNK_CANDIDATES) -> bool:
-    """Poll + persist the server's trunk tips. Best-effort; returns whether written."""
-    payload = poll_remote_branches(repo, branches)
+def refresh_remote_branches(repo: str, branches: tuple[str, ...] | None = None) -> bool:
+    """Poll + persist the server's trunk tips. Tracks the repo's actual baseline (target /
+    fork_from) on top of the conventional trunks unless `branches` is given. Best-effort;
+    returns whether written."""
+    payload = poll_remote_branches(repo, branches or _baseline_branches(repo))
     if payload is None:
         return False
     persist_remote_branches(repo, payload)

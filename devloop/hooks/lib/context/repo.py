@@ -104,10 +104,16 @@ class BranchTopology:
     @classmethod
     def from_local_dict(cls, d: dict | None) -> "BranchTopology":
         """Build the refresh-owned half (local + worktrees + target) from branch.json. remotes /
-        remotes_fetched_at / pr_number are merged in by `load` from their own segments."""
+        remotes_fetched_at / pr_number are merged in by `load` from their own segments.
+
+        Back-compat: a pre-existing flat branch.json (old `current`/`worktree` schema written by an
+        earlier devloop) has no `local` key — read its `current` into `local.name` so display and
+        the pr-join don't blank to 'Branch: ?' in the window between an upgrade and the next
+        git-state refresh (the cache is gitignored and regenerates fully then)."""
         d = d or {}
+        local = Branch.from_dict(d["local"]) if "local" in d else Branch(name=d.get("current"))
         return cls(
-            local=Branch.from_dict(d.get("local")),
+            local=local,
             worktrees=[Branch.from_dict(w) for w in (d.get("worktrees") or [])],
             target=d.get("target", "release"),
         )
@@ -429,14 +435,15 @@ def _branch_staleness(repo_dir: str, b: BranchTopology) -> dict:
     base_name = b.base_branch()
     ahead, behind = git_state.get_ahead_behind(repo_dir, base_name) or (0, 0)
     remote = b.remote_tip(base_name)
-    mirror_stale = False
     if remote and remote.commit:
+        # we have the server's TRUE tip for this baseline → a real freshness signal. Claim
+        # "as of" ONLY here: if the baseline isn't among the monitor's tracked tips, saying
+        # "as of <t>" would falsely imply this count reflects the latest remote.
         local_mirror = git_state.rev_parse(repo_dir, f"origin/{base_name}")
-        mirror_stale = bool(local_mirror) and local_mirror != remote.commit
-    if mirror_stale:
-        asof = f", ⚠ trunk moved since fetch {base.fmt_ts(b.remotes_fetched_at)} — fetch to recount"
-    elif b.remotes_fetched_at:
-        asof = f", as of {base.fmt_ts(b.remotes_fetched_at)}"
+        if local_mirror and local_mirror != remote.commit:
+            asof = f", ⚠ trunk moved since fetch {base.fmt_ts(b.remotes_fetched_at)} — fetch to recount"
+        else:
+            asof = f", as of {base.fmt_ts(b.remotes_fetched_at)}"
     else:
         asof = ""
     return {"base": base_name, "ahead": ahead, "behind": behind, "asof": asof}
