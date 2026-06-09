@@ -20,8 +20,9 @@ repo 级结构化状态里 `branch.json` 的 `protected=true` 时，注入头部
 - **`state`**：归一为 `open` / `merged` / `closed`（GitHub 的 open/closed + `merged` 布尔在 adapter 里收敛为这三态）。
 - **`branch.pr_number`**：当前分支那条 PR 的编号（只存编号，整对象 join `prs`）。
 - **`prs`**：近期 PR 窗口，monitor 周期 sweep 写入，cap 5。窗口策略是**领域层** `build_window`（最新 cap + 确保当前分支 anchor 在内），组合在 port 的 `recent()` + `get()` 原语之上——**对两家一致**，adapter 不各写一份；adapter 只管协议差异。
-- **branch 归属**：`pr.json` 记录其写入时的 branch + provider；`load` 只在该 branch == 当前分支时才 join `pr_number`——切分支自动失效，无需清理逻辑。
-- **分支失活（inactive）**：按 `pr_number` 在 `prs` 查到的 `state ∈ {merged, closed}` **派生**，不单独存。`branch_merged_guard` 读它拦截过期分支上的编辑。
+- **branch 归属**：`pr.json` 记录其写入时的 branch + provider；`RepoContext.load` 的名字相等 join（`pr.json.branch == branch.local.name`）是**展示级**——切分支时自失效，喂注入/提示够用。
+- **分支失活（inactive）**：派生，不单独存。但**硬 gate 不读展示级 join**：`branch_merged_guard` / gcampr 走 `lib.context.gate.evaluate()`，按 **live 分支 + live HEAD** 在缓存窗口上做 SHA 祖先校验（`pick_branch_pr`），归属键是 `(branch, head_sha)` 而非分支名——观测不到的 checkout 后缓存陈旧也不会误判。详见 [`docs/branch-state.md`](./docs/branch-state.md)〈三态 freshness 模型〉。
+- **远端 tip**：`remote_branches.json` 由 monitor `ls-remote` 拉服务端 trunk tips（同事 push 后本地 fetch 前就可见），带 `fetched_at`；注入据此给 ahead/behind 加"as of"限定，避免把落后的本地 checkout 读成"最新"。
 - **在途（in-flight）**：同样按 join 派生（`state = open`，`branch_pr_in_flight`）——PR 已建、等人工 merge。与 inactive 互斥，二者加 protected / healthy 构成下面的四态。
 
 ## 分支状态流转
@@ -61,7 +62,7 @@ repo 级 `validation.json`：`last_lint_at` / `last_test_at`（float epoch）+ `
 AGENTS.md 是文字知识源；`.devloop/*.json` 是由 hooks / scripts / monitors 维护的结构化运行态，不保存 AGENTS.md 正文。
 
 - Workspace 级：`<workspace_root>/.devloop/context.json`，保存 workspace AGENTS.md 的 References + 文件系统自发现的 subproject 清单（叠加 AGENTS.md 表润色，symlink 子项目附 canonical 路径映射）以及 session 注入节奏；`active.json` 保存最近活跃 repo（脚本在 workspace 根被调用时的解析兜底）；它的多个写入点（CwdChanged / PostToolUse / smart 脚本）写的是同一个事实"刚碰过哪个 repo"，last-write-wins，丢更新无害。
-- Repo 级：`<git_root>/.devloop/meta.json` / `branch.json` / `pr.json` / `validation.json` / `injection.json`，按 writer-owner 分段保存 repo 运行态；`RepoContext.load()` 合并这些段成内存视图。
+- Repo 级：`<git_root>/.devloop/meta.json` / `branch.json` / `remote_branches.json` / `pr.json` / `validation.json` / `injection.json`，按 writer-owner 分段保存 repo 运行态；`RepoContext.load()` 合并这些段成内存视图。其中 `branch.json`（local + worktrees，refresh owned）与 `remote_branches.json`（远端 trunk tips，monitor owned）是同一分支拓扑的两个 owner——见 [`docs/branch-state.md`](./docs/branch-state.md)〈落盘:按 writer-owner 拆段〉。
 
 schema / TTL / cap 数值在 `hooks/lib/context/base.py`，不在文档复述。
 

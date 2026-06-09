@@ -7,9 +7,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import git_state, hook_io, repo_layout  # noqa: E402
+from lib import hook_io, repo_layout  # noqa: E402
 from lib.cmdtree import cmdparse  # noqa: E402
-from lib.context import RepoContext  # noqa: E402
+from lib.context import gate  # noqa: E402
 
 
 def decide(inp: hook_io.HookInput) -> str | None:
@@ -25,15 +25,16 @@ def decide(inp: hook_io.HookInput) -> str | None:
         git_root = repo_layout.find_git_root(inv.run_dir(inp.cwd))
         if not git_root:
             continue
-        ctx = RepoContext.load(git_root)
-        branch = ctx.branch.current if ctx else git_state.get_current_branch(git_root)
-        if not git_state.is_protected_branch(branch):
+        # gate.evaluate reads the LIVE branch (git rev-parse), never the cached segment: a
+        # checkout via an unobserved channel (subshell, make, another terminal) onto a
+        # protected branch must not slip through because the cache still says feature.
+        gv = gate.evaluate(git_root)
+        if not gv.protected():
             continue
-        mr_target = ctx.branch.target if ctx else "release"
         where = f" in repo '{Path(git_root).name}'" if inv.dash_c else ""
         return (
-            f"⚠️  Refusing `git commit/push` on protected branch '{branch or '?'}'{where}.\n"
-            f"Create a feature branch first: `git checkout -b <name> origin/{mr_target}` "
+            f"⚠️  Refusing `git commit/push` on protected branch '{gv.branch or '?'}'{where}.\n"
+            f"Create a feature branch first: `git checkout -b <name> origin/{gv.target}` "
             f"(or use /gcampr to do it properly)."
         )
     return None

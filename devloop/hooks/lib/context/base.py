@@ -4,7 +4,7 @@ The `.devloop/` state bus spans two levels. **Repo** state is split into per-own
 *segment* files (`meta`/`branch`/`mr`/`validation`/`injection`.json) so independent
 writer-roles never share a file — see `repo.py`. **Workspace** state is a single
 `context.json` (one writer-role: the refresh). This module holds what both share:
-leaf dataclasses (`Reference`, `AgentsMd`, `WorktreeInfo`) plus the re-exported forge
+leaf dataclasses (`Reference`, `AgentsMd`) plus the re-exported forge
 domain (`PullRequest`), the injection
 `Cadence` (content-hash dedup with a TTL safety net), tunable constants, and the JSON
 read/write primitives. All writes go through `_write_atomic` (tmp + os.replace) so a
@@ -41,6 +41,7 @@ WORKSPACE_STALE_SEC = 600     # workspace context staleness
 TURN_TTL_SEC = 1800           # turn-cadence injection re-emit backstop (~30 min)
 SESSION_TTL_SEC = 14400       # session-cadence (References) re-emit backstop (~4 h)
 PR_POLL_INTERVAL_SEC = 90     # monitor poll cadence for PR/MR status
+REMOTE_VIEW_STALE_SEC = 120   # remote_branches snapshot older than this → re-pull trunk tips on enter
 ACTIVE_REPO_TTL_SEC = 21600   # workspace last-active repo validity (~6 h); stale → don't guess
 
 STATE_DIRNAME = ".devloop"
@@ -76,21 +77,6 @@ class AgentsMd:
         return cls(
             path=d.get("path"),
             references=[Reference.from_dict(r) for r in (d.get("references") or [])],
-        )
-
-
-@dataclass
-class WorktreeInfo:
-    is_linked: bool = False
-    common_dir: str | None = None
-    main_branch: str | None = None
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "WorktreeInfo":
-        return cls(
-            is_linked=bool(d.get("is_linked")),
-            common_dir=d.get("common_dir"),
-            main_branch=d.get("main_branch"),
         )
 
 

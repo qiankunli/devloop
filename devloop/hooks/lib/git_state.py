@@ -160,3 +160,98 @@ def ensure_gitignore_excluded(repo_dir: str | Path, pattern: str = "/.devloop/")
         exclude_path.write_text(f"{existing}{sep}{pattern}\n", encoding="utf-8")
     except OSError:
         pass  # best-effort
+
+
+# ── live identity + ancestry (gate truth / PR selection read these) ───────────
+# These are the cheap, always-live facts a write-gate must derive at decision time
+# instead of trusting a cached segment (see docs/branch-state.md §gate truth).
+def get_head_sha(repo_dir: str | Path) -> str:
+    """Current HEAD sha (full). Empty on error. Works on detached HEAD (unlike a
+    branch-name read), which is exactly why gates resolve identity through git, not a lib."""
+    r = gitcmd.git(repo_dir, "rev-parse", "HEAD")
+    return r.out if r.ok else ""
+
+
+def rev_parse(repo_dir: str | Path, ref: str) -> str:
+    """Resolve a ref to a sha (verified). Empty when the ref is absent/unresolvable —
+    e.g. a not-yet-fetched `origin/<branch>`."""
+    r = gitcmd.git(repo_dir, "rev-parse", "--verify", "--quiet", ref)
+    return r.out if r.ok else ""
+
+
+def is_ancestor(repo_dir: str | Path, ancestor: str | None, descendant: str | None) -> bool:
+    """True iff `ancestor` is reachable from `descendant` (`merge-base --is-ancestor`).
+    Empty/error → False: callers treat 'unknown' as 'not reachable', which is the safe
+    default for PR selection (a dead-ref PR whose sha we can't reach is not the branch's PR)."""
+    if not ancestor or not descendant:
+        return False
+    if ancestor == descendant:
+        return True
+    return gitcmd.git(repo_dir, "merge-base", "--is-ancestor", ancestor, descendant).rc == 0
+
+
+# ── remote relationship (read-freshness) ──────────────────────────────────────
+def get_upstream_ahead_behind(repo_dir: str | Path) -> tuple[int, int] | None:
+    """(ahead, behind) of HEAD vs its OWN upstream (`origin/<current>`), or None when the
+    branch has no upstream (fresh feature branch) or it can't be resolved. This is the
+    "my branch moved on the server (pushed from elsewhere)" signal — distinct from
+    behind-trunk. Bounded to local refs, no network (the upstream ref is whatever the last
+    fetch left)."""
+    r = gitcmd.git(repo_dir, "rev-list", "--count", "--left-right", "@{upstream}...HEAD")
+    if not r.ok or "\t" not in r.out:
+        return None
+    behind_s, ahead_s = r.out.split("\t", 1)
+    try:
+        return int(ahead_s), int(behind_s)
+    except ValueError:
+        return None
+
+
+def ls_remote_tips(repo_dir: str | Path, *branches: str, timeout: int = 5) -> dict[str, str]:
+    """`{branch: sha}` for `branches` on origin via `git ls-remote` — the TRUE remote tip,
+    one network round-trip, NO object fetch. The monitor's cheap way to learn that trunk
+    moved (a colleague pushed) without pulling history. Empty dict offline/on error."""
+    if not branches:
+        return {}
+    r = gitcmd.git(repo_dir, "ls-remote", "origin", *branches, timeout=timeout)
+    if not r.ok:
+        return {}
+    tips: dict[str, str] = {}
+    for line in r.out.splitlines():
+        if "\t" not in line:
+            continue
+        sha, ref = line.split("\t", 1)
+        if ref.startswith("refs/heads/"):
+            tips[ref[len("refs/heads/"):]] = sha
+    return tips
+
+
+def list_worktrees(repo_dir: str | Path) -> list[tuple[str, str, str | None]]:
+    """Every worktree of the repo as `(path, head_sha, branch|None)` via
+    `git worktree list --porcelain`. Empty on error."""
+    r = gitcmd.git(repo_dir, "worktree", "list", "--porcelain")
+    if not r.ok or not r.out:
+        return []
+    out: list[tuple[str, str, str | None]] = []
+    path, sha, branch = "", "", None
+    for line in r.out.split("\n"):
+        if line.startswith("worktree "):
+            path, sha, branch = line[len("worktree "):].strip(), "", None
+        elif line.startswith("HEAD "):
+            sha = line[len("HEAD "):].strip()
+        elif line.startswith("branch "):
+            ref = line[len("branch "):].strip()
+            branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+        elif not line.strip() and path:
+            out.append((path, sha, branch))
+            path, sha, branch = "", "", None
+    if path:
+        out.append((path, sha, branch))
+    return out
+
+
+def fetch(repo_dir: str | Path, *refs: str, timeout: int = 8) -> bool:
+    """Bounded `git fetch origin [refs...]` for low-freq, intentional boundaries (/enter).
+    Refreshes local remote-tracking refs so behind/ahead become REAL rather than
+    relative-to-a-stale-mirror. Best-effort (offline → False)."""
+    return gitcmd.git(repo_dir, "fetch", "origin", *refs, "--quiet", timeout=timeout).ok

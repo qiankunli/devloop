@@ -247,31 +247,31 @@ def test_decide_branch_is_intent_driven():
     assert decide("feat1", "feat1", protected=False, stale=False, base=B) == ("continue", None)
 
 
-def test_prepare_branch_reads_ctx_pr_state():
-    """prepare_branch 用真实 ctx 调 branch_pr_inactive()——decide_branch 的单测绕过了这条
-    调用,所以脚本里把 ctx 方法名写错(如沿用旧的 branch_mr_inactive)会从单测漏过。这条端到端
-    跑一遍 prepare_branch 兜住该回归。"""
+def test_prepare_branch_reads_gate_pr_state():
+    """prepare_branch decides on gate truth (GateView), not the cached ctx. decide_branch's
+    unit test bypasses this call, so an end-to-end run guards the wiring (and that gcampr reads
+    the LIVE-branch / SHA-validated PR state, not ctx.branch_pr_inactive)."""
     sgo = _load_script("smart_git_ops")
-    from lib.context import RepoContext
+    from lib.context import RepoContext, gate, prstate
     R = "/tmp/dlut_prep"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
     _git(R, "checkout", "-q", "-b", "feat/a")
     Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
     RepoContext.refresh_all(R)
-    ctx = RepoContext.load(R)
     intent = sgo.GitIntent(mode="mr", message="m", title="m", requested_branch=None,
                            target="main", base="origin/main", explicit_base=False,
                            files=[], repo=R, source="test", invoke_cwd=R)
-    # healthy branch, no PR → continue on the current branch (and crucially: no AttributeError)
-    res = sgo.prepare_branch(intent, ctx, "feat/a", [])
+    # healthy branch, no PR segment → gate finds no PR → continue on the current branch
+    res = sgo.prepare_branch(intent, gate.evaluate(R), [])
     assert res.branch == "feat/a" and res.cut is False
 
-    # in-flight branch → continue + a self-narrating line built with the repo-level provider
-    ctx.prs = [PullRequest(number=7, state="open", source_branch="feat/a")]
-    ctx.branch.pr_number = 7; ctx.provider = "github"
+    # in-flight: an OPEN PR for feat/a in the monitor-owned pr segment → gate picks it (open
+    # wins, no SHA check) → continue + a self-narrating line built with the repo-level provider
+    prstate.persist_pr(R, {"branch": "feat/a", "provider": "github", "pr_number": 7,
+                           "prs": [{"number": 7, "state": "open", "source_branch": "feat/a"}]})
     plan = []
-    res = sgo.prepare_branch(intent, ctx, "feat/a", plan)
+    res = sgo.prepare_branch(intent, gate.evaluate(R), plan)
     assert res.branch == "feat/a" and res.cut is False
     assert any("continuing in-flight PR #7" in line for line in plan)
 
@@ -300,39 +300,47 @@ def test_reuse_or_create_pr_over_narrowed_port():
         sgo.forge_for_repo = orig
 
 
-def test_refresh_pr_state_failopen():
-    """refresh_pr_state (the live-state preflight for push/mr) is best-effort: a repo with no
-    forge remote/token just no-ops rather than raising — the gate falls back to cache."""
-    sgo = _load_script("smart_git_ops")
+def test_refresh_pr_failopen():
+    """prstate.refresh_pr (gcampr's authoritative live-PR preflight, via gate.evaluate
+    live_refresh) is best-effort: a repo with no forge remote/token returns False rather than
+    raising — and crucially it now PERSISTS its poll (the old refresh_pr_state discarded it)."""
+    from lib.context import prstate
     R = "/tmp/dlut_refresh"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
-    sgo.refresh_pr_state(R)   # no origin/token → no-op, no exception
+    assert prstate.refresh_pr(R) is False   # no forge → no-op, no exception, nothing written
 
 
 def test_pick_branch_pr():
-    poll = _load_script("poll_pr_status")
+    """Relocated to lib.context.prstate (so the gate and the monitor share one picker). Open PR
+    wins; else the most-recent finished PR whose source sha is an ancestor of HEAD — the
+    SHA-ancestry check is git_state.is_ancestor (patched here)."""
+    from lib import git_state
+    from lib.context import prstate
     P = lambda **kw: PullRequest(**kw)  # noqa: E731
-    poll._is_ancestor = lambda repo, sha, head: True
-    assert poll.pick_branch_pr([P(number=5, state="open", sha="a"),
-                                P(number=4, state="merged", sha="b")], "r", "h").number == 5
-    poll._is_ancestor = lambda repo, sha, head: sha == "b"
-    assert poll.pick_branch_pr([P(number=4, state="merged", sha="b"),
-                                P(number=3, state="closed", sha="c")], "r", "h").number == 4
-    poll._is_ancestor = lambda repo, sha, head: False
-    assert poll.pick_branch_pr([P(number=4, state="merged", sha="dead")], "r", "h") is None
+    orig = git_state.is_ancestor
+    try:
+        git_state.is_ancestor = lambda repo, anc, desc: True
+        assert prstate.pick_branch_pr([P(number=5, state="open", sha="a"),
+                                       P(number=4, state="merged", sha="b")], "r", "h").number == 5
+        git_state.is_ancestor = lambda repo, anc, desc: anc == "b"
+        assert prstate.pick_branch_pr([P(number=4, state="merged", sha="b"),
+                                       P(number=3, state="closed", sha="c")], "r", "h").number == 4
+        git_state.is_ancestor = lambda repo, anc, desc: False
+        assert prstate.pick_branch_pr([P(number=4, state="merged", sha="dead")], "r", "h") is None
+    finally:
+        git_state.is_ancestor = orig
 
 
 def test_poll_persist():
-    """The monitor is persist-only: it writes the `pr` segment (sole writer of
+    """The monitor is persist-only: prstate writes the `pr` segment (sole writer of
     .devloop/pr.json, for the PR guard / injection). Waking on a change is the forge
     channel's job, not the monitor's."""
-    from lib.context import base
-    poll = _load_script("poll_pr_status")
+    from lib.context import base, prstate
     R = "/tmp/dlut_pollh"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
-    poll.persist(R, {"branch": "f", "provider": "github", "pr_number": 7, "prs": []})
+    prstate.persist_pr(R, {"branch": "f", "provider": "github", "pr_number": 7, "prs": []})
     assert base.load_segment(R, "pr")["pr_number"] == 7
 
 
@@ -411,7 +419,7 @@ def test_context_segments():
     assert {"meta.json", "branch.json"} <= seg and "validation.json" not in seg and "pr.json" not in seg
 
     ctx = RepoContext.load(R)
-    assert ctx.branch.current == "feat/a" and ctx.branch.pr_number is None and ctx.prs == []
+    assert ctx.branch.local.name == "feat/a" and ctx.branch.pr_number is None and ctx.prs == []
 
     # a validation mark writes only validation.json
     ctx.mark_lint_passed()
@@ -440,7 +448,7 @@ def test_context_segments():
     c = RepoContext.load(R); c.prs = [PullRequest(number=60, state="open", source_branch="feat/b")]
     c.branch.pr_number = 60; c.provider = "github"; c._save_pr()
     merged = RepoContext.load(R)
-    assert merged.branch.current == "feat/b" and merged.branch.pr_number == 60
+    assert merged.branch.local.name == "feat/b" and merged.branch.pr_number == 60
 
 
 def test_branch_pr_in_flight():
@@ -969,8 +977,10 @@ def test_edit_owner_guard():
 
 def test_branch_merged_guard_uses_file_path():
     """INACTIVE 分支编辑拦截按 file_path 解析 repo——session cwd 在 workspace 根时
-    cwd-based 查找为 None,guard 此前静默失效。"""
-    from lib.context import PullRequest, RepoContext
+    cwd-based 查找为 None,guard 此前静默失效。Also exercises the gate's SHA validation: the
+    merged PR's source sha is reachable from the LIVE HEAD, so it's genuinely this branch's PR."""
+    from lib import git_state
+    from lib.context import RepoContext, prstate
     guard = _load_hook("pretool_branch_merged_guard")
     R = "/tmp/dlut_bmg"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo", exist_ok=True)
@@ -978,9 +988,9 @@ def test_branch_merged_guard_uses_file_path():
     _git(f"{R}/repo", "config", "user.name", "t"); _git(f"{R}/repo", "checkout", "-q", "-b", "feat/a")
     Path(f"{R}/repo/f").write_text("x"); _git(f"{R}/repo", "add", "f"); _git(f"{R}/repo", "commit", "-qm", "i")
     RepoContext.refresh_all(f"{R}/repo")
-    ctx = RepoContext.load(f"{R}/repo")
-    ctx.prs = [PullRequest(number=9, state="merged", source_branch="feat/a")]
-    ctx.branch.pr_number = 9; ctx.provider = "github"; ctx._save_pr()
+    head = git_state.get_head_sha(f"{R}/repo")
+    prstate.persist_pr(f"{R}/repo", {"branch": "feat/a", "provider": "github", "pr_number": 9,
+                                     "prs": [{"number": 9, "state": "merged", "source_branch": "feat/a", "sha": head}]})
     # cwd 在 workspace 根(R,非 git repo),编辑文件在 repo 内 → 仍要拦
     inp = _hook_input("Edit", {"session_id": "s", "cwd": R, "tool_input": {"file_path": f"{R}/repo/f"}})
     reason = guard.decide(inp)
@@ -1116,6 +1126,125 @@ def test_maybe_register_workspace():
             os.environ.pop("DEVLOOP_CONFIG_DIR", None)
         else:
             os.environ["DEVLOOP_CONFIG_DIR"] = old_env
+
+
+def test_gate_uses_live_branch_after_unobserved_checkout():
+    """The incident: an unobserved checkout (subshell `cd "$var" && git checkout`, make, another
+    terminal) leaves branch.json pinned to the OLD branch whose PR merged. The cached display
+    path stays fooled; gate.evaluate reads the LIVE branch so it does NOT falsely block the new
+    branch's edits."""
+    from lib import git_state
+    from lib.context import RepoContext, gate, prstate
+    guard = _load_hook("pretool_branch_merged_guard")
+    R = "/tmp/dlut_incident"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/old")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)                       # branch.json: local=feat/old
+    head = git_state.get_head_sha(R)
+    prstate.persist_pr(R, {"branch": "feat/old", "provider": "github", "pr_number": 1,
+                           "prs": [{"number": 1, "state": "merged", "source_branch": "feat/old", "sha": head}]})
+    # unobserved checkout: HEAD moves to feat/new but branch.json is NOT refreshed (still feat/old)
+    _git(R, "checkout", "-q", "-b", "feat/new")
+    # the cached display path is fooled (branch.json.local.name == pr.json.branch == feat/old)
+    assert RepoContext.load(R).branch_pr_inactive() is True
+    # gate reads the LIVE branch (feat/new); the merged PR is feat/old's → NOT inactive
+    assert gate.evaluate(R).inactive() is False
+    # …so the edit guard does NOT block an edit on feat/new
+    inp = _hook_input("Edit", {"session_id": "s", "cwd": R, "tool_input": {"file_path": f"{R}/f"}})
+    assert guard.decide(inp) is None
+
+
+def test_gate_protect_uses_live_branch():
+    """Protect-guard fail-open regression: branch.json cached says a feature branch, but HEAD is
+    LIVE on a protected branch (unobserved checkout). The guard must still refuse commit/push —
+    a stale cache must never let a push to a protected branch slip through."""
+    from lib.context import RepoContext, base
+    guard = _load_hook("pretool_protect_branch")
+    R = "/tmp/dlut_protect_live"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "release")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+    # forge the cache to a non-protected name (a stale branch.json after a checkout TO release)
+    seg = base.load_segment(R, "branch"); seg["local"]["name"] = "feat/safe"
+    base.save_segment(R, "branch", seg)
+    assert RepoContext.load(R).branch.local.is_protected() is False     # cache fooled
+    inp = _hook_input("Bash", {"cwd": R, "tool_input": {"command": "git commit -m x"}})
+    reason = guard.decide(inp)
+    assert reason and "protected branch 'release'" in reason            # gate read LIVE → blocked
+
+
+def test_gate_branch_name_reuse_not_falsely_inactive():
+    """finding-3 defense: a rebuilt branch reusing an OLD name whose merged PR points at an
+    unreachable sha must NOT be marked inactive — the merged PR is not this HEAD's PR. A
+    name-only join (the old load path) would wrongly block here."""
+    from lib import git_state
+    from lib.context import RepoContext, gate, prstate
+    R = "/tmp/dlut_reuse"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/x")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    sha1 = git_state.get_head_sha(R)
+    _git(R, "commit", "--amend", "-qm", "rebuilt")     # HEAD → sha2; sha1 now unreachable
+    RepoContext.refresh_all(R)
+    prstate.persist_pr(R, {"branch": "feat/x", "provider": "github", "pr_number": 1,
+                           "prs": [{"number": 1, "state": "merged", "source_branch": "feat/x", "sha": sha1}]})
+    assert gate.evaluate(R).inactive() is False         # sha1 not an ancestor of HEAD → not ours
+
+
+def test_gates_use_gate_seam_not_cached_identity():
+    """CI invariant: the hard gates resolve branch facts through lib.context.gate (LIVE), never
+    the cached RepoContext identity. Prevents a future guard from silently regressing to the
+    stale-cache fail-open / false-block the gate seam exists to kill."""
+    for name in ("pretool_protect_branch", "pretool_branch_merged_guard"):
+        src = (HOOKS / f"{name}.py").read_text()
+        assert "gate.evaluate" in src, f"{name} must read gate truth"
+        for forbidden in ("branch_pr_inactive", ".branch.current", ".branch.local"):
+            assert forbidden not in src, f"{name} must not read cached branch identity ({forbidden})"
+    sgo = (SCRIPTS / "smart_git_ops.py").read_text()
+    assert "def prepare_branch(intent: GitIntent, gv: gate.GateView" in sgo
+    assert "ctx.branch_pr_inactive" not in sgo
+
+
+def test_fork_from_sticky_across_refresh():
+    """fork_from is git-unrecorded → set at cut, PRESERVED across a refresh while the branch is
+    unchanged, DROPPED on a switch (the old branch's fork point doesn't apply to the new one)."""
+    from lib.context import RepoContext
+    R = "/tmp/dlut_fork"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+    RepoContext.load(R).set_fork_from("release")
+    assert RepoContext.load(R).branch.local.fork_from == "release"
+    RepoContext.refresh_branch(R)                       # same branch → preserved
+    assert RepoContext.load(R).branch.local.fork_from == "release"
+    _git(R, "checkout", "-q", "-b", "feat/b")
+    RepoContext.refresh_branch(R)                       # switch → dropped
+    assert RepoContext.load(R).branch.local.fork_from is None
+
+
+def test_remote_branches_segment_is_monitor_owned():
+    """remote_branches.json is the monitor's: load merges it into the topology (with its
+    fetched_at provenance), and a refresh (refresh-owned branch.json) does NOT clobber it —
+    the owner-disjoint segment property that makes lost updates structurally impossible."""
+    from lib.context import RepoContext, prstate
+    R = "/tmp/dlut_remotes"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+    prstate.persist_remote_branches(R, {"fetched_at": 123.0, "remotes": [{"name": "main", "commit": "abc"}]})
+    topo = RepoContext.load(R).branch
+    assert topo.remotes_fetched_at == 123.0 and topo.remote_tip("main").commit == "abc"
+    RepoContext.refresh_branch(R)                       # refresh writes branch.json only
+    assert RepoContext.load(R).branch.remote_tip("main").commit == "abc"
 
 
 def _run_all():
