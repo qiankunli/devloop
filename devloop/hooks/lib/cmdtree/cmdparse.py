@@ -49,10 +49,10 @@ class Invocation:
     argv: list[str]
     cd: str | None = None
 
-    def run_dir(self, base: str | Path) -> str:
-        """Effective directory this invocation runs in: the cd prefix layered over `base`
-        (relative composes, absolute resets). Guards judge each call against THIS dir, not
-        the session cwd."""
+    def run_dir(self, base: str | Path) -> Path:
+        """Effective directory this invocation runs in (a normalized `Path`): the cd prefix
+        layered over `base` (relative composes, absolute resets). Guards judge each call
+        against THIS dir, not the session cwd."""
         return _layer(base, self.cd)
 
 
@@ -65,19 +65,19 @@ class GitInvocation(Invocation):
     args: list[str] = field(default_factory=list)
     dash_c: str | None = None  # `git -C` target
 
-    def run_dir(self, base: str | Path) -> str:
+    def run_dir(self, base: str | Path) -> Path:
         return _layer(base, self.cd, self.dash_c)  # `-C` over (cd over base)
 
 
-def _layer(base: str | Path, *parts: str | None) -> str:
+def _layer(base: str | Path, *parts: str | None) -> Path:
     """Layer path fragments over `base` (each relative part composes, each absolute resets),
-    returning a normalized path so callers needn't `..`-collapse it themselves."""
-    d = str(base)
+    returning a normalized `Path` so callers needn't `..`-collapse it themselves."""
+    d = Path(base)
     for part in parts:
         if part:
             p = Path(os.path.expanduser(os.path.expandvars(part)))
-            d = str(p if p.is_absolute() else Path(d) / p)
-    return os.path.normpath(d)
+            d = p if p.is_absolute() else d / p
+    return Path(os.path.normpath(d))
 
 
 def _strip_env(tokens: list[str]) -> list[str]:
