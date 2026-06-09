@@ -361,6 +361,32 @@ def test_poll_handlers_persist_and_notify(capsys):
     assert capsys.readouterr().out == ""                         # no change → silent
 
 
+def test_wait_for_pr_change():
+    """One-shot Wake: snapshots the `pr` segment key, exits 'changed' when it differs (same
+    (pr_number,[(number,state)]) the monitor uses for `changed`), else 'timeout'. sleep/clock
+    are injected so the test never actually waits."""
+    from lib.context import base
+    waiter = _load_script("wait_for_pr_change")
+    R = "/tmp/dlut_waiter"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    base.save_segment(R, "pr", {"pr_number": 12, "prs": [{"number": 12, "state": "open"}]})
+
+    # fake sleep advances a shared clock and flips PR 12 → merged on its 2nd tick
+    st = {"t": 0.0, "n": 0}
+    def flip(dt):
+        st["t"] += dt; st["n"] += 1
+        if st["n"] == 2:
+            base.save_segment(R, "pr", {"pr_number": 12, "prs": [{"number": 12, "state": "merged"}]})
+    reason, key = waiter.wait_for_change(R, interval=1, timeout=100, sleep=flip, clock=lambda: st["t"])
+    assert reason == "changed" and key == (12, ((12, "merged"),))
+
+    # no further change within the window → timeout
+    tt = {"t": 0.0}
+    reason2, _ = waiter.wait_for_change(R, interval=1, timeout=3,
+                                        sleep=lambda dt: tt.__setitem__("t", tt["t"] + dt),
+                                        clock=lambda: tt["t"])
+    assert reason2 == "timeout"
+
+
 def test_pullrequest_and_cadence():
     pr = PullRequest.from_dict({"number": 7, "state": "merged", "source_branch": "f", "target_branch": "m"})
     assert pr.inactive and PullRequest.from_dict({"number": 8, "state": "open"}).inactive is False
