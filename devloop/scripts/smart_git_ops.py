@@ -289,7 +289,7 @@ def resolve_intent(ns: argparse.Namespace, invoke_cwd: str) -> GitIntent:
     return GitIntent(
         mode=ns.mode,
         message=ns.message,
-        title=ns.title or ns.message,
+        title=ns.title or (ns.message.splitlines()[0] if ns.message else ""),
         requested_branch=ns.branch,
         target=target,
         base=ns.base or f"origin/{target}",
@@ -376,10 +376,52 @@ def publish(intent: GitIntent, branch: BranchResult, staged: StageResult, plan: 
         prstate.refresh_pr(repo)
 
 
-def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser()
+class _Parser(argparse.ArgumentParser):
+    """argparse with a hint on the failure mode that bites callers most: a --message whose
+    quotes/specials broke shell parsing, so its tail leaks as stray argv → 'unrecognized
+    arguments'. Point at single-quoting / --message-file instead of a bare usage dump."""
+
+    def error(self, message: str):  # noqa: A003 — argparse API name
+        hint = ""
+        if "unrecognized arguments" in message:
+            hint = ("\nhint: --message probably contained quotes/specials that broke shell parsing. "
+                    "Single-quote it, or pass --message-file <path> (or -F -, reading stdin) — no "
+                    "shell escaping needed (mirrors `git commit -F`).")
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: error: {message}{hint}\n")
+
+
+def _resolve_message(ns: argparse.Namespace, ap: argparse.ArgumentParser) -> str:
+    """The commit message, from --message-file (a path, or '-' for stdin) or inline --message.
+    File/stdin is the shell-escaping-free path for multi-line / quote-heavy messages — the
+    industry norm (git's `-F`, gh's `--body-file`). Exactly one source is required."""
+    if ns.message_file:
+        try:
+            raw = sys.stdin.read() if ns.message_file == "-" else Path(ns.message_file).read_text(encoding="utf-8")
+        except OSError as e:
+            ap.error(f"--message-file unreadable: {e}")
+        msg = raw.strip("\n")
+        if not msg.strip():
+            ap.error("--message-file is empty")
+        return msg
+    if ns.message:
+        return ns.message
+    ap.error("a commit message is required: pass --message '<msg>' or --message-file <path>")
+
+
+def _build_parser() -> _Parser:
+    """The arg schema — extracted so tests exercise the SAME parser main() runs (no drift).
+    `--message` (inline) and `--message-file` are alternatives; exactly one is required, enforced
+    in `_resolve_message` rather than by argparse, so the error can carry the quoting hint."""
+    ap = _Parser()
     ap.add_argument("mode", choices=["commit", "push", "mr"])
-    ap.add_argument("--message", "-m", required=True)
+    ap.add_argument("--message", "-m", default=None, help="inline commit message (single-quote it)")
+    ap.add_argument(
+        "--message-file", "-F", default=None,
+        help="read the commit message from a file ('-' = stdin); for multi-line / quote-heavy "
+             "messages, write it with the Write tool and pass the path — no shell escaping "
+             "(mirrors `git commit -F` / `gh --body-file`)",
+    )
     ap.add_argument("--branch", "-b", default=None, help="branch name to cut when on a protected/stale branch")
     ap.add_argument("--target", "-t", default=None)
     ap.add_argument(
@@ -388,13 +430,19 @@ def main(argv: list[str]) -> int:
         help="ref to cut --branch off (default origin/<target>); pass a feature branch for intentional stacking",
     )
     ap.add_argument("--files", "-f", default=None, help="comma-separated explicit files to stage")
-    ap.add_argument("--title", default=None, help="MR title (defaults to commit message)")
+    ap.add_argument("--title", default=None, help="MR title (defaults to the message's first line)")
     ap.add_argument(
         "--repo", "-r", default=None,
         help="repo to operate on: a path or a workspace subproject name; "
              "default = cwd's repo, falling back to the workspace's last-active repo",
     )
+    return ap
+
+
+def main(argv: list[str]) -> int:
+    ap = _build_parser()
     ns = ap.parse_args(argv)
+    ns.message = _resolve_message(ns, ap)   # file/stdin or inline; exits with a hint if neither
 
     try:
         intent = resolve_intent(ns, os.getcwd())
