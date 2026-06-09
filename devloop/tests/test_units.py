@@ -387,6 +387,23 @@ def test_wait_for_pr_change():
     assert reason2 == "timeout"
 
 
+def test_notify_port_and_forge_producer():
+    """notify port: ChannelNotifier satisfies the Notifier protocol (channel is one delivery
+    impl, mcp imported lazily so this loads without it). forge producer: seg_key mirrors the
+    monitor's change-key; summarize names each transitioned PR."""
+    from lib.notify.base import Notification, Notifier
+    from lib.notify.channel import ChannelNotifier
+    assert isinstance(ChannelNotifier(None), Notifier)          # channel implements the port
+    assert Notification(content="x").kind == "info" and Notification(content="x").meta == {}
+    fc = _load_script("forge_channel")
+    assert fc.seg_key(None) is None
+    assert fc.seg_key({"pr_number": 12, "prs": [{"number": 12, "state": "open"}]}) == (12, ((12, "open"),))
+    s = fc.summarize({"prs": [{"number": 12, "state": "open"}]},
+                     {"prs": [{"number": 12, "state": "merged", "title": "docs"}], "branch": "b"},
+                     "/x/devloop")
+    assert s == "forge[devloop]: PR #12 open→merged (docs) [branch=b]"
+
+
 def test_pullrequest_and_cadence():
     pr = PullRequest.from_dict({"number": 7, "state": "merged", "source_branch": "f", "target_branch": "m"})
     assert pr.inactive and PullRequest.from_dict({"number": 8, "state": "open"}).inactive is False
