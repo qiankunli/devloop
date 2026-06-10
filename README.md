@@ -51,9 +51,24 @@ Loss 3 is answered by **session-grain state** riding the same two levers: an own
 
 All git goes through one `gitcmd` seam, all code-review hosting through one `lib/forge` facade (GitHub / GitLab as peer adapters, picked per-repo), all user config through one `lib/config` seam. Every guard is **fail-open** — a broken guardrail at worst fails to block; it never blocks your work.
 
-## Where it's heading
+## Where it's heading — from step-level to requirement-level
 
-devloop makes the loop *run smoothly*, but the loop's **granularity** is still step-level — a human nudges at every step. The next step is automating the **verify** link (lint → test → automated eval) until intervention can lift from *step-level* to *requirement-level*: the human states a requirement, the agent develops + verifies + self-corrects in a closed loop, the human accepts the result. lint / test / eval are that loop's sensors — the more automatic and trustworthy they are, the fewer steps a human must touch.
+devloop makes the loop *run smoothly*, but its **granularity** is still step-level — a human nudges at every step. The north star is to lift that intervention from *step-level* to **requirement-level**: you state a requirement; the agent develops → verifies → reads the result → self-corrects in a closed loop; a human only **accepts** at the end.
+
+That hinges on the **verify** link climbing from static checks (lint / test) to a real **verdict** the loop can converge against — and a verdict worth converging on isn't one pass/fail. Four parallel, *accumulable* judgment dimensions, each answering its own question:
+
+| dimension | answers | how |
+|-----------|---------|-----|
+| **correctness** | does the contract / behavior hold | black-box, against a running system |
+| **effectiveness** | is the agent's output actually good | black-box (incl. LLM-as-judge) |
+| **capacity** | does it hold under load | black-box |
+| **taste** | is it built the way you'd want — design / boundaries / naming | white-box, reads the diff, no deploy needed |
+
+Two boundaries keep it honest (and line up with the *levels-of-autonomy*, *eval-driven* and *spec-driven* directions the field is converging on): **the human keeps merge** — release authority never moves into the loop — and **the agent changes code to meet the bar, never moves the bar itself** (specs and thresholds stay human-governed, the same side as merge). Think L4 "human as approver," not L5.
+
+devloop is the **loop machine** — the state bus, the hard intercepts, and the run / verify / deploy beats; the verdict producers are a separate, pluggable concern. So the open surface is wide: more judgment dimensions and sensors, wiring a verdict back into the loop as feedback, the deploy beat that lets behavioral checks hit a real system, the white-box taste judge. **If this frontier interests you, open an issue or a discussion — ideas here are exactly the kind of contribution we're after.**
+
+*Adjacent lines of work this draws on and sits among: **agentic coding** / **autonomous coding agents**, **self-correcting** & **verifier-driven** loops, **eval-driven development** (**LLM-as-judge**), **spec-driven development**, and the **levels of autonomy** framing for **human-in-the-loop** AI software engineering.*
 
 ---
 

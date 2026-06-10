@@ -51,9 +51,24 @@ protected 和 inactive 能干净地硬拦——在它们上面编辑没有任何
 
 所有 git 走唯一入口 `gitcmd`，所有代码评审平台走唯一 facade `lib/forge`（GitHub / GitLab 平级 adapter，按 repo 分发），所有用户配置走唯一入口 `lib/config`。每个 guard 一律 **fail-open**——护栏坏了最坏是没拦住，但绝不堵死你的路。
 
-## 往哪走
+## 往哪走 —— 从步骤级到需求级
 
-devloop 把循环跑稳了，但循环的**粒度**还停在步骤级——人依然要在每一步盯着纠偏。下一程是把闭环里「校验」那一环自动化（lint → test → 自动化 eval），直到干预粒度能从**步骤级**抬到**需求级**：人提需求，AI 自己开发 + 自己校验 + 自己纠偏跑完闭环，人只做验收。lint / test / eval 就是这条闭环的传感器——它们越自动、越可信，人要插手的步骤就越少。
+devloop 把循环跑稳了，但**粒度**还停在步骤级——人依然要在每一步盯着纠偏。北极星是把干预从**步骤级**抬到**需求级**：人提需求，AI 自己开发 → 校验 → 读结果 → 闭环里自纠偏，人只在最后**验收**。
+
+关键是「校验」这一环从静态检查（lint / test）爬到一个闭环能收敛的真实 **verdict**——而值得收敛的 verdict 不是单一的过 / 不过。四个平级、**可积累**的判定维，各答一个问题：
+
+| 维度 | 答什么 | 怎么判 |
+|------|--------|--------|
+| **对错** | 接口 / 行为对不对 | 黑盒，打真实运行的系统 |
+| **效果** | agent 产出好不好 | 黑盒（含 LLM-as-judge） |
+| **容量** | 压力下扛不扛得住 | 黑盒 |
+| **口味** | 是否按你想要的方式建的——设计 / 边界 / 命名 | 白盒，读 diff，不依赖 deploy |
+
+两条边界让它不跑偏（也对得上业界正在收敛的 *levels-of-autonomy* / *eval-driven* / *spec-driven* 几条线）：**merge 留给人**——发布权永不进闭环；**AI 只改 code 去达标，绝不挪门槛本身**——spec 和阈值是人治的，和 merge 同侧。对标 L4「human as approver」，不是 L5。
+
+devloop 是**循环机器**——状态总线、硬拦、run / 校验 / deploy 这些拍；verdict 的生产者是另一件可插拔的事。所以开放面很宽：更多判定维与传感器、把 verdict 作为反馈接回闭环、让黑盒校验能打真实系统的 deploy 拍、白盒口味判子。**如果你对这条前沿感兴趣，开个 issue 或 discussion——这里的点子，正是我们最想要的贡献。**
+
+*相关方向（本项目借鉴并身处其中）：**agentic coding** / **autonomous coding agents**、**self-correcting** & **verifier-driven** loop、**eval-driven development**（**LLM-as-judge**）、**spec-driven development**，以及 **human-in-the-loop** AI software engineering 的 **levels of autonomy** 框架。*
 
 ---
 
