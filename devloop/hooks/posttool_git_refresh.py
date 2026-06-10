@@ -44,7 +44,7 @@ def handle(inp: hook_io.HookInput) -> None:
         return
     for git_root in affected_roots(inp.command, inp.cwd):
         RepoContext.refresh_branch(git_root)
-        record_active_repo(git_root)
+        record_active_repo(git_root, inp.session_id)
         # ownership follows activity: a session doing git work in a checkout claims it
         # (no-op if a foreign session already owns it — the guards handle that side)
         if inp.session_id:

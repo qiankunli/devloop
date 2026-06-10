@@ -14,6 +14,8 @@ Mechanism (a "pid lock", not a heartbeat registry):
   owner expires (pid dead) within the TTL at worst.
 - No shared heartbeat registry and no atomic rewrite of context.json — just this
   dedicated file, written rarely (on acquire) via tmp + os.replace.
+- Release has two layers: SessionEnd (`hooks/sessionend_release.py`) unlinks the
+  session's own locks on normal exit; pid-death liveness covers crashes.
 
 Each linked git worktree has its own `.devloop/`, so the lock is naturally
 per-checkout: two sessions already in separate worktrees never see each other's
@@ -80,6 +82,28 @@ def foreign_owner(repo: str | Path, session_id: str, now: float | None = None) -
     ):
         return owner
     return None
+
+
+def release(repo: str | Path, session_id: str) -> bool:
+    """Drop ownership iff THIS session holds the lock (the normal-exit path).
+
+    Two release layers, both required: SessionEnd releases immediately on normal
+    exit (a guest needn't wait for any liveness check); pid-death liveness in
+    `_active` is the fallback for crashes / a SessionEnd hook that never ran
+    (ts-TTL only when the recorded pid can't be probed). Never touches a foreign
+    or blank lock; a read-then-unlink race is benign here — takeover requires the
+    lock to be inactive, and mine is active while this session still runs.
+    """
+    if not session_id:
+        return False
+    owner = read(repo)
+    if not owner or owner.get("session_id") != session_id:
+        return False
+    try:
+        _lock_file(repo).unlink()
+    except OSError:
+        return False
+    return True
 
 
 def acquire(

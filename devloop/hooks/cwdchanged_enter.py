@@ -67,7 +67,7 @@ def handle(inp: hook_io.HookInput) -> None:
         # deliberately NO owner acquire: enter 只是选中上下文(阅读/review/查日志都走到
         # 这),不碰 checkout 的可变面——占有由第一笔变更动作建立(edit/checkout guard、
         # posttool git refresh),与 gitignored 豁免同一判据:是否污染 owner 的 diff。
-        record_active_repo(git_root)
+        record_active_repo(git_root, inp.session_id)
     # Keep the workspace context warm too (no injection reset — same workspace).
     # Containment misses a symlinked subproject (resolve() escapes the workspace tree),
     # so fall back to the subproject-realpath match; an unregistered workspace root

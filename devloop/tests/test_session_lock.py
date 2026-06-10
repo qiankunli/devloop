@@ -38,6 +38,19 @@ def test_stale_owner_is_reclaimable(tmp_path):
     assert session_lock.read(repo)["session_id"] == "sess-B"
 
 
+def test_release_own_lock_frees_checkout_immediately(tmp_path):
+    repo = str(tmp_path)
+    session_lock.acquire(repo, "sess-A", "feat/x", pid=os.getpid())
+    # neither another session nor a blank one can release A's lock
+    assert session_lock.release(repo, "sess-B") is False
+    assert session_lock.release(repo, "") is False
+    assert session_lock.read(repo)["session_id"] == "sess-A"
+    # owner's normal exit releases at once — next session needn't wait for liveness
+    assert session_lock.release(repo, "sess-A") is True
+    assert session_lock.read(repo) is None
+    assert session_lock.acquire(repo, "sess-B", "feat/y", pid=os.getpid()) is True
+
+
 def test_blank_session_never_gates_or_writes(tmp_path):
     repo = str(tmp_path)
     session_lock.acquire(repo, "sess-A", "feat/x", pid=os.getpid())

@@ -37,7 +37,7 @@ def decide(inp: hook_io.HookInput) -> str | None:
     ws = WorkspaceContext.load(cwd_resolved)
     subs = [s.name.strip("`") for s in (ws.subprojects if ws else [])[:10] if s.name]
     hint = ("\nRegistered subprojects: " + ", ".join(subs)) if subs else ""
-    active = load_active_repo(cwd_resolved)
+    active = load_active_repo(cwd_resolved, inp.session_id)
     active_hint = f"\nLast-active subproject: {active}" if active else ""
     return (
         f"⚠️  You're at the workspace root '{cwd_resolved}', not inside a subproject.\n"

@@ -26,7 +26,7 @@ def handle(inp: hook_io.HookInput) -> None:
     ctx = RepoContext.load(git_root)
     if ctx:
         ctx.increment_stale_edits()
-    record_active_repo(git_root)
+    record_active_repo(git_root, inp.session_id)
 
 
 if __name__ == "__main__":

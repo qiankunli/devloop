@@ -9,8 +9,12 @@ the state bus instead of the shell:
   1. explicit query — a path, or a subproject name fuzzy-matched against the
      registered workspaces' structured state (`context.json` subprojects);
   2. cwd's enclosing git repo (the classic case, unchanged);
-  3. the cwd workspace's last-active repo (`active.json`, stamped by the activity
-     writers: CwdChanged / PostToolUse hooks and the smart scripts themselves).
+  3. THIS session's bound repo in the cwd workspace (`.devloop/active/<sid>.json`,
+     one file per session, stamped by the activity writers: CwdChanged / PostToolUse
+     hooks and the smart scripts themselves; scripts self-identify via
+     CLAUDE_CODE_SESSION_ID). Concurrent sessions on different repos can't poison
+     each other's fallback; a session with no binding of its own must say --repo —
+     other sessions' bindings are only ever surfaced as a hint in that error.
 
 Fuzzy scoring is shared with `resolve_subproject.py` (/enter), so a name means the
 same thing everywhere.
@@ -23,7 +27,7 @@ from pathlib import Path
 
 from . import repo_layout, workspace
 from .context import RepoContext, WorkspaceContext
-from .context.workspace import load_active_repo, workspace_for_repo
+from .context.workspace import active_repo_candidates, load_active_repo, workspace_for_repo
 
 
 @dataclass(frozen=True)
@@ -165,7 +169,14 @@ def resolve_repo_dir(query: str | None, cwd: str | Path = ".") -> tuple[Resolved
     if ws_root:
         active = load_active_repo(ws_root)
         if active:
-            return _resolved(active, f"workspace last-active repo '{Path(active).name}'")
+            return _resolved(active, f"session last-active repo '{Path(active).name}'")
+        cands = active_repo_candidates(ws_root)
+        if cands:
+            names = ", ".join(Path(c).name for c in cands)
+            return None, (
+                "this session has no repo activity yet "
+                f"(other sessions are on: {names}) — pass --repo <name|path>"
+            )
         ctx = WorkspaceContext.load(ws_root)
         names = ", ".join(s.name for s in (ctx.subprojects if ctx else []) if s.name)
         known = f"; known subprojects: {names}" if names else ""

@@ -41,6 +41,7 @@ from .repo import Branch, BranchTopology, Injection, RepoContext, RepoMeta, Vali
 from .workspace import (
     Subproject,
     WorkspaceContext,
+    clear_active_repo,
     load_active_repo,
     record_active_repo,
     workspace_for_repo,

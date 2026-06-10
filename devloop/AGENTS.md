@@ -51,13 +51,14 @@ devloop/
 │   │   ├── _vendor/               #   ★第三方原样 vendor（parable.py MIT + LICENSE/PROVENANCE）；永不手改
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py  session_lock.py
-│   │   └── context/               #   .devloop/ 状态层：repo 级按 owner 分段，workspace 级单文件（base / repo / workspace）
+│   │   └── context/               #   .devloop/ 状态总线：repo 级按 owner 分段，workspace 级单文件（base / repo / workspace）
 │   ├── cwdchanged_enter.py        # CwdChanged：自动 enter
 │   ├── sessionstart_init.py       # SessionStart：References(additionalContext) + watchPaths + 预热
 │   ├── userprompt_inject.py       # UserPromptSubmit：turn + session 注入
 │   ├── postcompact_reinject.py    # PostCompact：清注入 dedup
 │   ├── filechanged_refs.py        # FileChanged：AGENTS.md 变更重注入
 │   ├── posttool_git_refresh.py / posttool_track_edits.py   # PostToolUse 状态写入
+│   ├── sessionend_release.py      # SessionEnd：释放本 session 的 owner 锁（正常退出路径）
 │   └── pretool_*.py               # 10 个硬拦截（guard harness；含 checkout/edit owner 锁）
 ├── scripts/                        # smart_git_ops + smart_*.sh / read_pr / update_pr / run_fixlint / run_tests / poll_pr_status / init_*
 ├── monitors/monitors.json          # ★PR-sweep 后台轮询（替代 hook 心跳 scheduler）
@@ -72,17 +73,17 @@ devloop/
 
 ### 1. hook harness + notify 端口（两个 producer 侧）
 - **hook 侧（CC 原生 event）→ `hooks/lib/hook_io.py`**：每个 hook = 一个函数 + 一个 runner：`guard(decide)`（PreToolUse，返回 deny 理由或 None，异常→放行 fail-open）、`inject(produce, event)`（返回注入文本）、`observe(handle)`（副作用，恒输出 `{}`）、`run(build, event)`（富 payload，如 SessionStart 的 additionalContext+watchPaths）。runner 保证 hook 永不打断用户工具调用。
-- **非 hook 侧（外部系统）→ monitor（拉）+ `hooks/lib/notify`（推）**：forge / deploy / verdict 这类外部状态没有 CC 原生 event。**拉**：monitor 轮询写状态中心（`poll_pr_status.py` 写 `.devloop/pr.json`，**persist-only**，喂 guard / inject）。**推**：走 notify 端口——`base` 定义 `Notification` + `Notifier`，`channel` 的 `ChannelNotifier`（push 成 Claude Code channel 事件 → 唤醒会话、内容 inline）是第一种投递，`run_channel` 是复用壳；producer（`scripts/forge_channel.py`）盯状态中心的变化、build `Notification` 交给 `Notifier`。deploy/verdict 源照此加一个 producer 即可。channel 是 research preview / opt-in（见 References）。
+- **非 hook 侧（外部系统）→ monitor（拉）+ `hooks/lib/notify`（推）**：forge / deploy / verdict 这类外部状态没有 CC 原生 event。**拉**：monitor 轮询写状态总线（`poll_pr_status.py` 写 `.devloop/pr.json`，**persist-only**，喂 guard / inject）。**推**：走 notify 端口——`base` 定义 `Notification` + `Notifier`，`channel` 的 `ChannelNotifier`（push 成 Claude Code channel 事件 → 唤醒会话、内容 inline）是第一种投递，`run_channel` 是复用壳；producer（`scripts/forge_channel.py`）盯状态总线的变化、build `Notification` 交给 `Notifier`。deploy/verdict 源照此加一个 producer 即可。channel 是 research preview / opt-in（见 References）。
 
-一个变化同时走"喂状态中心（拉）"与"推给 agent"两条路：
+一个变化同时走"喂状态总线（拉）"与"推给 agent"两条路：
 
 ```
-hook    变化 ──────────────────────────▶ 状态中心 ─▶ 消费(inject 每轮 / guard 用工具时)   ← 拉
-monitor 变化 ─▶ persist ──────────────▶ 状态中心 ─▶ 消费                                ← 拉
+hook    变化 ──────────────────────────▶ 状态总线 ─▶ 消费(inject 每轮 / guard 用工具时)   ← 拉
+monitor 变化 ─▶ persist ──────────────▶ 状态总线 ─▶ 消费                                ← 拉
 channel 变化 ─▶ Notifier.deliver ─────▶ push 进会话（唤醒 agent + 内容 inline）          ← 推
 ```
 
-hook 的后果通常是写一个段、直接写状态中心；非 hook 外部源走两条：monitor persist 喂状态中心（拉），notify 端口（channel 第一种实现）推给 agent。
+hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源走两条：monitor persist 喂状态总线（拉），notify 端口（channel 第一种实现）推给 agent。
 
 ### 2. 三个统一 seam（集中、规范、可替换）
 - **git → `gitcmd`**：所有 git 子进程的唯一入口，超时 + failure-safe（rc=-1 不抛）。
@@ -104,8 +105,8 @@ hook 的后果通常是写一个段、直接写状态中心；非 hook 外部源
 两级（workspace / repo）。写入者：PostToolUse / SessionStart / CwdChanged / FileChanged / monitor。读取者：UserPromptSubmit（软注入）+ PreToolUse guards（硬决策）。
 - **文字源与结构化态分层**：AGENTS.md（workspace 级 / repo 级各自的边界、清单、References）是文字知识源；`.devloop/` 只保存解析后的结构化结果与运行态，不复刻正文。文件布局见 CONCEPTS.md〈状态文件〉。
 - **subproject 存在性 = 文件系统自发现**（不靠手写表格）：workspace 直接子项里「是 / 指向 git 仓」的即为 subproject（`discover_subproject_names`，判据是子目录含 `.git`），`docs` / `worktrees` / 隐藏目录走黑名单排除。AGENTS.md 子项目表降级为**可选润色**——按目录名 join 补 `aliases` / `role`，`language` 缺省自动探测、表格显式值可覆盖。加一个 subproject ≈ 建个 symlink，无需手编表格。为什么：手维护的表格易过时 / 表头不被识别就整片丢失，而文件系统是不会撒谎的事实源。
-- **分段状态中心（为什么 repo 级不是单文件）**：repo 级状态按 writer-owner 拆成段文件、`load` 合并成视图——写入角色分散在不同进程，单文件逼出"读-改-写"、并发丢更新；一段一 owner 让每次写只碰不相交的文件，**多写者丢更新在结构上不可能、无需锁**。原子写 / fail-open 读的原语在 `context/base.py`。
-- **脚本与 cwd 解耦**：session cwd 在聚合工作区常驻 workspace 根，smart 脚本一律不依赖 cwd——repo 按"显式 `--repo` → cwd 仓库 → 最近活跃仓"解析并在 PLAN 里自述来源。解析链见 CONCEPTS.md〈脚本的 repo 解析〉。
+- **分段状态总线（为什么 repo 级不是单文件）**：repo 级状态按 writer-owner 拆成段文件、`load` 合并成视图——写入角色分散在不同进程，单文件逼出"读-改-写"、并发丢更新；一段一 owner 让每次写只碰不相交的文件，**多写者丢更新在结构上不可能、无需锁**。原子写 / fail-open 读的原语在 `context/base.py`。
+- **脚本与 cwd 解耦**：session cwd 在聚合工作区常驻 workspace 根，smart 脚本一律不依赖 cwd——repo 按"显式 `--repo` → cwd 仓库 → 本 session 绑定的最近活跃仓"解析并在 PLAN 里自述来源（active 一 session 一文件，互不劫持；无本 session 绑定即拒绝兜底，他人绑定仅作提示）。解析链见 CONCEPTS.md〈脚本的 repo 解析〉，生命周期见〈Session 运行态〉。
 - **PR 模型**：中立 `PullRequest`（provider 随对象走）；单 anchor（`branch.pr_number`）+ 近期窗口（`prs`）**派生**失活 / 在途，不存 bool；`pr.json` 由 monitor 独占且按 branch 归属——切分支即自动失效、无人去清（gcampr 建 PR 后也只触发 monitor poll，不自己写）。字段语义与窗口规则见 CONCEPTS.md〈PR 模型〉。
 - **注入两 cadence**：turn（branch/dirty/validation/PR 摘要，每轮，内容哈希 dedup + TTL 兜底）、session（References，SessionStart 发一次、变更才重发）。`PostCompact` 清两者。
 - 字段 schema / TTL / cap 数值、段读写原语（`load/save_segment` / `_write_atomic`）都在 `hooks/lib/context/base.py`，文档不复述。
@@ -113,9 +114,11 @@ hook 的后果通常是写一个段、直接写状态中心；非 hook 外部源
 **成本原则（token 是第一约束，"非必要不注入"）**——prompt 注入是跟 AI 沟通最直接也最贵的通道，加任何东西进 prompt 前先过这几条：
 1. **只注入当前 subproject + workspace 级**的 References / 状态；**绝不**注入其它 subproject 的 AGENTS.md 正文（多 subproject 场景下这是最大的省 token 点）。
 2. **`watchPaths` / `monitor` 输出是给 harness 的指令 / 通知，不进模型 prompt**——所以"注册全部 subproject 的 AGENTS.md 监听""轮询全部 subproject 的 MR"都是 token-free 的；真正进 prompt 的只有当前 repo 的那点状态。
-3. **列表一律 cap**（子项目清单 12、MR 窗口 5），长描述压成一行。
+3. **列表一律 cap**（子项目清单、PR 窗口都有定长上限，数值在 `hooks/lib/context/base.py`），长描述压成一行。
 4. **只在内容变化时才注入**（最大的省 token 手段之一）：每段注入文本按内容哈希比上次，**一样就不发**（`Cadence.should_emit`）——RepoContext 也是这样，branch/dirty/validation/MR 没变的轮次零增量；session 段一会话发一次。仅 TTL 到期或 `PostCompact` 才强制重发兜底。
 5. 新增任何注入前自问：这真得**每轮**进 prompt 吗？hook 内部读 context 决策不行吗？（硬规则 deny 通常不需要进 prompt。）
+
+成本原则约束的是**怎么做**，不是**做不做**：极致的省 token 是什么都不干，那不是目标——devloop 长期方向恰恰是纳入外部通知自动做事、减少人的步骤级干预（见 event-driven resume）。该省的是做事过程里的浪费，不是把事省掉。
 
 ### 5. 不走原生通道的硬规矩
 - AI **绝不**直接 `git commit/push`（guard 会拦）或散调 forge——commit/push/PR 一律走 `scripts/smart_*.sh`（内部用 gitcmd + facade，自陈 `PLAN:` banner）。保护分支（main/master/release*）判定见 CONCEPTS.md。

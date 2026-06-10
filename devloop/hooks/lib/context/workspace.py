@@ -5,13 +5,17 @@ Subprojects); no turn-grain content (branch/dirty/validation are repo-level). Th
 registry of which dirs are workspaces lives in `lib/workspace.py`.
 
 Besides `context.json` (single writer-role: the refresh), the workspace `.devloop/`
-holds one more segment: `active.json`, the last-active repo stamped by the "activity"
-writer-role (CwdChanged / PostToolUse hooks and the smart scripts). It exists because
-the session cwd snaps back to the workspace root between Bash calls — scripts fired
-there need a state-bus answer to "which subproject is being worked on".
+holds the `active/` dir: one file per session recording that session's bound repo,
+stamped by the "activity" writers (CwdChanged / PostToolUse hooks and the smart
+scripts). It exists because the session cwd snaps back to the workspace root between
+Bash calls — scripts fired there need a state-bus answer to "which subproject is
+THIS session working on".
 """
 from __future__ import annotations
 
+import json
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -223,11 +227,49 @@ def _build_subproject(root: Path, s: dict) -> Subproject:
     return sub
 
 
-# ── workspace `active` segment (the "activity" writer-role) ───────────────────
-# Every writer records the same last-write-wins fact — "this repo was just touched" —
-# so concurrent writers can't disagree in any way that matters (a lost update was an
-# equally-true value milliseconds older). Readers fail to None past the TTL: a guess
-# about *days-old* activity is worse than asking for an explicit --repo.
+# ── session-scoped runtime state: the `active/` segment ───────────────────────
+# "Which repo is this session working on" is SESSION state, so it gets one file per
+# session — `.devloop/active/<session_id>.json`, owner = that session. The
+# one-file-one-owner rule thus holds with zero exceptions: no cross-session
+# read-modify-write exists at all. A workspace hosts several subprojects, and several
+# concurrent sessions each working on a different one is its normal shape —
+# per-session files keep one session's no-arg /lint /gcam fallback untouchable by
+# another's activity.
+#
+# Lifecycle is the standard session-runtime-state one (same as the checkout owner
+# lock; CONCEPTS〈Session 运行态〉): created on activity, released by the SessionEnd
+# hook, TTL as the crash fallback (dead files pruned opportunistically on write).
+# Readers never guess from OTHER sessions' files: a session with no binding of its
+# own gets None and the resolver asks for an explicit --repo — foreign bindings are
+# surfaced as a hint in that error, never as an answer.
+#
+# Hooks pass their payload session_id; scripts self-identify via
+# CLAUDE_CODE_SESSION_ID (exported to Bash subprocesses).
+
+
+def _session_key(session_id: str | None) -> str:
+    """Explicit id (hooks, from the payload) wins; scripts fall back to the env."""
+    if session_id is not None:
+        return session_id
+    return os.environ.get("CLAUDE_CODE_SESSION_ID", "") or ""
+
+
+def _session_file(ws_root: str | Path, session_id: str | None) -> Path:
+    # a CLI that provides no session id degrades to one shared "anon" slot
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", _session_key(session_id)) or "anon"
+    return base.state_dir(ws_root) / "active" / f"{name}.json"
+
+
+def _live_binding(path: Path) -> str | None:
+    """The file's repo_dir if fresh and still existing, else None."""
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    repo = d.get("repo_dir") if isinstance(d, dict) else None
+    if not repo or base.is_stale(d.get("ts"), ACTIVE_REPO_TTL_SEC):
+        return None
+    return repo if Path(repo).is_dir() else None
 
 def workspace_for_repo(repo_dir: str | Path) -> str | None:
     """Which registered workspace owns `repo_dir`, if any.
@@ -267,21 +309,48 @@ def workspace_for_repo(repo_dir: str | Path) -> str | None:
     return None
 
 
-def record_active_repo(repo_dir: str | Path) -> None:
-    """Stamp `repo_dir` as its workspace's last-active repo (`.devloop/active.json`)."""
+def record_active_repo(repo_dir: str | Path, session_id: str | None = None) -> None:
+    """Bind THIS session to `repo_dir` (`.devloop/active/<sid>.json`)."""
     ws = workspace_for_repo(repo_dir)
-    if ws:
-        base.save_segment(ws, "active", {"repo_dir": str(Path(repo_dir).resolve()),
-                                         "ts": base.now()})
+    if not ws:
+        return
+    f = _session_file(ws, session_id)
+    base._write_atomic(f, {"repo_dir": str(Path(repo_dir).resolve()), "ts": base.now()})
+    # opportunistic GC: crashed sessions never ran SessionEnd; drop their dead files here
+    try:
+        for other in f.parent.glob("*.json"):
+            if other != f and _live_binding(other) is None:
+                other.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
-def load_active_repo(ws_root: str | Path) -> str | None:
-    """The workspace's last-active repo dir, or None if unset / stale / gone."""
-    seg = base.load_segment(ws_root, "active") or {}
-    repo = seg.get("repo_dir")
-    if not repo or base.is_stale(seg.get("ts"), ACTIVE_REPO_TTL_SEC):
-        return None
-    return repo if Path(repo).is_dir() else None
+def load_active_repo(ws_root: str | Path, session_id: str | None = None) -> str | None:
+    """THIS session's bound repo dir, or None — never guesses from other sessions."""
+    return _live_binding(_session_file(ws_root, session_id))
+
+
+def clear_active_repo(ws_root: str | Path, session_id: str | None = None) -> None:
+    """SessionEnd path: drop this session's binding."""
+    try:
+        _session_file(ws_root, session_id).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def active_repo_candidates(ws_root: str | Path) -> list[str]:
+    """Distinct live repos across all sessions — a HINT for the resolver's error
+    message, never an answer."""
+    out: list[str] = []
+    try:
+        files = sorted((base.state_dir(ws_root) / "active").glob("*.json"))
+    except OSError:
+        return out
+    for p in files:
+        repo = _live_binding(p)
+        if repo and repo not in out:
+            out.append(repo)
+    return out
 
 
 def _format_ref(r: Reference) -> str:
