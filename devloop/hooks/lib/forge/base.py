@@ -136,6 +136,12 @@ class Forge(abc.ABC):
     def get(self, number: int) -> PullRequest: ...
 
     @abc.abstractmethod
+    def description(self, number: int) -> str:
+        """The PR/MR body text. A separate primitive rather than a `PullRequest` field:
+        bodies can be large and the PR window is persisted + injected, so they're fetched
+        only at the moment a caller syncs the description (see smart_git_ops)."""
+
+    @abc.abstractmethod
     def update(self, number: int, **fields) -> PullRequest: ...
 
     @abc.abstractmethod

@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
 from lib import git_state, gitcmd, repo_resolve  # noqa: E402
 from lib.context import RepoContext, gate, prstate, record_active_repo  # noqa: E402
-from lib.forge import ForgeError, forge_for_repo, pr_label  # noqa: E402
+from lib.forge import Forge, ForgeError, PullRequest, forge_for_repo, pr_label  # noqa: E402
 
 
 class SmartError(Exception):
@@ -68,12 +68,19 @@ class GitIntent:
     repo: str
     source: str       # repo resolution self-narration, goes into the PLAN banner
     invoke_cwd: str
+    # The message's body (everything after the first line). It becomes the PR/MR
+    # description: title alone is the "cram everything into one line" pressure that
+    # produced 150-char MR titles over empty descriptions.
+    description: str = ""
 
 
 @dataclass(frozen=True)
 class BranchResult:
     branch: str   # the branch this run commits on, after positioning
     cut: bool     # freshly cut this run → foreign-commit guard applies
+    # The branch's in-flight (open) PR when continuing onto it — carried from the gate's
+    # SHA-validated view so publish() can sync its description without a second forge poll.
+    active_pr: PullRequest | None = None
 
 
 @dataclass(frozen=True)
@@ -256,9 +263,32 @@ def warn_mixed_version_bump(repo: str, plan: list[str]) -> None:
         )
 
 
-def reuse_or_create_pr(repo: str, source: str, target: str, title: str, plan: list[str]):
+def sync_pr_description(forge: Forge, pr: PullRequest, description: str, plan: list[str]) -> None:
+    """Append this run's commit body to an existing PR/MR description (creation passes it
+    directly; this covers follow-up commits onto an in-flight PR).
+
+    Append-only with a containment guard: a human-edited description survives, and a
+    retried run doesn't duplicate its paragraph. Non-fatal by design — by the time this
+    runs the commit/push already landed, so a description miss is cosmetic and becomes a
+    PLAN note instead of failing the whole run."""
+    if not description:
+        return
+    label = pr_label(forge.provider, pr.number)
+    try:
+        existing = forge.description(pr.number)
+        if description in existing:
+            return
+        merged = f"{existing.rstrip()}\n\n{description}" if existing.strip() else description
+        forge.update(pr.number, body=merged)
+        plan.append(f"appended commit body to {label} description")
+    except ForgeError as e:
+        plan.append(f"⚠ could not sync {label} description (non-fatal): {e}")
+
+
+def reuse_or_create_pr(repo: str, source: str, target: str, title: str, description: str, plan: list[str]):
     """Open a PR/MR for `source`→`target`, reusing the branch's open one if present.
-    Provider-neutral: the forge is resolved from the repo's origin (GitHub or GitLab)."""
+    Provider-neutral: the forge is resolved from the repo's origin (GitHub or GitLab).
+    `description` becomes the body on create, and is appended on reuse."""
     forge = forge_for_repo(repo)
     if forge is None:
         raise SmartError("branch pushed, but no token / unsupported remote — open the PR/MR manually.")
@@ -266,8 +296,9 @@ def reuse_or_create_pr(repo: str, source: str, target: str, title: str, plan: li
         existing = next((p for p in forge.prs_for_branch(source) if p.is_open), None)
         if existing:
             plan.append(f"reused open {pr_label(forge.provider, existing.number)}: {existing.web_url}")
+            sync_pr_description(forge, existing, description, plan)
             return existing
-        pr = forge.create(source_branch=source, target_branch=target, title=title)
+        pr = forge.create(source_branch=source, target_branch=target, title=title, body=description)
         plan.append(f"created {pr_label(forge.provider, pr.number)}: {pr.web_url}")
         return pr
     except ForgeError as e:
@@ -290,6 +321,7 @@ def resolve_intent(ns: argparse.Namespace, invoke_cwd: str) -> GitIntent:
         mode=ns.mode,
         message=ns.message,
         title=ns.title or (ns.message.splitlines()[0] if ns.message else ""),
+        description=(ns.message.split("\n", 1)[1].strip() if ns.message and "\n" in ns.message else ""),
         requested_branch=ns.branch,
         target=target,
         base=ns.base or f"origin/{target}",
@@ -325,6 +357,7 @@ def prepare_branch(intent: GitIntent, gv: gate.GateView, plan: list[str]) -> Bra
         pr = gv.active_pr
         label = pr_label(gv.provider, pr.number) if pr else "PR"
         plan.append(f"continuing in-flight {label} on '{gv.branch}'")
+        return BranchResult(branch=gv.branch or "", cut=False, active_pr=pr)
     return BranchResult(branch=gv.branch or "", cut=False)
 
 
@@ -365,10 +398,17 @@ def publish(intent: GitIntent, branch: BranchResult, staged: StageResult, plan: 
         run(repo, "push", "-u", "origin", current, timeout=60)
         plan.append(f"pushed origin/{current}")
 
+    if intent.mode == "push" and staged.committed and intent.description and branch.active_pr:
+        # gcamp is the natural way to add commits to an in-flight PR — keep its description
+        # in step with the new commit's body, same as the mr-mode reuse path does.
+        forge = forge_for_repo(repo)
+        if forge is not None:
+            sync_pr_description(forge, branch.active_pr, intent.description, plan)
+
     if intent.mode == "mr":
         rng = run(repo, "log", "--oneline", f"origin/{target}..{current}").strip()
         plan.append(f"PR carries {len(rng.splitlines()) if rng else 0} commit(s) vs origin/{target}")
-        reuse_or_create_pr(repo, current, target, intent.title, plan)
+        reuse_or_create_pr(repo, current, target, intent.title, intent.description, plan)
         RepoContext.refresh_branch(repo)
         # Don't write pr_number here — keep the `pr` segment single-owner. Trigger one
         # authoritative poll so it (the sole writer) populates number + window for the new

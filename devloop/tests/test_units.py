@@ -27,6 +27,7 @@ from lib.forge import detect_provider, parse_origin  # noqa: E402
 from lib.forge.base import (  # noqa: E402
     Forge,
     Comment,
+    ForgeError,
     ForgeNotFound,
     build_window,
     parse_pr_number,
@@ -41,8 +42,9 @@ class _FakeForge(Forge):
     (reuse_or_create_pr) without HTTP — the port is small enough that this is trivial."""
     provider = "github"
 
-    def __init__(self, prs):
+    def __init__(self, prs, bodies=None):
         self._prs = {p.number: p for p in prs}
+        self._bodies = dict(bodies or {})   # number → description text
         self.created = None
 
     def create(self, *, source_branch, target_branch, title, body=""):
@@ -50,6 +52,7 @@ class _FakeForge(Forge):
         pr = PullRequest(number=n, state="open", source_branch=source_branch,
                          target_branch=target_branch, title=title, web_url=f"u/{n}")
         self._prs[n] = pr
+        self._bodies[n] = body
         self.created = pr
         return pr
 
@@ -58,7 +61,12 @@ class _FakeForge(Forge):
             raise ForgeNotFound(str(number))
         return self._prs[number]
 
+    def description(self, number):
+        return self._bodies.get(number, "")
+
     def update(self, number, **fields):
+        if "body" in fields:
+            self._bodies[number] = fields["body"]
         return self._prs[number]
 
     def prs_for_branch(self, branch):
@@ -286,16 +294,17 @@ def test_reuse_or_create_pr_over_narrowed_port():
         f = _FakeForge([PullRequest(number=3, state="open", source_branch="feat/x", web_url="u/3")])
         sgo.forge_for_repo = lambda repo: f
         plan = []
-        pr = sgo.reuse_or_create_pr("/repo", "feat/x", "main", "t", plan)
+        pr = sgo.reuse_or_create_pr("/repo", "feat/x", "main", "t", "", plan)
         assert pr.number == 3 and f.created is None
         assert any("reused open PR #3" in line for line in plan)
-        # create: only a finished PR for the branch → open a new one
+        # create: only a finished PR for the branch → open a new one, body = description
         f2 = _FakeForge([PullRequest(number=3, state="merged", source_branch="feat/x")])
         sgo.forge_for_repo = lambda repo: f2
         plan = []
-        pr = sgo.reuse_or_create_pr("/repo", "feat/x", "main", "t", plan)
+        pr = sgo.reuse_or_create_pr("/repo", "feat/x", "main", "t", "why & what", plan)
         assert f2.created is not None and pr.number == 4
         assert any("created PR #4" in line for line in plan)
+        assert f2.description(4) == "why & what"
     finally:
         sgo.forge_for_repo = orig
 
@@ -1392,6 +1401,49 @@ def test_title_defaults_to_message_first_line():
     ns.message = sgo._resolve_message(ns, ap)
     intent = sgo.resolve_intent(ns, R)
     assert intent.title == "feat: subject" and intent.message.endswith("long body line")
+    # the body becomes the PR/MR description — the outlet that keeps titles one short line
+    assert intent.description == "long body line"
+    # single-line message → no description (forge gets body="", not a phantom paragraph)
+    ns1 = ap.parse_args(["mr", "--message", "feat: subject only", "--repo", R])
+    ns1.message = sgo._resolve_message(ns1, ap)
+    assert sgo.resolve_intent(ns1, R).description == ""
+
+
+def test_sync_pr_description_append_only():
+    """sync_pr_description: sets an empty body, appends to a non-empty one (human edits
+    survive), no-ops when the paragraph is already present (retry-safe), and a forge
+    failure degrades to a PLAN note — never an exception (commit/push already landed)."""
+    sgo = _load_script("smart_git_ops")
+    pr = PullRequest(number=7, state="open", source_branch="feat/x")
+
+    f = _FakeForge([pr])
+    plan = []
+    sgo.sync_pr_description(f, pr, "para one", plan)
+    assert f.description(7) == "para one" and any("description" in line for line in plan)
+    sgo.sync_pr_description(f, pr, "para two", [])           # append, not overwrite
+    assert f.description(7) == "para one\n\npara two"
+    sgo.sync_pr_description(f, pr, "para one", [])           # already present → no dup
+    assert f.description(7) == "para one\n\npara two"
+    sgo.sync_pr_description(f, pr, "", [])                   # nothing to sync → no-op
+    assert f.description(7) == "para one\n\npara two"
+
+    class _Broken(_FakeForge):
+        def description(self, number):
+            raise ForgeError("boom")
+    plan = []
+    sgo.sync_pr_description(_Broken([pr]), pr, "para", plan)  # non-fatal
+    assert any("non-fatal" in line for line in plan)
+
+    # mr-mode reuse path appends through the same helper
+    orig = sgo.forge_for_repo
+    try:
+        f2 = _FakeForge([PullRequest(number=3, state="open", source_branch="feat/x", web_url="u/3")],
+                        bodies={3: "original"})
+        sgo.forge_for_repo = lambda repo: f2
+        sgo.reuse_or_create_pr("/repo", "feat/x", "main", "t", "follow-up body", [])
+        assert f2.description(3) == "original\n\nfollow-up body"
+    finally:
+        sgo.forge_for_repo = orig
 
 
 def _run_all():

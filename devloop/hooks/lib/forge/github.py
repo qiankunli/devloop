@@ -62,6 +62,9 @@ class GitHubForge(Forge):
     def get(self, number: int) -> PullRequest:
         return self._to_pr(self.c.get(f"pulls/{number}"))
 
+    def description(self, number: int) -> str:
+        return self.c.get(f"pulls/{number}").get("body") or ""
+
     def create(self, *, source_branch: str, target_branch: str, title: str,
                body: str = "") -> PullRequest:
         return self._to_pr(self.c.post("pulls", {

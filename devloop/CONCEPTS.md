@@ -24,6 +24,7 @@ devloop 内多个 skill / 脚本共用的术语。架构理念见 [`AGENTS.md`](
 - **分支失活（inactive）**：派生，不单独存。但**硬 gate 不读展示级 join**：`branch_merged_guard` / gcampr 走 `lib.context.gate.evaluate()`，按 **live 分支 + live HEAD** 在缓存窗口上做 SHA 祖先校验（`pick_branch_pr`），归属键是 `(branch, head_sha)` 而非分支名——观测不到的 checkout 后缓存陈旧也不会误判。详见 [`docs/branch-state.md`](./docs/branch-state.md)〈三态 freshness 模型〉。
 - **远端 tip**：`remote_branches.json` 由 monitor `ls-remote` 拉服务端 trunk tips（同事 push 后本地 fetch 前就可见），带 `fetched_at`；注入据此给 ahead/behind 加"as of"限定，避免把落后的本地 checkout 读成"最新"。
 - **在途（in-flight）**：同样按 join 派生（`state = open`，`branch_pr_in_flight`）——PR 已建、等人工 merge。与 inactive 互斥，二者加 protected / healthy 构成下面的四态。
+- **title / description**：commit message 首行是 PR/MR title，body（首行之后）是 description——给细节一个出口，title 才不会被挤成超长单行。创建时直填；往在途 PR 续传 commit（gcamp / gcampr 复用路径）时 **append-only + 包含性去重**：人工编辑过的 description 不被覆盖，重试不重复；同步失败仅记 PLAN 注记（commit/push 已落地，description 是装饰性的，不因它失败）。
 
 ## 分支状态流转
 
