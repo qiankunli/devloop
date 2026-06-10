@@ -702,6 +702,39 @@ def test_active_repo_first_entry_symlink_workspace():
         registry.load_workspaces = orig
 
 
+def test_active_repo_is_per_session():
+    """session 运行态:active 绑定一 session 一文件(`.devloop/active/<sid>.json`,owner=session,
+    铁律零例外)。并发 session 各干各的仓,兜底各回各家——B 的活动不劫持 A 的无参 /lint /gcam;
+    绝不读别人的绑定当答案(candidates 仅作报错提示);SessionEnd 清掉本 session 的绑定。"""
+    from lib import workspace as registry
+    from lib.context import clear_active_repo, load_active_repo, record_active_repo
+    from lib.context.session import active_repo_candidates
+    W = "/tmp/dlut_active_sess"
+    shutil.rmtree(W, ignore_errors=True)
+    os.makedirs(f"{W}/ws/nb"); os.makedirs(f"{W}/ws/svc")
+    _git(f"{W}/ws/nb", "init", "-q"); _git(f"{W}/ws/svc", "init", "-q")
+    orig = registry.load_workspaces
+    registry.load_workspaces = lambda: [f"{W}/ws"]
+    try:
+        record_active_repo(f"{W}/ws/nb", "sess-A")
+        record_active_repo(f"{W}/ws/svc", "sess-B")
+        assert (Path(f"{W}/ws") / ".devloop" / "active" / "sess-A.json").exists()
+        assert load_active_repo(f"{W}/ws", "sess-A").endswith("/nb")
+        assert load_active_repo(f"{W}/ws", "sess-B").endswith("/svc")
+        # 无绑定的 session → None,哪怕别人的绑定全指向同一个仓也不借用
+        assert load_active_repo(f"{W}/ws", "sess-C") is None
+        record_active_repo(f"{W}/ws/nb", "sess-B")
+        assert load_active_repo(f"{W}/ws", "sess-C") is None
+        # candidates 只做解析器报错里的提示
+        assert sorted(Path(c).name for c in active_repo_candidates(f"{W}/ws")) == ["nb"]
+        # SessionEnd 释放:清掉本 session 的绑定,不碰别人的
+        clear_active_repo(f"{W}/ws", "sess-A")
+        assert load_active_repo(f"{W}/ws", "sess-A") is None
+        assert load_active_repo(f"{W}/ws", "sess-B").endswith("/nb")
+    finally:
+        registry.load_workspaces = orig
+
+
 def test_affected_roots_parsed_not_regex():
     """PostToolUse 刷新改 parsed 判定:`git -C repo commit` / `cd repo && git push`
     都解析到正确的 effective repo;引号内文本与非状态子命令不触发。"""
@@ -786,7 +819,7 @@ def test_enter_does_not_acquire_owner():
     posttool git 变更)。否则只是 /enter 看代码的 session 会把真正要编辑的 session
     拦成 guest——锁保护的是可变面,只读进入不污染它(与 gitignored 豁免同一判据)。"""
     ce = _load_hook("cwdchanged_enter")
-    from lib import session_lock
+    from lib.context import session as session_lock
     R = "/tmp/dlut_enter_noacq"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
@@ -800,7 +833,7 @@ def test_owner_lock_acquire_atomic():
     session 同时首次 acquire 会都\"成功\"、后写覆盖先写。O_EXCL 化后:输掉 create race
     收敛到 deny;stale/corrupt 锁可被接管;锁文件 I/O 错误保持 fail-open。"""
     import time as _t
-    from lib import session_lock
+    from lib.context import session as session_lock
     R = "/tmp/dlut_lockrace"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
@@ -914,7 +947,7 @@ def test_workspace_cwd_guard_cd_scope():
     root = "/tmp/dlut_wsg"; os.makedirs(root, exist_ok=True)
     guard.workspace = type("W", (), {"load_workspaces": staticmethod(lambda: [root])})
     guard.WorkspaceContext = type("WC", (), {"load": staticmethod(lambda p: None)})
-    guard.load_active_repo = lambda p: None
+    guard.load_active_repo = lambda p, sid=None: None
 
     def at_root(cmd):
         return guard.decide(_hook_input("Bash", {"cwd": root, "tool_input": {"command": cmd}}))
@@ -940,7 +973,7 @@ def test_edit_owner_guard():
     guest 直接改 owner 工作树的文件被硬拦并引导 worktree——此前只有 git switch 被拦,
     第二个 session 直接 Edit 同一 checkout 畅通无阻。"""
     guard = _load_hook("pretool_edit_owner_guard")
-    from lib import session_lock
+    from lib.context import session as session_lock
     R = "/tmp/dlut_eog"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo/server", exist_ok=True)
     _git(f"{R}/repo", "init", "-q")
@@ -1292,7 +1325,7 @@ def test_inject_at_workspace_root_uses_active_repo():
         ui.repo_layout = type("M", (), {"find_git_root": staticmethod(lambda p: None)})
         ui.workspace = type("M", (), {"find_containing_workspace": staticmethod(lambda p: "/ws")})
         ui.WorkspaceContext = type("M", (), {"load": staticmethod(lambda r: None)})
-        ui.load_active_repo = lambda r: seen.setdefault("active_arg", r) or "/active/repo"
+        ui.load_active_repo = lambda r, sid=None: seen.setdefault("active_arg", r) or "/active/repo"
         ui.RepoContext = type("M", (), {"load": staticmethod(lambda r: _Ctx())})
         out = ui.produce(_hook_input("UserPromptSubmit", {"cwd": "/ws"}))
     finally:

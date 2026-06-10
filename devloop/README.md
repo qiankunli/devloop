@@ -8,9 +8,9 @@
 
 ## 它做什么
 
-- **状态层**：workspace 维护 `<workspace>/.devloop/context.json`（subproject 清单含 symlink→真实路径映射 / AGENTS.md References / 注入节奏）+ `active.json`（最近活跃 repo），每个 git 仓库维护 `<repo>/.devloop/{meta,branch,pr,validation,injection}.json`（branch / 保护标记 / target / ahead-behind / 近期 PR 窗口 / lint-test 时间），每轮 prompt 注入；自动加入 `.git/info/exclude`，不会误提交。
+- **状态总线**：workspace 维护 `<workspace>/.devloop/context.json`（subproject 清单含 symlink→真实路径映射 / AGENTS.md References / 注入节奏）+ `active.json`（最近活跃 repo），每个 git 仓库维护 `<repo>/.devloop/{meta,branch,pr,validation,injection}.json`（branch / 保护标记 / target / ahead-behind / 近期 PR 窗口 / lint-test 时间），每轮 prompt 注入；自动加入 `.git/info/exclude`，不会误提交。
 - **硬拦截**（PreToolUse deny）：保护分支 commit/push、`git add -A`、过期分支（PR 已 merged/closed）改文件、别的 session 占用的 checkout 上切分支或改文件（引导 worktree）、工作区根跑子项目命令、裸 `pytest`、uv 项目 `pip install`、编辑 `requirements.txt`、lint 过期 commit gate。
-- **PR 感知**：后台 monitor 周期轮询 forge（GitHub/GitLab），把当前分支的 PR + 近期 PR（最多 5 条）写进状态，注入里以 `Recent PRs:` / `Recent MRs:` 呈现（按 provider）。
+- **PR 感知**：后台 monitor 周期轮询 forge（GitHub/GitLab），把当前分支的 PR + 近期 PR 窗口写进状态，注入里以 `Recent PRs:` / `Recent MRs:` 呈现（按 provider）。
 - **自动进项目**：`cd` 进子项目时（`CwdChanged`）自动刷新上下文、浮现 AGENTS.md References，无需手动 `/enter`。
 
 ## Slash 命令

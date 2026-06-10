@@ -35,7 +35,7 @@ def produce(inp: hook_io.HookInput) -> str | None:
         # cwd-independent), where cwd itself is not a git repo. Fall back to the workspace's
         # last-active repo so the turn context — branch topology, remote freshness, the
         # IN-FLIGHT/INACTIVE hints — still reaches the prompt in this most common usage (Codex P1).
-        git_root = load_active_repo(ws_root)
+        git_root = load_active_repo(ws_root, inp.session_id)
     if git_root:
         ctx = RepoContext.load(git_root) or RepoContext.refresh_all(git_root)
         s = ctx.emit_session_if_changed()

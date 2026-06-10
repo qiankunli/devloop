@@ -4,11 +4,9 @@ Same shape as RepoContext but only the **session** injection cadence (References
 Subprojects); no turn-grain content (branch/dirty/validation are repo-level). The
 registry of which dirs are workspaces lives in `lib/workspace.py`.
 
-Besides `context.json` (single writer-role: the refresh), the workspace `.devloop/`
-holds one more segment: `active.json`, the last-active repo stamped by the "activity"
-writer-role (CwdChanged / PostToolUse hooks and the smart scripts). It exists because
-the session cwd snaps back to the workspace root between Bash calls — scripts fired
-there need a state-bus answer to "which subproject is being worked on".
+The workspace `.devloop/` also hosts the session-grain `active/` dir (each
+session's bound repo) — that is a different fact-owner grain and lives in
+`session.py`: state-bus modules are organized by owner, not by where the file sits.
 """
 from __future__ import annotations
 
@@ -19,7 +17,6 @@ from typing import Any
 from .. import parsers
 from . import base
 from .base import (
-    ACTIVE_REPO_TTL_SEC,
     SESSION_TTL_SEC,
     WORKSPACE_STALE_SEC,
     AgentsMd,
@@ -223,12 +220,6 @@ def _build_subproject(root: Path, s: dict) -> Subproject:
     return sub
 
 
-# ── workspace `active` segment (the "activity" writer-role) ───────────────────
-# Every writer records the same last-write-wins fact — "this repo was just touched" —
-# so concurrent writers can't disagree in any way that matters (a lost update was an
-# equally-true value milliseconds older). Readers fail to None past the TTL: a guess
-# about *days-old* activity is worse than asking for an explicit --repo.
-
 def workspace_for_repo(repo_dir: str | Path) -> str | None:
     """Which registered workspace owns `repo_dir`, if any.
 
@@ -267,21 +258,6 @@ def workspace_for_repo(repo_dir: str | Path) -> str | None:
     return None
 
 
-def record_active_repo(repo_dir: str | Path) -> None:
-    """Stamp `repo_dir` as its workspace's last-active repo (`.devloop/active.json`)."""
-    ws = workspace_for_repo(repo_dir)
-    if ws:
-        base.save_segment(ws, "active", {"repo_dir": str(Path(repo_dir).resolve()),
-                                         "ts": base.now()})
-
-
-def load_active_repo(ws_root: str | Path) -> str | None:
-    """The workspace's last-active repo dir, or None if unset / stale / gone."""
-    seg = base.load_segment(ws_root, "active") or {}
-    repo = seg.get("repo_dir")
-    if not repo or base.is_stale(seg.get("ts"), ACTIVE_REPO_TTL_SEC):
-        return None
-    return repo if Path(repo).is_dir() else None
 
 
 def _format_ref(r: Reference) -> str:

@@ -2,7 +2,7 @@
 """PreToolUse (Bash): refuse a branch switch when another devloop session owns
 this checkout — switching would scramble its working tree. Use a worktree.
 
-This is the active half of the per-checkout owner lock (see lib/session_lock):
+This is the active half of the per-checkout owner lock (see lib/context/session.py):
 the first session to work in a checkout owns it; a guest session that tries to
 `git switch` / `git checkout <branch>` here is denied and pointed at a worktree.
 The owner itself is never blocked. Fails open (any error → allow).
@@ -15,7 +15,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import git_state, hook_io, repo_layout, session_lock  # noqa: E402
+from lib import git_state, hook_io, repo_layout  # noqa: E402
+from lib.context import session  # noqa: E402
 from lib.cmdtree import cmdparse  # noqa: E402
 
 _SWITCHERS = {"switch", "checkout"}
@@ -43,7 +44,7 @@ def decide(inp: hook_io.HookInput) -> str | None:
         git_root = repo_layout.find_git_root(inv.run_dir(inp.cwd))
         if not git_root:
             continue
-        owner = session_lock.foreign_owner(git_root, sid)
+        owner = session.foreign_owner(git_root, sid)
         if owner:
             name = Path(git_root).name
             return (
@@ -55,7 +56,7 @@ def decide(inp: hook_io.HookInput) -> str | None:
                 f"`git worktree add ../{name}-<tag> <branch>`."
             )
         # free / stale / mine → (re)claim so I stay the owner while active here
-        session_lock.acquire(git_root, sid, git_state.get_current_branch(git_root) or "")
+        session.acquire(git_root, sid, git_state.get_current_branch(git_root) or "")
     return None
 
 

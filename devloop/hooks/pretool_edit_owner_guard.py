@@ -2,7 +2,7 @@
 """PreToolUse (Edit/Write/NotebookEdit): refuse editing a checkout another devloop
 session owns — and claim ownership on the first edit.
 
-The passive half of the per-checkout owner lock (see lib/session_lock). The checkout
+The passive half of the per-checkout owner lock (see lib/context/session.py). The checkout
 guard alone proved insufficient in practice: two concurrent sessions never ran
 `git switch` at all — the second one just started editing the same working tree
 directly, and nothing stood in its way. So:
@@ -31,7 +31,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import git_state, gitcmd, hook_io, repo_layout, session_lock  # noqa: E402
+from lib import git_state, gitcmd, hook_io, repo_layout  # noqa: E402
+from lib.context import session  # noqa: E402
 
 
 def _gitignored(git_root: str, path: str) -> bool:
@@ -49,7 +50,7 @@ def decide(inp: hook_io.HookInput) -> str | None:
     git_root = repo_layout.find_git_root(inp.edited_dir())
     if not git_root:
         return None
-    owner = session_lock.foreign_owner(git_root, sid)
+    owner = session.foreign_owner(git_root, sid)
     if owner:
         # gitignored file → invisible to the owner's status/diff/commit, no mixing
         # possible; allow without claiming ownership (the checkout stays the owner's)
@@ -66,7 +67,7 @@ def decide(inp: hook_io.HookInput) -> str | None:
             f"`{git_root}/.devloop/owner.lock` and retry."
         )
     # free / stale / mine → claim it, so the first session to edit becomes the owner
-    session_lock.acquire(git_root, sid, git_state.get_current_branch(git_root) or "")
+    session.acquire(git_root, sid, git_state.get_current_branch(git_root) or "")
     return None
 
 

@@ -36,7 +36,7 @@ devloop/                              # ← 仓库根（marketplace）
 │   ├── .claude-plugin/plugin.json    #     Claude manifest（Codex 推迟，架构仍 CLI-agnostic）
 │   ├── skills/                       #     6 个 skill（CLI 共享）
 │   ├── commands/                     #     slash commands（Claude 端）
-│   ├── hooks/lib/                    #     统一 git runner(gitcmd) + GitLab facade(gitlab/) + hook harness(hook_io) + 状态层(context/)
+│   ├── hooks/lib/                    #     统一 git runner(gitcmd) + GitLab facade(gitlab/) + hook harness(hook_io) + 状态总线(context/)
 │   ├── scripts/                      #     git-ops 系列 + init_repo / init_workspace
 │   ├── config/                       #     用户配置模板（config.json：workspaces / gitlab / precommit）
 │   ├── monitors/monitors.json        #     MR-sweep 后台轮询

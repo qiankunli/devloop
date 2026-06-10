@@ -38,10 +38,13 @@ from .base import (
     vocab,
 )
 from .repo import Branch, BranchTopology, Injection, RepoContext, RepoMeta, Validation
+from .session import (
+    clear_active_repo,
+    load_active_repo,
+    record_active_repo,
+)
 from .workspace import (
     Subproject,
     WorkspaceContext,
-    load_active_repo,
-    record_active_repo,
     workspace_for_repo,
 )

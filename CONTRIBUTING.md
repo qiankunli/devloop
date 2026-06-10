@@ -24,7 +24,7 @@
 
 1. **动作 (Action)**：明确你的 plugin 拦截或响应哪些事件（PreToolUse/PostToolUse/Stop/UserPromptSubmit）
 2. **行为 (Behavior)**：分清三类——硬规则校验 / 副作用触发 / 状态更新 + 注入
-3. **状态 (State)**：如有跨 hook 共享状态，存到 `.devloop/context.json`（如果本插件复用 devloop 的状态层）或自己的状态文件
+3. **状态 (State)**：如有跨 hook 共享状态，存到 `.devloop/context.json`（如果本插件复用 devloop 的状态总线）或自己的状态文件
 
 ## 跨 CLI 友好
 
