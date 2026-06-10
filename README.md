@@ -8,10 +8,11 @@
 
 ## The problem
 
-When you code with an AI agent, the time sink usually isn't "is the code correct" — it's two **structural losses**:
+When you code with an AI agent, the time sink usually isn't "is the code correct" — it's three **structural losses**:
 
 1. **Information lag** — the agent doesn't know the real git / workspace state and guesses from chat history. Classic failure: it grinds away on a feature branch whose MR was *already merged* (and source branch deleted) on the server, never realizing until commit-time preflight stops it — forcing a re-branch + re-commit + re-MR every time.
 2. **Soft conventions can't enforce** — "don't commit to master", "don't `git add -A`" are just prompts. When the agent decides not to follow them, you have **no execution-level interception**. Committing to a protected branch, staging stray sensitive files, editing on a stale branch — all happen for real.
+3. **Concurrent sessions collide** — running several CLI sessions (or several agents) on one workspace is routine, but they share checkouts and state: a second session switches the branch under the first one's feet and scrambles its uncommitted work, or one session's no-arg command silently resolves to the repo *another* session just touched. Out of the box, nothing arbitrates who owns what.
 
 ## What devloop does — two levers
 
@@ -19,6 +20,8 @@ When you code with an AI agent, the time sink usually isn't "is the code correct
 - **Hard intercepts turn soft conventions into execution-level boundaries.** `PreToolUse` hooks return `deny`; the agent cannot route around them.
 
 Both levers share one hub: a structured state bus under `.devloop/`. State written on `git commit` / `cd` / background polling is reused across N later prompt injections and M protected-branch checks at zero extra cost.
+
+Loss 3 is answered by **session-grain state** riding the same two levers: an owner lock per checkout (guests' branch switches and edits are denied, routed to a worktree) plus a per-session repo binding (one session's fallback never resolves to another session's repo) — see *Aggregate-workspace & multi-session as first-class* below.
 
 ## Design ideas worth knowing
 
@@ -35,7 +38,7 @@ Both levers share one hub: a structured state bus under `.devloop/`. State writt
 
 **Structural guarantees, not just hints** — a new branch's base is decided by *intent, not by where HEAD happens to sit*: opening new work (`--branch`) always cuts from `origin/<target>`, and a freshly cut branch is asserted to carry only this run's commits before push/PR. So even if the agent ignores the `IN-FLIGHT` hint, forking off an in-flight branch can't smuggle its commits into the new PR.
 
-**Aggregate-workspace & multi-session as first-class** — a workspace root holds many independent git subprojects (often symlinked). Scripts never trust shell `cwd` (they resolve the repo by explicit `--repo` → cwd's repo → last-active), and an *owner lock* keeps two concurrent sessions from mixing changes into one working tree. Plain single-repo mode is fully supported too — auto-detected, no manual switch.
+**Aggregate-workspace & multi-session as first-class** — a workspace root holds many independent git subprojects (often symlinked). Scripts never trust shell `cwd` (they resolve the repo by explicit `--repo` → cwd's repo → *this session's* last-active repo; with no binding of its own a session is asked for an explicit `--repo` rather than guessing from another session's activity), and an *owner lock* keeps two concurrent sessions from mixing changes into one working tree. Plain single-repo mode is fully supported too — auto-detected, no manual switch.
 
 **native-first** — every capability sits on the most native event primitive instead of a workaround:
 
