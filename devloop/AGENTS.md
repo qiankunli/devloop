@@ -50,8 +50,9 @@ devloop/
 │   │   ├── cmdtree/               #   ★命令解析子系统（可插拔后端）：base（中立命令树 IR + Parser 接口）+ parable（Parable AST→IR 后端）+ cmdparse（在 IR 上走 commands/git_invocations/cd-scope 的 walker+facade）；换 parser=改 cmdparse 一行 import
 │   │   ├── _vendor/               #   ★第三方原样 vendor（parable.py MIT + LICENSE/PROVENANCE）；永不手改
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
-│   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py  session_lock.py
-│   │   └── context/               #   .devloop/ 状态总线：repo 级按 owner 分段，workspace 级单文件（base / repo / workspace）
+│   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
+│   │   └── context/               #   .devloop/ 状态总线，按 owner 粒度分模块：base / session / repo / workspace
+│   │                              #     session.py = session 运行态（active 绑定 + checkout owner 锁）
 │   ├── cwdchanged_enter.py        # CwdChanged：自动 enter
 │   ├── sessionstart_init.py       # SessionStart：References(additionalContext) + watchPaths + 预热
 │   ├── userprompt_inject.py       # UserPromptSubmit：turn + session 注入
@@ -123,7 +124,7 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 ### 5. 不走原生通道的硬规矩
 - AI **绝不**直接 `git commit/push`（guard 会拦）或散调 forge——commit/push/PR 一律走 `scripts/smart_*.sh`（内部用 gitcmd + facade，自陈 `PLAN:` banner）。保护分支（main/master/release*）判定见 CONCEPTS.md。
 - **新分支基点由意图定，不由 HEAD 当前态定**：`--branch`（开新工作）一律 cut 自 `origin/<target>`（`--base` 显式栈式），与当前停在哪条分支无关——否则上一轮留下的 in-flight 分支会被当成基底、新 PR 夹带其提交（夹带在 push/PR 前由 `smart_git_ops` 外来提交自检拦下）。当前分支在循环里的四态流转（protected / healthy / in-flight / inactive）见 CONCEPTS.md〈分支状态流转〉。
-- **Owner 锁（owner / guest session）**：多 CLI / session 并发操作同一 checkout 时，第一笔**变更动作**的 session 占有它，guest 的切分支与编辑被硬拦、引导去 worktree——锁保护 checkout 的可变面，防止两个 session 的改动混进同一工作树；enter / 只读不占有，避免假冲突。占有点、豁免与逃逸口见 CONCEPTS.md〈Owner / guest session〉，实现见 `hooks/lib/session_lock.py`。
+- **Owner 锁（owner / guest session）**：多 CLI / session 并发操作同一 checkout 时，第一笔**变更动作**的 session 占有它，guest 的切分支与编辑被硬拦、引导去 worktree——锁保护 checkout 的可变面，防止两个 session 的改动混进同一工作树；enter / 只读不占有，避免假冲突。占有点、豁免与逃逸口见 CONCEPTS.md〈Owner / guest session〉，实现见 `hooks/lib/context/session.py`。
 
 ---
 

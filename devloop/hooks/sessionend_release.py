@@ -5,7 +5,7 @@ checkout owner locks + the workspace active-repo binding.
 Without this, a finished session's lock lingers until its recorded pid dies —
 and up to OWNER_TTL_SEC when that pid was a transient shell — so a guest would
 keep being refused on a checkout nobody owns anymore. Pid liveness stays as the
-crash fallback (see session_lock.release); this hook is the immediate path.
+crash fallback (see lib.context.session.release); this hook is the immediate path.
 
 Sweep scope mirrors the monitor's repo set (workspace subprojects in Mode A,
 the cwd repo in Mode B) plus each repo's linked worktrees — every checkout
@@ -18,8 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import hook_io, repo_layout, session_lock, workspace  # noqa: E402
-from lib.context import RepoContext, WorkspaceContext, clear_active_repo  # noqa: E402
+from lib import hook_io, repo_layout, workspace  # noqa: E402
+from lib.context import RepoContext, WorkspaceContext, session  # noqa: E402
 
 
 def _candidate_checkouts(cwd: str) -> list[str]:
@@ -29,7 +29,9 @@ def _candidate_checkouts(cwd: str) -> list[str]:
     repos: list[str] = []
     ws = workspace.find_containing_workspace(cwd)
     if ws:
-        ctx = WorkspaceContext.load(ws)
+        # load-or-refresh (same as the monitor's repos_to_poll): a workspace whose
+        # context.json was never built would otherwise lose its lock releases
+        ctx = WorkspaceContext.load(ws) or WorkspaceContext.refresh(ws)
         for s in (ctx.subprojects if ctx else []):
             gr = repo_layout.find_git_root(str((Path(ws) / (s.path or s.name)).resolve()))
             if gr and gr not in repos:
@@ -52,9 +54,9 @@ def handle(inp: hook_io.HookInput) -> None:
         return
     ws = workspace.find_containing_workspace(inp.cwd)
     if ws:
-        clear_active_repo(ws, inp.session_id)
+        session.clear_active_repo(ws, inp.session_id)
     for repo in _candidate_checkouts(inp.cwd):
-        session_lock.release(repo, inp.session_id)
+        session.release(repo, inp.session_id)
 
 
 if __name__ == "__main__":

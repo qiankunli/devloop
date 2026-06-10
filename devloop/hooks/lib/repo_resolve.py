@@ -27,7 +27,8 @@ from pathlib import Path
 
 from . import repo_layout, workspace
 from .context import RepoContext, WorkspaceContext
-from .context.workspace import active_repo_candidates, load_active_repo, workspace_for_repo
+from .context.session import active_repo_candidates, load_active_repo
+from .context.workspace import workspace_for_repo
 
 
 @dataclass(frozen=True)

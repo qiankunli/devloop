@@ -708,7 +708,7 @@ def test_active_repo_is_per_session():
     绝不读别人的绑定当答案(candidates 仅作报错提示);SessionEnd 清掉本 session 的绑定。"""
     from lib import workspace as registry
     from lib.context import clear_active_repo, load_active_repo, record_active_repo
-    from lib.context.workspace import active_repo_candidates
+    from lib.context.session import active_repo_candidates
     W = "/tmp/dlut_active_sess"
     shutil.rmtree(W, ignore_errors=True)
     os.makedirs(f"{W}/ws/nb"); os.makedirs(f"{W}/ws/svc")
@@ -819,7 +819,7 @@ def test_enter_does_not_acquire_owner():
     posttool git 变更)。否则只是 /enter 看代码的 session 会把真正要编辑的 session
     拦成 guest——锁保护的是可变面,只读进入不污染它(与 gitignored 豁免同一判据)。"""
     ce = _load_hook("cwdchanged_enter")
-    from lib import session_lock
+    from lib.context import session as session_lock
     R = "/tmp/dlut_enter_noacq"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
@@ -833,7 +833,7 @@ def test_owner_lock_acquire_atomic():
     session 同时首次 acquire 会都\"成功\"、后写覆盖先写。O_EXCL 化后:输掉 create race
     收敛到 deny;stale/corrupt 锁可被接管;锁文件 I/O 错误保持 fail-open。"""
     import time as _t
-    from lib import session_lock
+    from lib.context import session as session_lock
     R = "/tmp/dlut_lockrace"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
@@ -973,7 +973,7 @@ def test_edit_owner_guard():
     guest 直接改 owner 工作树的文件被硬拦并引导 worktree——此前只有 git switch 被拦,
     第二个 session 直接 Edit 同一 checkout 畅通无阻。"""
     guard = _load_hook("pretool_edit_owner_guard")
-    from lib import session_lock
+    from lib.context import session as session_lock
     R = "/tmp/dlut_eog"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo/server", exist_ok=True)
     _git(f"{R}/repo", "init", "-q")

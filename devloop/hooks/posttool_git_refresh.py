@@ -13,9 +13,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import git_state, hook_io, repo_layout, session_lock  # noqa: E402
+from lib import git_state, hook_io, repo_layout  # noqa: E402
 from lib.cmdtree import cmdparse  # noqa: E402
-from lib.context import RepoContext, record_active_repo  # noqa: E402
+from lib.context import RepoContext, record_active_repo, session  # noqa: E402
 
 _STATE_SUBCOMMANDS = {"commit", "push", "checkout", "switch", "reset", "merge", "rebase", "pull", "fetch"}
 
@@ -48,7 +48,7 @@ def handle(inp: hook_io.HookInput) -> None:
         # ownership follows activity: a session doing git work in a checkout claims it
         # (no-op if a foreign session already owns it — the guards handle that side)
         if inp.session_id:
-            session_lock.acquire(git_root, inp.session_id, git_state.get_current_branch(git_root) or "")
+            session.acquire(git_root, inp.session_id, git_state.get_current_branch(git_root) or "")
 
 
 if __name__ == "__main__":
