@@ -11,7 +11,7 @@ The user wants to commit + push + open/reuse a pull/merge request. Construct and
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/smart_gcampr.sh" --message "<commit message>" [--repo <name|path>] [--branch <name>] [--target <branch>] [--files <a,b,c>] [--title "<PR title>"]
 ```
 
-- Derive `--message` from the user's request and the actual diff (`git diff --stat`, `git status`).
+- Derive `--message` from the user's request and the actual diff (`git diff --stat`, `git status`). Shape it as a **short subject (≤72 chars) + blank line + detail body**: the subject becomes the PR/MR title, the body becomes (or is appended to) the PR/MR description — don't cram details into the subject.
 - No `cd` prefix needed — the script resolves the repo itself (cwd's repo → workspace's last-active repo); pass `--repo <subproject name or path>` to target another.
 - Pass `--branch <name>` when the injected context shows the current branch is **PROTECTED** or **INACTIVE** (PR/MR merged/closed) — the script refuses to commit there otherwise and tells you. Pick a short kebab-case feature name.
 - Pass `--files a,b` to stage explicit files; omit to stage tracked modifications. **Never** `git add -A`.

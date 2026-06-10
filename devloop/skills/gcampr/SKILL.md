@@ -10,6 +10,7 @@ bash <PLUGIN_ROOT>/scripts/smart_gcampr.sh --message-file <repo>/.devloop/commit
 ```
 
 Rules:
+- **Message shape: short subject + body.** The first line becomes the PR/MR **title** — keep it ≤72 chars. The rest of the message (after a blank line) becomes the PR/MR **description**, so put the what/why details there, NOT crammed into the subject. Follow-up commits onto an in-flight PR/MR (via gcamp or gcampr) **append** their body to the existing description automatically.
 - **Commit message — never hand-escape multi-line text through the shell.** One-line / simple → inline single-quoted: `--message 'fix: …'`. Multi-line, or containing quotes / `$` / backticks → write it with the **Write tool** to `<repo>/.devloop/commit_msg` (gitignored scratch, zero shell escaping), then pass `--message-file <repo>/.devloop/commit_msg` (alias `-F`; `-F -` reads stdin). This is the shell-escaping-free path, mirroring `git commit -F` / `gh --body-file`. `--title` defaults to the message's first line, so a multi-line message still yields a valid one-line PR title.
 - No `cd` prefix needed: the script resolves the repo itself (cwd's repo → workspace's last-active repo). From a workspace root, or to target another subproject, pass `--repo <subproject name or path>`.
 - Add `--branch <name>` when the injected `.devloop` context shows the branch is **PROTECTED** or **INACTIVE** (PR/MR merged/closed); the script refuses otherwise and tells you why.
