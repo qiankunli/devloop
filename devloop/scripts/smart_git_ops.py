@@ -33,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
-from lib import git_state, gitcmd, repo_resolve  # noqa: E402
+from lib import cli, git_state, gitcmd, repo_resolve  # noqa: E402
 from lib.context import RepoContext, gate, prstate, record_active_repo  # noqa: E402
 from lib.forge import Forge, ForgeError, PullRequest, forge_for_repo, pr_label  # noqa: E402
 
@@ -416,19 +416,15 @@ def publish(intent: GitIntent, branch: BranchResult, staged: StageResult, plan: 
         prstate.refresh_pr(repo)
 
 
-class _Parser(argparse.ArgumentParser):
-    """argparse with a hint on the failure mode that bites callers most: a --message whose
-    quotes/specials broke shell parsing, so its tail leaks as stray argv → 'unrecognized
-    arguments'. Point at single-quoting / --message-file instead of a bare usage dump."""
-
-    def error(self, message: str):  # noqa: A003 — argparse API name
-        hint = ""
-        if "unrecognized arguments" in message:
-            hint = ("\nhint: --message probably contained quotes/specials that broke shell parsing. "
-                    "Single-quote it, or pass --message-file <path> (or -F -, reading stdin) — no "
-                    "shell escaping needed (mirrors `git commit -F`).")
-        self.print_usage(sys.stderr)
-        self.exit(2, f"{self.prog}: error: {message}{hint}\n")
+# The failure that bites gcampr callers most: a --message whose quotes/specials broke shell
+# parsing, so its tail leaks as stray argv → "unrecognized arguments". Handed to cli.ArgParser
+# as the extra hint so that error points at single-quoting / --message-file instead of
+# dumping bare usage.
+MESSAGE_HINT = (
+    "hint: --message probably contained quotes/specials that broke shell parsing. "
+    "Single-quote it, or pass --message-file <path> (or -F -, reading stdin) — no "
+    "shell escaping needed (mirrors `git commit -F`)."
+)
 
 
 def _resolve_message(ns: argparse.Namespace, ap: argparse.ArgumentParser) -> str:
@@ -449,11 +445,11 @@ def _resolve_message(ns: argparse.Namespace, ap: argparse.ArgumentParser) -> str
     ap.error("a commit message is required: pass --message '<msg>' or --message-file <path>")
 
 
-def _build_parser() -> _Parser:
+def _build_parser() -> cli.ArgParser:
     """The arg schema — extracted so tests exercise the SAME parser main() runs (no drift).
     `--message` (inline) and `--message-file` are alternatives; exactly one is required, enforced
     in `_resolve_message` rather than by argparse, so the error can carry the quoting hint."""
-    ap = _Parser()
+    ap = cli.ArgParser(extra_hints=[MESSAGE_HINT])
     ap.add_argument("mode", choices=["commit", "push", "mr"])
     ap.add_argument("--message", "-m", default=None, help="inline commit message (single-quote it)")
     ap.add_argument(
@@ -471,11 +467,7 @@ def _build_parser() -> _Parser:
     )
     ap.add_argument("--files", "-f", default=None, help="comma-separated explicit files to stage")
     ap.add_argument("--title", default=None, help="MR title (defaults to the message's first line)")
-    ap.add_argument(
-        "--repo", "-r", default=None,
-        help="repo to operate on: a path or a workspace subproject name; "
-             "default = cwd's repo, falling back to the workspace's last-active repo",
-    )
+    cli.add_repo_arg(ap, positional=False)  # --repo/-r only; gcampr takes no positional repo
     return ap
 
 

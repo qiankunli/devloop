@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """View a pull/merge request — thin wrapper over the forge facade.
 
-Usage: read_pr.py <number | PR/MR-url> [repo_dir]
+Usage: read_pr.py <number | PR/MR-url> [--repo R | R]   (R = a path or a workspace
+subproject name; default = cwd's repo, falling back to the workspace's last-active repo)
 """
 from __future__ import annotations
 
@@ -10,19 +11,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
+from lib import cli  # noqa: E402
 from lib.forge import ForgeError, forge_for_repo, parse_pr_number, pr_label  # noqa: E402
 
 
 def main(argv: list[str]) -> int:
-    if not argv:
-        print("usage: read_pr.py <number|url> [repo_dir]", file=sys.stderr)
-        return 1
-    number = parse_pr_number(argv[0])
+    ap = cli.ArgParser(prog="read_pr.py")
+    ap.add_argument("number", metavar="number|url", help="PR/MR number or URL")
+    cli.add_repo_arg(ap)
+    ns = ap.parse_args(argv)
+    number = parse_pr_number(ns.number)
     if number is None:
-        print(f"read_pr: cannot parse PR/MR number from {argv[0]!r}", file=sys.stderr)
+        print(f"read_pr: cannot parse PR/MR number from {ns.number!r}", file=sys.stderr)
         return 1
-    repo = argv[1] if len(argv) > 1 else "."
-    forge = forge_for_repo(repo)
+    resolved, _ = cli.resolve_repo_or_exit(ns, "read_pr")
+    forge = forge_for_repo(resolved.git_root)
     if forge is None:
         print("read_pr: no token or unsupported remote", file=sys.stderr)
         return 0

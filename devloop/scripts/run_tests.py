@@ -5,8 +5,8 @@
 selection (only tests touched by recent changes) is a future refinement; for now pass
 extra args through to narrow scope manually.
 
-Usage: run_tests.py [repo] [-- <extra make/test args>]
-(`repo` = a path or a workspace subproject name; default = cwd's repo, falling back
+Usage: run_tests.py [--repo R | R] [-- <extra make/test args>]
+(R = a path or a workspace subproject name; default = cwd's repo, falling back
 to the workspace's last-active repo.)
 Exit: 0 passed or skipped; 1 failed.
 """
@@ -20,7 +20,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
-from lib import repo_resolve  # noqa: E402
+from lib import cli  # noqa: E402
 from lib.context import RepoContext, record_active_repo  # noqa: E402
 
 
@@ -40,10 +40,10 @@ def main(argv: list[str]) -> int:
         i = argv.index("--")
         extra = argv[i + 1:]
         argv = argv[:i]
-    resolved, how = repo_resolve.resolve_repo_dir(argv[0] if argv else None)
-    if not resolved:
-        print(f"run_tests: {how}", file=sys.stderr)
-        return 1
+    ap = cli.ArgParser(prog="run_tests.py", description="make test; stamp on pass.")
+    cli.add_repo_arg(ap)
+    ns = ap.parse_args(argv)
+    resolved, how = cli.resolve_repo_or_exit(ns, "run_tests")
     repo, code_dir = resolved.git_root, resolved.code_dir  # path identities live in ResolvedRepo
     if how != "cwd":
         print(f"run_tests: repo = {repo} ({how})")
