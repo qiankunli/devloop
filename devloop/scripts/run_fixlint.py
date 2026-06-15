@@ -14,8 +14,8 @@ closed here rather than documented around:
   cold run flags moments later. Clear it before linting — slower, but a stamp that
   can ship a broken MR is worse than a slow one.
 
-Usage: run_fixlint.py [repo]   (a path or a workspace subproject name; default =
-cwd's repo, falling back to the workspace's last-active repo)
+Usage: run_fixlint.py [--repo R | R]   (R = a path or a workspace subproject name;
+default = cwd's repo, falling back to the workspace's last-active repo)
 Exit: 0 lint passed or cleanly skipped; 1 lint failed (output shown).
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
-from lib import repo_resolve  # noqa: E402
+from lib import cli  # noqa: E402
 from lib.context import RepoContext, record_active_repo  # noqa: E402
 
 
@@ -57,10 +57,10 @@ def run_make(code_dir: str, target: str) -> int:
 
 
 def main(argv: list[str]) -> int:
-    resolved, how = repo_resolve.resolve_repo_dir(argv[0] if argv else None)
-    if not resolved:
-        print(f"run_fixlint: {how}", file=sys.stderr)
-        return 1
+    ap = cli.ArgParser(prog="run_fixlint.py", description="make fix + lint; stamp on pass.")
+    cli.add_repo_arg(ap)
+    ns = ap.parse_args(argv)
+    resolved, how = cli.resolve_repo_or_exit(ns, "run_fixlint")
     repo, code_dir = resolved.git_root, resolved.code_dir  # path identities live in ResolvedRepo
     if how != "cwd":
         print(f"run_fixlint: repo = {repo} ({how})")

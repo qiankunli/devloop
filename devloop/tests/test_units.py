@@ -1387,6 +1387,43 @@ def test_message_required_with_hint():
     assert raised and "--message-file" in err.getvalue()
 
 
+def test_cli_repo_arg_flag_and_positional_equivalent():
+    """The shared repo-target arg (lib.cli): --repo and the bare positional are equivalent
+    spellings, the flag wins when both appear, and --repo is no longer swallowed as a
+    positional — the original bug that made `run_fixlint.py --repo /x` die with
+    "no subproject matches '--repo'"."""
+    from lib import cli
+    ap = cli.ArgParser(prog="t")
+    cli.add_repo_arg(ap)
+    assert cli.repo_target(ap.parse_args([])) is None
+    assert cli.repo_target(ap.parse_args(["/some/path"])) == "/some/path"            # positional
+    assert cli.repo_target(ap.parse_args(["--repo", "/some/path"])) == "/some/path"  # flag, not swallowed
+    assert cli.repo_target(ap.parse_args(["-r", "nb"])) == "nb"
+    assert cli.repo_target(ap.parse_args(["pos", "--repo", "flag"])) == "flag"       # flag wins
+    # positional=False (gcampr shape): only the flag, no bare positional repo
+    ap2 = cli.ArgParser(prog="t2")
+    cli.add_repo_arg(ap2, positional=False)
+    assert cli.repo_target(ap2.parse_args(["--repo", "x"])) == "x"
+
+
+def test_cli_argparser_hint_only_on_unrecognized():
+    """cli.ArgParser appends extra_hints on 'unrecognized arguments' (the silent-misparse
+    failure), but not on other errors (which already name the offending argument)."""
+    import contextlib
+    import io
+    from lib import cli
+    ap = cli.ArgParser(prog="t", extra_hints=["USE --message-file"])
+    ap.add_argument("mode", choices=["a", "b"])
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.suppress(SystemExit):
+        ap.parse_args(["a", "--nope"])                 # unrecognized → hint shown
+    assert "USE --message-file" in err.getvalue()
+    err2 = io.StringIO()
+    with contextlib.redirect_stderr(err2), contextlib.suppress(SystemExit):
+        ap.parse_args(["zzz"])                         # bad choice → no hint
+    assert "USE --message-file" not in err2.getvalue()
+
+
 def test_title_defaults_to_message_first_line():
     """--title omitted → PR title is the message's FIRST line, so a multi-line body can't yield a
     multi-line (invalid) PR title — the gcampr 422 that bit us."""
