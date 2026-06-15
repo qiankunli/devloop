@@ -227,6 +227,53 @@ def test_forge_pr_mapping():
     assert gh._to_pr({"number": 15, "state": "closed", "merged": True}).state == "merged"
 
 
+def test_forge_merge_readiness_mapping():
+    """GitLab detailed_merge_status → neutral MergeReadiness, with a has_conflicts fallback and
+    UNKNOWN for the async 'checking' window (UNKNOWN must never collapse to READY/CONFLICT).
+    GitHub inherits the safe UNKNOWN default since it's not implemented yet."""
+    from lib.forge.base import MergeReadiness
+    r = GitLabForge._readiness
+    assert r({"detailed_merge_status": "mergeable"}) is MergeReadiness.READY
+    assert r({"detailed_merge_status": "conflict"}) is MergeReadiness.CONFLICT
+    assert r({"detailed_merge_status": "discussions_not_resolved"}) is MergeReadiness.DISCUSSIONS_UNRESOLVED
+    assert r({"detailed_merge_status": "ci_still_running"}) is MergeReadiness.CI_BLOCKED
+    assert r({"detailed_merge_status": "checking"}) is MergeReadiness.UNKNOWN   # async window, not a verdict
+    assert r({}) is MergeReadiness.UNKNOWN
+    assert r({"has_conflicts": True}) is MergeReadiness.CONFLICT                # fallback when no detailed status
+    # GitHub adapter hasn't implemented it → inherits the safe UNKNOWN default (no HTTP)
+    assert GitHubForge.__new__(GitHubForge).merge_readiness(0) is MergeReadiness.UNKNOWN
+    # blocks_merge: the shared "worth nagging about" predicate (banner + wake channel use it)
+    assert MergeReadiness.CONFLICT.blocks_merge and MergeReadiness.DISCUSSIONS_UNRESOLVED.blocks_merge
+    assert not (MergeReadiness.READY.blocks_merge or MergeReadiness.UNKNOWN.blocks_merge
+                or MergeReadiness.DRAFT.blocks_merge)
+
+
+def test_turn_text_merge_blocked_hint():
+    """An open MR with an actionable readiness blocker surfaces a MERGE-BLOCKED nag in the turn
+    banner; READY / the async UNKNOWN stay quiet (no clutter while still checking)."""
+    from lib.context import PullRequest, RepoContext
+    R = "/tmp/dlut_mblock"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+    ctx = RepoContext.load(R)
+    ctx.prs = [PullRequest(number=7, state="open", source_branch="feat/a")]; ctx.branch.pr_number = 7
+    ctx.merge_readiness = "conflict"
+    assert "MERGE-BLOCKED" in ctx.turn_text() and "conflict" in ctx.turn_text()
+    ctx.merge_readiness = "discussions_unresolved"
+    assert "MERGE-BLOCKED" in ctx.turn_text() and "discussions" in ctx.turn_text()
+    ctx.merge_readiness = "ready"
+    assert "MERGE-BLOCKED" not in ctx.turn_text()
+    ctx.merge_readiness = "unknown"      # async 'still checking' → must not nag
+    assert "MERGE-BLOCKED" not in ctx.turn_text()
+    # a blocker on an INACTIVE (merged/closed) PR isn't surfaced — nothing to act on
+    ctx.prs = [PullRequest(number=7, state="merged", source_branch="feat/a")]
+    ctx.merge_readiness = "conflict"
+    assert "MERGE-BLOCKED" not in ctx.turn_text()
+
+
 def test_sensitive_filter():
     is_sensitive = _load_script("smart_git_ops")._is_sensitive
     assert is_sensitive(".env") and is_sensitive("sub/.env.local")
@@ -382,18 +429,25 @@ def test_wait_for_pr_change():
 def test_notify_port_and_forge_producer():
     """notify port: ChannelNotifier satisfies the Notifier protocol (channel is one delivery
     impl, mcp imported lazily so this loads without it). forge producer: seg_key mirrors the
-    monitor's change-key; summarize names each transitioned PR."""
+    monitor's change-key (now incl. the MR's blocked-ness) and wakes on entering a merge blocker;
+    summarize names each transitioned PR + the blocker."""
     from lib.notify.base import Notification, Notifier
     from lib.notify.channel import ChannelNotifier
     assert isinstance(ChannelNotifier(None), Notifier)          # channel implements the port
     assert Notification(content="x").kind == "info" and Notification(content="x").meta == {}
     fc = _load_script("forge_channel")
     assert fc.seg_key(None) is None
-    assert fc.seg_key({"pr_number": 12, "prs": [{"number": 12, "state": "open"}]}) == (12, ((12, "open"),))
+    # key = (pr_number, blocker-or-None, prs); readiness folded in as blocker-or-None so entering a
+    # blocker changes the key (wakes) while the async checking↔ready churn doesn't.
+    assert fc.seg_key({"pr_number": 12, "prs": [{"number": 12, "state": "open"}]}) == (12, None, ((12, "open"),))
+    assert fc.seg_key({"pr_number": 12, "merge_readiness": "conflict", "prs": []}) == (12, "conflict", ())
+    assert fc.seg_key({"pr_number": 12, "merge_readiness": "ready", "prs": []}) == (12, None, ())   # non-blocker → no churn
     s = fc.summarize({"prs": [{"number": 12, "state": "open"}]},
                      {"prs": [{"number": 12, "state": "merged", "title": "docs"}], "branch": "b"},
                      "/x/devloop")
     assert s == "forge[devloop]: PR #12 open→merged (docs) [branch=b]"
+    # a blocker on the current MR is named in the summary (so the woken session sees why)
+    assert "merge-blocked: conflict" in fc.summarize({"prs": []}, {"merge_readiness": "conflict", "prs": []}, "/x/devloop")
 
 
 def test_pullrequest_and_cadence():

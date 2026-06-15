@@ -37,6 +37,7 @@ from .base import (
     TURN_TTL_SEC,
     AgentsMd,
     Cadence,
+    MergeReadiness,
     PullRequest,
     Reference,
     pr_label,
@@ -166,6 +167,8 @@ class RepoContext:
     injection: Injection = field(default_factory=Injection)
     prs: list[PullRequest] = field(default_factory=list)   # monitor-owned recent-PR window
     provider: str = ""   # repo-level forge ("github"/"gitlab"); drives display vocabulary
+    merge_readiness: str | None = None   # current branch's open-MR readiness — a pr.json hint
+                                         # (MergeReadiness value); re-checked live before a merge
     updated_at: float = 0.0
 
     # ── load (merge segments) ──────────────────────────────────────────────────
@@ -188,7 +191,8 @@ class RepoContext:
         # branch — DISPLAY-grade; write-gates re-derive against LIVE branch (lib.context.gate).
         # pr.json is branch-keyed, so a branch switch self-invalidates the stale number.
         pr = base.load_segment(repo_dir, "pr") or {}
-        branch.pr_number = pr.get("pr_number") if pr.get("branch") == branch.local.name else None
+        on_branch = pr.get("branch") == branch.local.name   # pr.json is branch-keyed; only join if current
+        branch.pr_number = pr.get("pr_number") if on_branch else None
         ctx = cls(
             repo=RepoMeta.from_dict(meta.get("repo")),
             agents_md=AgentsMd.from_dict(meta.get("agents_md") or {}),
@@ -197,6 +201,7 @@ class RepoContext:
             injection=Injection.from_dict(base.load_segment(repo_dir, "injection") or {}),
             prs=[PullRequest.from_dict(p) for p in (pr.get("prs") or []) if p.get("number") is not None],
             provider=pr.get("provider", ""),
+            merge_readiness=(pr.get("merge_readiness") if on_branch else None),
             updated_at=float(meta.get("updated_at", 0) or 0),
         )
         if not ctx.repo.repo_dir:
@@ -244,6 +249,7 @@ class RepoContext:
             "branch": self.branch.local.name,
             "provider": self.provider,
             "pr_number": self.branch.pr_number,
+            "merge_readiness": self.merge_readiness,
             "prs": [asdict(p) for p in self.prs],
         })
 
@@ -449,6 +455,13 @@ def _branch_staleness(repo_dir: str, b: BranchTopology) -> dict:
     return {"base": base_name, "ahead": ahead, "behind": behind, "asof": asof}
 
 
+_READINESS_BLURB = {
+    MergeReadiness.CONFLICT: "merge conflict with target — rebase/merge & resolve",
+    MergeReadiness.DISCUSSIONS_UNRESOLVED: "unresolved review discussions — address the comments",
+    MergeReadiness.CI_BLOCKED: "CI not passing",
+}
+
+
 def _format_turn(ctx: "RepoContext") -> str:
     lines = [f"[Current repo: {ctx.repo.code_dir} ({ctx.repo.language or '?'})]"]
     b = ctx.branch
@@ -470,6 +483,15 @@ def _format_turn(ctx: "RepoContext") -> str:
             f"IN-FLIGHT ({pr_label(ctx.provider, pr.number)} open) — new work needs a fresh branch (gcampr --branch); "
             f"edit here only to amend this {noun}"
         )
+    # Surface an actionable merge blocker on the current open MR (conflict / unresolved discussions
+    # / CI). A pr.json hint as of the last poll — the nudge to act; the gate re-checks live at merge.
+    if pr and pr.is_open and ctx.merge_readiness:
+        try:
+            rd = MergeReadiness(ctx.merge_readiness)
+        except ValueError:
+            rd = None
+        if rd and rd.blocks_merge:
+            extras.append(f"MERGE-BLOCKED: {_READINESS_BLURB[rd]}")
     extra_str = f" ⚠️ {'; '.join(extras)}" if extras else ""
     st = _branch_staleness(ctx.repo.real_repo_dir or ctx.repo.repo_dir, b)
     lines.append(

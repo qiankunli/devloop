@@ -26,6 +26,7 @@ sys.path.insert(0, str(HERE.parent / "hooks"))
 sys.path.insert(0, str(HERE))  # reuse the monitor's repo resolution
 
 from lib.context import base  # noqa: E402
+from lib.forge import MergeReadiness  # noqa: E402
 from lib.notify.base import Notification  # noqa: E402
 from lib.notify.channel import run_channel  # noqa: E402
 from poll_pr_status import repos_to_poll  # noqa: E402  (reuse, no second forge poll)
@@ -40,25 +41,41 @@ INSTRUCTIONS = (
 )
 
 
+def _blocks(readiness: str | None) -> bool:
+    """True iff a pr.json `merge_readiness` value is an ACTIONABLE blocker (conflict / unresolved
+    discussions / CI) — same predicate the turn banner uses, via the domain enum."""
+    try:
+        return bool(readiness) and MergeReadiness(readiness).blocks_merge
+    except ValueError:
+        return False
+
+
 def seg_key(seg: dict | None):
-    """The monitor's change-key for a `pr` segment: pr_number + each PR's (number, state).
-    None when missing — mirrors `prstate.poll_pr` so we react to the same changes."""
+    """The monitor's change-key for a `pr` segment: pr_number + the current MR's blocked-ness +
+    each PR's (number, state). None when missing — mirrors `prstate.poll_pr` so we react to the
+    same changes. Readiness is collapsed to blocker-or-None so only entering/leaving a blocker
+    wakes a session (the async checking↔ready churn doesn't)."""
     if not seg:
         return None
-    return (seg.get("pr_number"),
+    rd = seg.get("merge_readiness")
+    return (seg.get("pr_number"), rd if _blocks(rd) else None,
             tuple((p.get("number"), p.get("state")) for p in (seg.get("prs") or [])))
 
 
 def summarize(prev: dict | None, cur: dict, repo: str) -> str:
-    """One line naming each PR whose state transitioned since the last snapshot of `repo`."""
+    """One line naming each PR whose state transitioned since the last snapshot of `repo`, plus an
+    actionable merge blocker (conflict / unresolved discussions) on the current MR if present."""
     prev_state = {p.get("number"): p.get("state") for p in ((prev or {}).get("prs") or [])}
-    moved = []
+    parts = []
     for p in (cur.get("prs") or []):
         n, st = p.get("number"), p.get("state")
         if prev_state.get(n) != st:
             title = (p.get("title") or "").strip()
-            moved.append(f"PR #{n} {prev_state.get(n) or '∅'}→{st}" + (f" ({title})" if title else ""))
-    body = "; ".join(moved) or "PR window changed"
+            parts.append(f"PR #{n} {prev_state.get(n) or '∅'}→{st}" + (f" ({title})" if title else ""))
+    rd = cur.get("merge_readiness")
+    if _blocks(rd):
+        parts.append(f"merge-blocked: {rd}")
+    body = "; ".join(parts) or "PR window changed"
     branch = cur.get("branch")
     return f"forge[{Path(repo).name}]: {body}" + (f" [branch={branch}]" if branch else "")
 

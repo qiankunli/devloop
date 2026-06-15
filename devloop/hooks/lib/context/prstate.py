@@ -76,11 +76,22 @@ def poll_pr(repo: str) -> dict | None:
         window = build_window(forge, anchor)
     except ForgeError:
         return None
+    # Readiness is a derived verdict over source×target tips (goes stale when either moves), so we
+    # compute it live HERE per poll rather than storing it on each PullRequest — see MergeReadiness.
+    # Only for the current branch's OPEN MR (a finished/absent PR has nothing to nag about); its own
+    # guard so a readiness-fetch failure degrades to "unknown", not a lost window.
+    readiness = None
+    if branch_pr and branch_pr.is_open:
+        try:
+            readiness = forge.merge_readiness(anchor).value
+        except ForgeError:
+            readiness = None
     return {
         "branch": branch,
         "head_sha": head,          # provenance: the HEAD this window was selected against
         "provider": forge.provider,
         "pr_number": anchor,
+        "merge_readiness": readiness,   # current branch's open MR; None when no open MR / unknown
         "prs": [asdict(p) for p in window],
     }
 
