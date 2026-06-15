@@ -88,7 +88,14 @@ def seg_key(seg: dict | None):
     """The LIFECYCLE change-key for a `pr` segment: pr_number + each PR's (number, state). None when
     missing — mirrors `prstate.poll_pr`. Deliberately excludes merge_readiness: lifecycle is a clean
     monotonic signal (open→merged/closed), so level-equality is the right wake trigger; readiness is
-    async-noisy and is handled by edge-detection in `produce` (merge_block_event), not here."""
+    async-noisy and is handled by edge-detection in `produce` (merge_block_event), not here.
+
+    Adding a NEW wake signal? Check its shape before touching this key. A MONOTONIC signal (never
+    flips back) can join this level-equality key. A signal that can FLICKER — asynchronously
+    recomputed, with a transient "checking"/unknown window — must instead be edge-detected with
+    hysteresis in `produce` (hold through the unknown window; wake only on entering), like
+    merge_block_event. Folding a flickering signal into a level key fires spurious wakes — that was
+    merge_readiness's first cut, and the reason this key stays lifecycle-only."""
     if not seg:
         return None
     return (seg.get("pr_number"),
