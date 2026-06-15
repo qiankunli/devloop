@@ -21,6 +21,7 @@ from __future__ import annotations
 import abc
 import re
 from dataclasses import dataclass
+from enum import Enum
 
 PRS_CAP = 5   # max entries in the recent-PR window the monitor tracks
 
@@ -116,6 +117,41 @@ class Comment:
     body: str = ""
 
 
+class MergeReadiness(str, Enum):
+    """Why a PR/MR can't be merged yet — the neutral form of GitLab's `detailed_merge_status`
+    / GitHub's `mergeable_state`. Forges surface one blocking reason at a time; plus READY and
+    UNKNOWN.
+
+    UNKNOWN is the *safe* value, and first-class on purpose: forges compute mergeability
+    ASYNCHRONOUSLY, so a just-pushed PR reads as "still checking" — that must never collapse to
+    READY or to a real blocker.
+
+    Fetched on demand via `Forge.merge_readiness` (a primitive, like `description`/`comments`),
+    deliberately NOT a `PullRequest` field: it's a derived verdict over the source×target tips
+    that goes stale the moment either branch moves (a merge into target can block YOUR PR with
+    your branch unchanged), so it must not be snapshotted into the persisted, injected PR window.
+    """
+    READY = "ready"
+    CONFLICT = "conflict"
+    DISCUSSIONS_UNRESOLVED = "discussions_unresolved"
+    CI_BLOCKED = "ci_blocked"
+    NEEDS_APPROVAL = "needs_approval"
+    DRAFT = "draft"
+    UNKNOWN = "unknown"
+
+    @property
+    def blocks_merge(self) -> bool:
+        """An ACTIONABLE blocker the author must clear — conflict / unresolved discussions / CI —
+        as opposed to READY, a non-actionable wait (NEEDS_APPROVAL / DRAFT), or the async UNKNOWN.
+        The shared predicate the surfaces (turn banner, wake channel) alert on, so 'what's worth
+        nagging about' is defined once here, not re-listed per surface."""
+        return self in {
+            MergeReadiness.CONFLICT,
+            MergeReadiness.DISCUSSIONS_UNRESOLVED,
+            MergeReadiness.CI_BLOCKED,
+        }
+
+
 # ── the port ──────────────────────────────────────────────────────────────────
 class Forge(abc.ABC):
     """What devloop needs from a code-review host — defined in the domain's terms, NOT
@@ -155,6 +191,13 @@ class Forge(abc.ABC):
 
     @abc.abstractmethod
     def comments(self, number: int) -> list[Comment]: ...
+
+    def merge_readiness(self, number: int) -> MergeReadiness:
+        """Why MR/PR `number` can't merge yet (CONFLICT / DISCUSSIONS_UNRESOLVED / …), or READY.
+        A fetch primitive (peer of `description`), NOT a `PullRequest` field — see `MergeReadiness`.
+        Concrete-with-default rather than abstract: an adapter that hasn't implemented it (today:
+        GitHub) inherits the safe UNKNOWN instead of being forced to lie; GitLab overrides."""
+        return MergeReadiness.UNKNOWN
 
 
 def build_window(forge: Forge, anchor: int | None, cap: int = PRS_CAP) -> list[PullRequest]:

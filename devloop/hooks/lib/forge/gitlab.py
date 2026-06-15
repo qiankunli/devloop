@@ -10,10 +10,23 @@ from __future__ import annotations
 import urllib.parse
 
 from ._rest import RestClient
-from .base import Comment, Forge, PullRequest
+from .base import Comment, Forge, MergeReadiness, PullRequest
 
 # GitLab persisted state → neutral.
 _STATE_IN = {"opened": "open", "merged": "merged", "closed": "closed", "locked": "closed"}
+
+# GitLab `detailed_merge_status` → neutral MergeReadiness. Anything unlisted (checking,
+# preparing, unchecked, need_rebase, broken_status, …) falls through to UNKNOWN — the safe
+# value while GitLab is still computing, or for statuses devloop doesn't act on.
+_READINESS_IN = {
+    "mergeable": MergeReadiness.READY,
+    "conflict": MergeReadiness.CONFLICT,
+    "discussions_not_resolved": MergeReadiness.DISCUSSIONS_UNRESOLVED,
+    "draft_status": MergeReadiness.DRAFT,
+    "not_approved": MergeReadiness.NEEDS_APPROVAL,
+    "ci_must_pass": MergeReadiness.CI_BLOCKED,
+    "ci_still_running": MergeReadiness.CI_BLOCKED,
+}
 
 
 class GitLabForge(Forge):
@@ -53,6 +66,21 @@ class GitLabForge(Forge):
 
     def get(self, number: int) -> PullRequest:
         return self._to_pr(self.c.get(f"merge_requests/{number}"))
+
+    def merge_readiness(self, number: int) -> MergeReadiness:
+        return self._readiness(self.c.get(f"merge_requests/{number}"))
+
+    @staticmethod
+    def _readiness(d: dict) -> MergeReadiness:
+        """Map a raw MR dict to neutral readiness. Prefer the modern `detailed_merge_status`;
+        fall back to the boolean `has_conflicts` (older GitLab, or an unmapped status). Anything
+        else → UNKNOWN, which includes the async 'checking'/'unchecked' window."""
+        status = _READINESS_IN.get(d.get("detailed_merge_status") or "")
+        if status is not None:
+            return status
+        if d.get("has_conflicts"):
+            return MergeReadiness.CONFLICT
+        return MergeReadiness.UNKNOWN
 
     def description(self, number: int) -> str:
         return self.c.get(f"merge_requests/{number}").get("description") or ""

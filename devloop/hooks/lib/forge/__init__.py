@@ -23,6 +23,7 @@ from .base import (
     ForgeAuthError,
     ForgeError,
     ForgeNotFound,
+    MergeReadiness,
     PullRequest,
     build_window,
     parse_pr_number,
