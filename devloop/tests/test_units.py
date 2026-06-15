@@ -429,25 +429,34 @@ def test_wait_for_pr_change():
 def test_notify_port_and_forge_producer():
     """notify port: ChannelNotifier satisfies the Notifier protocol (channel is one delivery
     impl, mcp imported lazily so this loads without it). forge producer: seg_key mirrors the
-    monitor's change-key (now incl. the MR's blocked-ness) and wakes on entering a merge blocker;
-    summarize names each transitioned PR + the blocker."""
+    monitor's lifecycle change-key; summarize names each transitioned PR. (Merge-block wakes are a
+    separate edge-detected signal — see test_forge_channel_merge_block_edge_detection.)"""
     from lib.notify.base import Notification, Notifier
     from lib.notify.channel import ChannelNotifier
     assert isinstance(ChannelNotifier(None), Notifier)          # channel implements the port
     assert Notification(content="x").kind == "info" and Notification(content="x").meta == {}
     fc = _load_script("forge_channel")
     assert fc.seg_key(None) is None
-    # key = (pr_number, blocker-or-None, prs); readiness folded in as blocker-or-None so entering a
-    # blocker changes the key (wakes) while the async checking↔ready churn doesn't.
-    assert fc.seg_key({"pr_number": 12, "prs": [{"number": 12, "state": "open"}]}) == (12, None, ((12, "open"),))
-    assert fc.seg_key({"pr_number": 12, "merge_readiness": "conflict", "prs": []}) == (12, "conflict", ())
-    assert fc.seg_key({"pr_number": 12, "merge_readiness": "ready", "prs": []}) == (12, None, ())   # non-blocker → no churn
+    # lifecycle key: pr_number + (number,state) tuples — readiness deliberately NOT folded in
+    assert fc.seg_key({"pr_number": 12, "prs": [{"number": 12, "state": "open"}]}) == (12, ((12, "open"),))
     s = fc.summarize({"prs": [{"number": 12, "state": "open"}]},
                      {"prs": [{"number": 12, "state": "merged", "title": "docs"}], "branch": "b"},
                      "/x/devloop")
     assert s == "forge[devloop]: PR #12 open→merged (docs) [branch=b]"
-    # a blocker on the current MR is named in the summary (so the woken session sees why)
-    assert "merge-blocked: conflict" in fc.summarize({"prs": []}, {"merge_readiness": "conflict", "prs": []}, "/x/devloop")
+
+
+def test_forge_channel_merge_block_edge_detection():
+    """Merge-block wakes are edge-triggered with hysteresis: wake on ENTERING a blocker, HOLD through
+    the async 'checking' (UNKNOWN) window so a conflict→checking→conflict flicker fires ONCE not twice
+    (the bug the first cut had), don't wake on leaving, do wake when the blocker TYPE changes."""
+    ev = _load_script("forge_channel").merge_block_event
+    last, wake = ev(None, "ready");                   assert last is None and wake is None
+    last, wake = ev(last, "conflict");                assert last == "conflict" and wake == "conflict"   # enter → wake
+    last, wake = ev(last, "unknown");                 assert last == "conflict" and wake is None          # checking → HOLD
+    last, wake = ev(last, "conflict");                assert last == "conflict" and wake is None          # same blocker, no re-wake
+    last, wake = ev(last, "discussions_unresolved");  assert wake == "discussions_unresolved"             # type change → wake
+    last, wake = ev(last, "ready");                   assert last is None and wake is None                # leaving → clear, no wake
+    assert ev(None, None) == (None, None)                                                                 # no MR → hold-clear
 
 
 def test_pullrequest_and_cadence():
