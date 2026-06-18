@@ -41,32 +41,30 @@ _GIT_GLOBAL_WITH_ARG = {
 
 @dataclass
 class Invocation:
-    """One command invocation: its `argv` (leading `VAR=` env assignments stripped) and the
-    `cd` prefix in effect — a scope-aware path *fragment*, not a resolved dir; call
-    `run_dir(base)` to layer it over a base. A git call is the `GitInvocation` subtype,
-    enriched with its subcommand/args and `-C` target."""
+    """One command invocation: its `argv` (leading `VAR=` env assignments stripped), the
+    `cd` prefix in effect — a scope-aware path *fragment*, not a resolved dir — and an
+    optional `dash_c`, the tool's own `-C <dir>` (git/go/make all chdir before running).
+    Call `run_dir(base)` to layer them over a base. A git call is the `GitInvocation`
+    subtype, enriched with its subcommand/args."""
 
     argv: list[str]
     cd: str | None = None
+    dash_c: str | None = None  # `-C <dir>` target (git/go/make)
 
     def run_dir(self, base: str | Path) -> Path:
         """Effective directory this invocation runs in (a normalized `Path`): the cd prefix
-        layered over `base` (relative composes, absolute resets). Guards judge each call
-        against THIS dir, not the session cwd."""
-        return _layer(base, self.cd)
+        then any `-C` layered over `base` (relative composes, absolute resets). Guards judge
+        each call against THIS dir, not the session cwd."""
+        return _layer(base, self.cd, self.dash_c)  # `-C` over (cd over base)
 
 
 @dataclass
 class GitInvocation(Invocation):
-    """A git call enriched with the resolved `subcommand`, its `args`, and `dash_c` — the
-    `git -C <dir>` target, which overrides the cd prefix for the run dir (None if no `-C`)."""
+    """A git call enriched with the resolved `subcommand` and its `args` (the `git -C <dir>`
+    target lives in the base `dash_c`)."""
 
     subcommand: str | None = None
     args: list[str] = field(default_factory=list)
-    dash_c: str | None = None  # `git -C` target
-
-    def run_dir(self, base: str | Path) -> Path:
-        return _layer(base, self.cd, self.dash_c)  # `-C` over (cd over base)
 
 
 def _layer(base: str | Path, *parts: str | None) -> Path:
@@ -122,6 +120,25 @@ def _git_inv(toks: list[str], cd_prefix: str | None) -> GitInvocation:
                          subcommand=toks[j] if j < len(toks) else None, args=toks[j + 1:])
 
 
+# Non-git commands whose `-C <dir>` chdirs before running, exactly like `git -C` — so a
+# `go -C repo build` / `make -C repo` issued at a workspace root really runs in `repo`, not
+# the root. Without this the cwd guard false-positives on them (it only saw git's `-C`).
+_DASH_C_CMDS = {"go", "make"}
+
+
+def _dash_c_target(toks: list[str]) -> str | None:
+    """First `-C <dir>` (separate token) or glued `-Cdir` in `toks` — the chdir target for a
+    go/make call. go requires `-C` right after the command, make accepts it anywhere; we scan
+    all args so either form is caught. Returns None if absent."""
+    for j in range(1, len(toks)):
+        t = toks[j]
+        if t == "-C" and j + 1 < len(toks):
+            return toks[j + 1]
+        if len(t) > 2 and t.startswith("-C"):  # make's glued `-Crepo`
+            return t[2:]
+    return None
+
+
 def _walk(node: cmdtree.Node, cd: str | None, invs: list[Invocation]) -> str | None:
     """Append each command to `invs` (a git call as the `GitInvocation` subtype), tracking the
     cd prefix with correct shell scope. Returns the cd prefix AFTER `node` (for sequential
@@ -131,7 +148,12 @@ def _walk(node: cmdtree.Node, cd: str | None, invs: list[Invocation]) -> str | N
         result = cd
         if toks:
             base = os.path.basename(toks[0])
-            invs.append(_git_inv(toks, cd) if base == "git" else Invocation(argv=toks, cd=cd))
+            if base == "git":
+                invs.append(_git_inv(toks, cd))
+            elif base in _DASH_C_CMDS:
+                invs.append(Invocation(argv=toks, cd=cd, dash_c=_dash_c_target(toks)))
+            else:
+                invs.append(Invocation(argv=toks, cd=cd))
             if base == "cd" and len(toks) >= 2 and not toks[1].startswith("-"):
                 result = _compose_cd(cd, toks[1])
         for sub in node.subs:  # `$(…)` / `<(…)` run in a fresh subshell → isolated cd
