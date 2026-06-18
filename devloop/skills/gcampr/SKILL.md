@@ -15,7 +15,7 @@ Rules:
 - No `cd` prefix needed: the script resolves the repo itself (cwd's repo → workspace's last-active repo). From a workspace root, or to target another subproject, pass `--repo <subproject name or path>`.
 - Add `--branch <name>` when the injected `.devloop` context shows the branch is **PROTECTED** or **INACTIVE** (PR/MR merged/closed); the script refuses otherwise and tells you why.
 - `--files` for explicit staging, else tracked modifications are staged. Never `git add -A`. Paths are auto-rebased onto the repo root.
-- Trust the `PLAN:` banner; surface the PR/MR URL. On `✗`, fix per the message and retry — do not fall back to raw git.
+- Trust the `PLAN:` banner; surface the PR/MR URL. On `✗`, fix per the message and retry — do not fall back to raw git. An INACTIVE/merged `✗` comes from a live, authoritative poll and quotes the MR's number/state/sha, so it's true even seconds after you created the MR (a reviewer can merge that fast) — just add `--branch` and re-run.
 
 The forge (GitHub vs GitLab) is picked automatically from the repo's origin remote.
 `<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code.

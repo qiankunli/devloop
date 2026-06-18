@@ -106,6 +106,9 @@ class GitLabForge(Forge):
             body["target_branch"] = fields["target_branch"]
         return self._to_pr(self.c.put(f"merge_requests/{number}", body))
 
+    def close(self, number: int) -> PullRequest:
+        return self._to_pr(self.c.put(f"merge_requests/{number}", {"state_event": "close"}))
+
     def comments(self, number: int) -> list[Comment]:
         out = self.c.get(f"merge_requests/{number}/discussions", per_page=50)
         discussions = out if isinstance(out, list) else []

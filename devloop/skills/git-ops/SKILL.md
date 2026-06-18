@@ -1,13 +1,16 @@
 ---
 name: git-ops
-description: Commit, push, create/read/update a pull/merge request (GitHub PR or GitLab MR), cut a feature branch, or view recent PRs in the current repo. Triggers — gcam / gcamp / gcampr / 提 PR / 提 MR / pull request / merge request / 看 PR / 看 MR / 切新分支 / 起新分支 / 发版.
+description: Commit, push, create/read/update/close a pull/merge request (GitHub PR or GitLab MR), cut a feature branch, or view recent PRs in the current repo. Triggers — gcam / gcamp / gcampr / 提 PR / 提 MR / pull request / merge request / 看 PR / 看 MR / 关 PR / 关 MR / 切新分支 / 起新分支 / 发版.
 ---
 
 The umbrella for devloop's git + code-review workflow. All git goes through one runner
 (`hooks/lib/gitcmd.py`); all code-review hosting through one facade (`hooks/lib/forge/`),
 which picks GitHub or GitLab per-repo from the origin remote. You call the scripts below —
 never raw `git commit/push` (the guards intercept those, and the scripts encode the case
-logic + self-narrate a `PLAN:` banner you can trust).
+logic + self-narrate a `PLAN:` banner you can trust), and **never hand-roll `curl`/`glab`/`gh`
+against the forge API** — that one facade backs both script surfaces below (gcampr *raises* an
+MR; `pr` *inspects/manages* an existing one) and resolves the token from config, so there's no
+credentials file to hunt for.
 
 Paths use `<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code.
 
@@ -31,14 +34,27 @@ cwd's repo, falling back to the workspace's last-active repo), `--branch <name>`
 fresh branch off `origin/<target>`), `--target <branch>`, `--files a,b` (explicit
 staging, auto-rebased onto the repo root; else tracked modifications — never
 `git add -A`), `--title "<PR title>"` (gcampr only). Trust the `PLAN:` banner; on
-`✗`, fix per the message (usually add `--branch`) and retry.
+`✗`, fix per the message (usually add `--branch`) and retry. The `✗` for an
+**INACTIVE / merged-or-closed** branch is computed from a live, authoritative forge poll and
+quotes the MR's number / state / sha — so it's ground truth even right after you created the MR
+(a colleague can merge it in seconds); add `--branch` and re-run.
 
-## View / update a PR/MR
+## Inspect / manage a PR/MR — the `pr` CLI
+
+One provider-neutral, config-driven surface for **inspecting / managing an existing** PR/MR
+(token from env < `~/.devloop/config.json` < nearest `.devloop/config.json`). Raising a new one
+is gcampr's job, above.
 
 ```
-python3 <PLUGIN_ROOT>/scripts/read_pr.py <number|url>          # title/state/branches/comments
-python3 <PLUGIN_ROOT>/scripts/update_pr.py <number> --title "..." --description "..." --target-branch <b>
+python3 <PLUGIN_ROOT>/scripts/pr.py show   <number|url>        # state/branches/merge-readiness/comments
+python3 <PLUGIN_ROOT>/scripts/pr.py list   [--limit N] [--branch B]
+python3 <PLUGIN_ROOT>/scripts/pr.py update <number> --title "..." --description "..." --target-branch <b>
+python3 <PLUGIN_ROOT>/scripts/pr.py close  <number>            # close without merging
 ```
+
+There is no `pr create`: `pr` only ever operates on an MR that already exists and never touches
+your working tree. Opening a new one is a commit+push transaction under the branch/staging gates
+— that's gcampr, above.
 
 ## Branch / PR awareness
 

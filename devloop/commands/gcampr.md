@@ -16,4 +16,4 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/smart_gcampr.sh" --message "<commit message>
 - Pass `--branch <name>` when the injected context shows the current branch is **PROTECTED** or **INACTIVE** (PR/MR merged/closed) — the script refuses to commit there otherwise and tells you. Pick a short kebab-case feature name.
 - Pass `--files a,b` to stage explicit files; omit to stage tracked modifications. **Never** `git add -A`.
 - The script self-narrates a `PLAN:` banner and does preflight branch-cutting, staging, commit, push, and PR/MR create/reuse (the forge is picked from the repo's origin). Trust the banner; surface the PR/MR URL to the user.
-- On a `✗ ...` line, fix per the message (usually: add `--branch`) and retry. Do not fall back to raw `git push`.
+- On a `✗ ...` line, fix per the message (usually: add `--branch`) and retry. Do not fall back to raw `git push`. An INACTIVE / merged-or-closed `✗` is computed from a live, authoritative forge poll and quotes the MR's number/state/sha — it's ground truth even seconds after you created the MR (a reviewer can merge it that fast), so add `--branch` and re-run.

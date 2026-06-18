@@ -61,7 +61,7 @@ devloop/
 │   ├── posttool_git_refresh.py / posttool_track_edits.py   # PostToolUse 状态写入
 │   ├── sessionend_release.py      # SessionEnd：释放本 session 的 owner 锁（正常退出路径）
 │   └── pretool_*.py               # 10 个硬拦截（guard harness；含 checkout/edit owner 锁）
-├── scripts/                        # smart_git_ops + smart_*.sh / read_pr / update_pr / run_fixlint / run_tests / poll_pr_status / init_*
+├── scripts/                        # smart_git_ops + smart_*.sh / pr.py（show/list/update/close；create 归 gcampr）/ run_fixlint / run_tests / poll_pr_status / init_*
 ├── monitors/monitors.json          # ★PR-sweep 后台轮询（替代 hook 心跳 scheduler）
 ├── commands/                       # slash：enter / gcam / gcamp / gcampr / lint / test
 ├── skills/                         # git-ops / gcam / gcamp / gcampr / fix-lint / run-test

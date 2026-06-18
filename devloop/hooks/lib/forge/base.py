@@ -181,6 +181,12 @@ class Forge(abc.ABC):
     def update(self, number: int, **fields) -> PullRequest: ...
 
     @abc.abstractmethod
+    def close(self, number: int) -> PullRequest:
+        """Close the PR/MR without merging. A distinct primitive, not `update(state=...)`: the
+        two forges spell it incompatibly (GitLab `state_event=close`, GitHub `state=closed`), so
+        the neutral verb hides that split instead of leaking either spelling into callers."""
+
+    @abc.abstractmethod
     def prs_for_branch(self, branch: str) -> list[PullRequest]:
         """All PRs whose source is `branch`, newest first (an old finished one + a new
         open one can coexist after a branch is reused — callers pick)."""
