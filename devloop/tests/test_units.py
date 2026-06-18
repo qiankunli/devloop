@@ -133,7 +133,7 @@ def test_cmdparse_git_invocations():
 
 def test_protect_branch_checks_dash_c_target():
     """Codex #4: protect guard must judge the `-C` target repo, not the caller's cwd."""
-    pb = _load_hook("pretool_protect_branch")
+    pb = _load_hook("pretool_policy_bash")
     from lib import hook_io
     from lib.context import RepoContext
     R = "/tmp/dlut_prot"
@@ -1111,11 +1111,12 @@ def test_cmdparse_command_invocations():
 def test_workspace_cwd_guard_cd_scope():
     """cmdtree cd-scope 让守卫变 sound:在 workspace 根直接跑子项目命令 → 拦;同 shell `cd <sub>`
     进了真仓 → 放行;而 cd 在子 shell `(cd sub); uv`(对 uv 无效)→ 仍拦——粗判"有没有 cd"放过了它。"""
-    guard = _load_hook("pretool_workspace_cwd_guard")
+    guard = _load_hook("pretool_policy_bash")
+    from lib.rules.command import workspace_cwd as wc
     root = "/tmp/dlut_wsg"; os.makedirs(root, exist_ok=True)
-    guard.workspace = type("W", (), {"load_workspaces": staticmethod(lambda: [root])})
-    guard.WorkspaceContext = type("WC", (), {"load": staticmethod(lambda p: None)})
-    guard.load_active_repo = lambda p, sid=None: None
+    wc.workspace = type("W", (), {"load_workspaces": staticmethod(lambda: [root])})
+    wc.WorkspaceContext = type("WC", (), {"load": staticmethod(lambda p: None)})
+    wc.load_active_repo = lambda p, sid=None: None
 
     def at_root(cmd):
         return guard.decide(_hook_input("Bash", {"cwd": root, "tool_input": {"command": cmd}}))
@@ -1144,7 +1145,7 @@ def test_edit_owner_guard():
     """并发 session 防线的补全:owner 锁随'第一笔编辑'建立(acquire-follows-activity),
     guest 直接改 owner 工作树的文件被硬拦并引导 worktree——此前只有 git switch 被拦,
     第二个 session 直接 Edit 同一 checkout 畅通无阻。"""
-    guard = _load_hook("pretool_edit_owner_guard")
+    guard = _load_hook("pretool_policy_edit")
     from lib.context import session as session_lock
     R = "/tmp/dlut_eog"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo/server", exist_ok=True)
@@ -1185,7 +1186,7 @@ def test_branch_merged_guard_uses_file_path():
     merged PR's source sha is reachable from the LIVE HEAD, so it's genuinely this branch's PR."""
     from lib import git_state
     from lib.context import RepoContext, prstate
-    guard = _load_hook("pretool_branch_merged_guard")
+    guard = _load_hook("pretool_policy_edit")
     R = "/tmp/dlut_bmg"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo", exist_ok=True)
     _git(f"{R}/repo", "init", "-q"); _git(f"{R}/repo", "config", "user.email", "t@t.t")
@@ -1339,7 +1340,7 @@ def test_gate_uses_live_branch_after_unobserved_checkout():
     branch's edits."""
     from lib import git_state
     from lib.context import RepoContext, gate, prstate
-    guard = _load_hook("pretool_branch_merged_guard")
+    guard = _load_hook("pretool_policy_edit")
     R = "/tmp/dlut_incident"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -1365,7 +1366,7 @@ def test_gate_protect_uses_live_branch():
     LIVE on a protected branch (unobserved checkout). The guard must still refuse commit/push —
     a stale cache must never let a push to a protected branch slip through."""
     from lib.context import RepoContext, base
-    guard = _load_hook("pretool_protect_branch")
+    guard = _load_hook("pretool_policy_bash")
     R = "/tmp/dlut_protect_live"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -1404,11 +1405,11 @@ def test_gates_use_gate_seam_not_cached_identity():
     """CI invariant: the hard gates resolve branch facts through lib.context.gate (LIVE), never
     the cached RepoContext identity. Prevents a future guard from silently regressing to the
     stale-cache fail-open / false-block the gate seam exists to kill."""
-    for name in ("pretool_protect_branch", "pretool_branch_merged_guard"):
-        src = (HOOKS / f"{name}.py").read_text()
-        assert "gate.evaluate" in src, f"{name} must read gate truth"
+    for rel in ("lib/rules/command/protect_branch.py", "lib/rules/edit/branch_merged.py"):
+        src = (HOOKS / rel).read_text()
+        assert "gate.evaluate" in src, f"{rel} must read gate truth"
         for forbidden in ("branch_pr_inactive", ".branch.current", ".branch.local"):
-            assert forbidden not in src, f"{name} must not read cached branch identity ({forbidden})"
+            assert forbidden not in src, f"{rel} must not read cached branch identity ({forbidden})"
     sgo = (SCRIPTS / "smart_git_ops.py").read_text()
     assert "def prepare_branch(intent: GitIntent, gv: gate.GateView" in sgo
     assert "ctx.branch_pr_inactive" not in sgo
@@ -1644,6 +1645,50 @@ def test_sync_pr_description_append_only():
         assert f2.description(3) == "original\n\nfollow-up body"
     finally:
         sgo.forge_for_repo = orig
+
+
+def test_code_policy_engine():
+    """变更策略引擎纵切：project(工具→Target) + codemodel(惰性解析改后全文) + LayerDepsRule(层级方向)。
+    现有 10 个 guard 尚未迁入，这里只验代码侧 lint-deps 这条新规则端到端跑通。"""
+    from lib import rules
+    from lib.core import engine
+    from lib.core.domain import Command, FileChange
+
+    arch = {"enabled": True, "layers": {"/dao/": "dao", "/service/": "service"},
+            "order": ["api", "service", "dao", "model"]}
+
+    class Ctx:  # 假 PolicyContext：代码侧规则只用到 .arch
+        def __init__(self, a=None):
+            self.arch = arch if a is None else a
+
+    def evl(inp, ctx=None):
+        return engine.evaluate(engine.project(inp), ctx or Ctx(), rules.REGISTRY)
+
+    # project：工具 → Target 类型 + mode；Bash 拆多条 Command
+    w = engine.project(_hook_input("Write", {"tool_input": {"file_path": "/r/a.py", "content": ""}}))
+    assert isinstance(w.targets[0], FileChange) and w.targets[0].mode == "write"
+    e = engine.project(_hook_input("Edit", {"tool_input": {"file_path": "/r/a.py", "old_string": "a", "new_string": "b"}}))
+    assert e.targets[0].mode == "edit"
+    bash = engine.project(_hook_input("Bash", {"cwd": "/r", "tool_input": {"command": "cd x && go build ./..."}}))
+    assert len(bash.targets) == 2 and all(isinstance(t, Command) for t in bash.targets)
+
+    # Write content：dao import service → DENY；service import dao → allow
+    dao = _hook_input("Write", {"tool_input": {"file_path": "/r/internal/dao/u.py", "content": "from app.service import x\n"}})
+    assert evl(dao).action == "deny"
+    svc = _hook_input("Write", {"tool_input": {"file_path": "/r/internal/service/u.py", "content": "from app.dao import x\n"}})
+    assert evl(svc).action == "allow"
+
+    # 非分层路径 → allow；arch 关 → allow；语法错 → allow（fail-open）
+    assert evl(_hook_input("Write", {"tool_input": {"file_path": "/r/util/u.py", "content": "from app.service import x\n"}})).action == "allow"
+    assert evl(dao, Ctx({"enabled": False})).action == "allow"
+    assert evl(_hook_input("Write", {"tool_input": {"file_path": "/r/internal/dao/u.py", "content": "def (:\n"}})).action == "allow"
+
+    # Edit "改后全文"：盘上无 import，edit 插入 import service → 命中（验证读盘+套用替换，而非只看片段）
+    R = "/tmp/dlut_codepolicy"; shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/internal/dao", exist_ok=True)
+    fp = f"{R}/internal/dao/u.py"; Path(fp).write_text("x = 1\n")
+    ed = _hook_input("Edit", {"tool_input": {"file_path": fp, "old_string": "x = 1", "new_string": "from app.service import y\nx = 1"}})
+    assert evl(ed).action == "deny"
 
 
 def _run_all():
