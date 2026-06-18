@@ -35,7 +35,7 @@ def project(inp) -> Change:
                     dash_c=getattr(v, "dash_c", None),
                 )
             )
-        return Change(targets=cmds, cwd=inp.cwd, tool="Bash")
+        return Change(targets=cmds, cwd=inp.cwd, tool="Bash", command=inp.command)
 
     if inp.is_tool(*_FILE_TOOLS):
         path = inp.file_path

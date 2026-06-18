@@ -153,3 +153,4 @@ class Change:
     targets: list[Target]
     cwd: str = ""
     tool: str = ""
+    command: str = ""  # 原始 Bash 命令串（仅 Bash 非空）；少数 CHANGE 级规则需 env-aware 重解析时用

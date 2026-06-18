@@ -133,7 +133,7 @@ def test_cmdparse_git_invocations():
 
 def test_protect_branch_checks_dash_c_target():
     """Codex #4: protect guard must judge the `-C` target repo, not the caller's cwd."""
-    pb = _load_hook("pretool_protect_branch")
+    pb = _load_hook("pretool_policy_bash")
     from lib import hook_io
     from lib.context import RepoContext
     R = "/tmp/dlut_prot"
@@ -1111,11 +1111,12 @@ def test_cmdparse_command_invocations():
 def test_workspace_cwd_guard_cd_scope():
     """cmdtree cd-scope 让守卫变 sound:在 workspace 根直接跑子项目命令 → 拦;同 shell `cd <sub>`
     进了真仓 → 放行;而 cd 在子 shell `(cd sub); uv`(对 uv 无效)→ 仍拦——粗判"有没有 cd"放过了它。"""
-    guard = _load_hook("pretool_workspace_cwd_guard")
+    guard = _load_hook("pretool_policy_bash")
+    from lib.rules.command import workspace_cwd as wc
     root = "/tmp/dlut_wsg"; os.makedirs(root, exist_ok=True)
-    guard.workspace = type("W", (), {"load_workspaces": staticmethod(lambda: [root])})
-    guard.WorkspaceContext = type("WC", (), {"load": staticmethod(lambda p: None)})
-    guard.load_active_repo = lambda p, sid=None: None
+    wc.workspace = type("W", (), {"load_workspaces": staticmethod(lambda: [root])})
+    wc.WorkspaceContext = type("WC", (), {"load": staticmethod(lambda p: None)})
+    wc.load_active_repo = lambda p, sid=None: None
 
     def at_root(cmd):
         return guard.decide(_hook_input("Bash", {"cwd": root, "tool_input": {"command": cmd}}))
@@ -1144,7 +1145,7 @@ def test_edit_owner_guard():
     """并发 session 防线的补全:owner 锁随'第一笔编辑'建立(acquire-follows-activity),
     guest 直接改 owner 工作树的文件被硬拦并引导 worktree——此前只有 git switch 被拦,
     第二个 session 直接 Edit 同一 checkout 畅通无阻。"""
-    guard = _load_hook("pretool_edit_owner_guard")
+    guard = _load_hook("pretool_policy_edit")
     from lib.context import session as session_lock
     R = "/tmp/dlut_eog"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo/server", exist_ok=True)
@@ -1185,7 +1186,7 @@ def test_branch_merged_guard_uses_file_path():
     merged PR's source sha is reachable from the LIVE HEAD, so it's genuinely this branch's PR."""
     from lib import git_state
     from lib.context import RepoContext, prstate
-    guard = _load_hook("pretool_branch_merged_guard")
+    guard = _load_hook("pretool_policy_edit")
     R = "/tmp/dlut_bmg"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo", exist_ok=True)
     _git(f"{R}/repo", "init", "-q"); _git(f"{R}/repo", "config", "user.email", "t@t.t")
@@ -1339,7 +1340,7 @@ def test_gate_uses_live_branch_after_unobserved_checkout():
     branch's edits."""
     from lib import git_state
     from lib.context import RepoContext, gate, prstate
-    guard = _load_hook("pretool_branch_merged_guard")
+    guard = _load_hook("pretool_policy_edit")
     R = "/tmp/dlut_incident"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -1365,7 +1366,7 @@ def test_gate_protect_uses_live_branch():
     LIVE on a protected branch (unobserved checkout). The guard must still refuse commit/push —
     a stale cache must never let a push to a protected branch slip through."""
     from lib.context import RepoContext, base
-    guard = _load_hook("pretool_protect_branch")
+    guard = _load_hook("pretool_policy_bash")
     R = "/tmp/dlut_protect_live"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -1404,11 +1405,11 @@ def test_gates_use_gate_seam_not_cached_identity():
     """CI invariant: the hard gates resolve branch facts through lib.context.gate (LIVE), never
     the cached RepoContext identity. Prevents a future guard from silently regressing to the
     stale-cache fail-open / false-block the gate seam exists to kill."""
-    for name in ("pretool_protect_branch", "pretool_branch_merged_guard"):
-        src = (HOOKS / f"{name}.py").read_text()
-        assert "gate.evaluate" in src, f"{name} must read gate truth"
+    for rel in ("lib/rules/command/protect_branch.py", "lib/rules/edit/branch_merged.py"):
+        src = (HOOKS / rel).read_text()
+        assert "gate.evaluate" in src, f"{rel} must read gate truth"
         for forbidden in ("branch_pr_inactive", ".branch.current", ".branch.local"):
-            assert forbidden not in src, f"{name} must not read cached branch identity ({forbidden})"
+            assert forbidden not in src, f"{rel} must not read cached branch identity ({forbidden})"
     sgo = (SCRIPTS / "smart_git_ops.py").read_text()
     assert "def prepare_branch(intent: GitIntent, gv: gate.GateView" in sgo
     assert "ctx.branch_pr_inactive" not in sgo

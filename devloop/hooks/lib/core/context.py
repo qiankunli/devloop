@@ -9,20 +9,37 @@ Rule 只依赖这个对象（不各自 import repo_layout/gate/session/config）
 from __future__ import annotations
 
 import functools
+from pathlib import Path
 
 from lib import config, repo_layout
 
 
 class PolicyContext:
-    def __init__(self, cwd: str, anchor_path: str = ""):
+    def __init__(self, cwd: str, anchor_path: str = "", session_id: str = ""):
         # anchor_path：被编辑文件的路径（Edit/Write）。聚合工作区里 cwd 常停在 workspace 根，
-        # 编辑却落在子项目内——必须从文件路径解析 repo，而非 cwd（同 edit-family 既有约定）。
+        # 编辑却落在子项目内——必须从文件所在目录解析 repo，而非 cwd（同 edit-family 既有约定）。
         self._cwd = cwd or ""
-        self._anchor = anchor_path or cwd or ""
+        self.session_id = session_id or ""
+        if anchor_path:  # edit 族：记文件绝对路径 + 它所在目录（git_root 从目录解析，`git -C <文件>` 会失败）
+            f = anchor_path if Path(anchor_path).is_absolute() else str(Path(self._cwd) / anchor_path)
+            self._anchor_file = f
+            self._anchor_dir = str(Path(f).parent)
+        else:  # 命令族：无文件，git_root 从 cwd 解析
+            self._anchor_file = ""
+            self._anchor_dir = self._cwd
+
+    @property
+    def cwd(self) -> str:
+        return self._cwd
+
+    @property
+    def anchor_abspath(self) -> str:
+        """被编辑文件的绝对路径（edit 族规则做 gitignore / 路径判断用）。"""
+        return self._anchor_file
 
     @functools.cached_property
     def git_root(self) -> str | None:
-        return repo_layout.find_git_root(self._anchor) if self._anchor else None
+        return repo_layout.find_git_root(self._anchor_dir) if self._anchor_dir else None
 
     @functools.cached_property
     def repo_code_dir(self) -> str | None:
