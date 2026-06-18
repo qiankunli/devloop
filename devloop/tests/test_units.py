@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 HOOKS = Path(__file__).resolve().parent.parent / "hooks"
@@ -67,6 +68,11 @@ class _FakeForge(Forge):
     def update(self, number, **fields):
         if "body" in fields:
             self._bodies[number] = fields["body"]
+        return self._prs[number]
+
+    def close(self, number):
+        pr = self._prs[number]
+        self._prs[number] = replace(pr, state="closed")
         return self._prs[number]
 
     def prs_for_branch(self, branch):
@@ -302,6 +308,56 @@ def test_decide_branch_is_intent_driven():
     assert decide("feat1", "feat1", protected=False, stale=False, base=B) == ("continue", None)
 
 
+def test_refusal_detail_quotes_pr_evidence():
+    """A stale-branch refusal embeds the live-polled PR evidence (number/state/sha/url) so the
+    caller trusts the verdict instead of re-querying the forge; protected branches (no PR) and an
+    open PR (not inactive) fall back to the plain reason."""
+    sgo = _load_script("smart_git_ops")
+    from lib.context import gate
+    from lib.forge import PullRequest
+
+    def gv(pr):
+        return gate.GateView(git_root="/x", branch="feat/a", head_sha="h", target="main",
+                             provider="gitlab", active_pr=pr)
+
+    merged = PullRequest(number=129, state="merged", source_branch="feat/a",
+                         sha="541268f2481b", web_url="https://code.byted.org/x/merge_requests/129",
+                         updated_at="2026-06-18T10:05:05+08:00")
+    detail = sgo.refusal_detail(gv(merged), "current branch's MR is merged/closed")
+    assert "MR !129 merged" in detail and "541268f24" in detail
+    assert "merge_requests/129" in detail
+    # no PR (protected) and open PR (not inactive) → plain fallback, no fabricated evidence
+    assert sgo.refusal_detail(gv(None), "protected branch") == "protected branch"
+    open_pr = PullRequest(number=7, state="open", source_branch="feat/a")
+    assert sgo.refusal_detail(gv(open_pr), "fallback") == "fallback"
+
+
+def test_cut_new_branch_carries_dirty_tree():
+    """cut_new_branch stashes a dirty tree before `checkout -b` and pops after, so uncommitted
+    work done before the branch was decided (e.g. a version bump) follows you onto the fresh
+    branch instead of `checkout -b` refusing with 'would be overwritten'."""
+    sgo = _load_script("smart_git_ops")
+    R = "/tmp/dlut_cut"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q", "-b", "main"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    v = Path(f"{R}/v")
+    # Mirror the session: feat lags main on the file the dirty edit touches. main advances v
+    # "83"→"84"; feat (cut earlier) still has "83"; the uncommitted bump on feat also reaches "84".
+    v.write_text("83"); _git(R, "add", "v"); _git(R, "commit", "-qm", "v83")
+    _git(R, "checkout", "-q", "-b", "feat"); Path(f"{R}/x").write_text("1"); _git(R, "add", "x"); _git(R, "commit", "-qm", "feat")
+    _git(R, "checkout", "-q", "main"); v.write_text("84"); _git(R, "add", "v"); _git(R, "commit", "-qm", "v84")
+    _git(R, "checkout", "-q", "feat"); v.write_text("84")   # uncommitted bump; main's committed v also "84"
+    plan = []
+    sgo.cut_new_branch(R, "newb", "main", plan)   # would fail without stash (v overwrite on checkout)
+    assert _git_out(R, "rev-parse", "--abbrev-ref", "HEAD") == "newb"
+    assert v.read_text() == "84"   # the dirty bump was carried over, not lost
+    assert any("carried over" in line for line in plan)
+
+
+def _git_out(repo, *a):
+    return subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+
 def test_prepare_branch_reads_gate_pr_state():
     """prepare_branch decides on gate truth (GateView), not the cached ctx. decide_branch's
     unit test bypasses this call, so an end-to-end run guards the wiring (and that gcampr reads
@@ -329,6 +385,40 @@ def test_prepare_branch_reads_gate_pr_state():
     res = sgo.prepare_branch(intent, gate.evaluate(R), plan)
     assert res.branch == "feat/a" and res.cut is False
     assert any("continuing in-flight PR #7" in line for line in plan)
+
+
+def test_pr_cli_dispatch():
+    """The `pr` CLI routes show/list/update/close to the forge facade (config-driven,
+    provider-neutral). There is deliberately no `create` verb — opening an MR is gcampr's
+    gated transaction, so `pr create` is rejected like any unknown verb."""
+    prcli = _load_script("pr")
+    fake = _FakeForge([PullRequest(number=5, state="open", source_branch="feat/x",
+                                   target_branch="main", title="T", web_url="u/5")])
+
+    class _R:
+        git_root = "/x"
+
+    orig_forge = prcli.forge_for_repo
+    orig_resolve = prcli.cli.resolve_repo_or_exit
+    try:
+        prcli.forge_for_repo = lambda repo: fake
+        prcli.cli.resolve_repo_or_exit = lambda ns, prog: (_R(), "test")
+        assert prcli.main(["show", "5"]) == 0
+        assert prcli.main(["list"]) == 0
+        assert prcli.main(["list", "--branch", "feat/x"]) == 0
+        assert prcli.main(["update", "5", "--title", "New"]) == 0
+        assert prcli.main(["close", "5"]) == 0
+        assert fake.get(5).state == "closed"   # close flipped state via the facade
+        assert prcli.main(["update", "5"]) == 1   # nothing to update → error
+        try:                                       # no create verb → argparse "invalid choice" → exit(2)
+            prcli.main(["create", "--message", "m"])
+            raised = False
+        except SystemExit:
+            raised = True
+        assert raised
+    finally:
+        prcli.forge_for_repo = orig_forge
+        prcli.cli.resolve_repo_or_exit = orig_resolve
 
 
 def test_reuse_or_create_pr_over_narrowed_port():

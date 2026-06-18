@@ -84,6 +84,9 @@ class GitHubForge(Forge):
             body["base"] = fields["target_branch"]
         return self._to_pr(self.c.patch(f"pulls/{number}", body))
 
+    def close(self, number: int) -> PullRequest:
+        return self._to_pr(self.c.patch(f"pulls/{number}", {"state": "closed"}))
+
     def comments(self, number: int) -> list[Comment]:
         # PR conversation comments live on the issue endpoint (review comments are a
         # separate, line-anchored surface we don't surface here).

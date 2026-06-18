@@ -101,13 +101,27 @@ def cut_new_branch(repo: str, name: str, base: str, plan: list[str]) -> None:
     # when cutting off a remote-tracking ref so we branch off the latest tip, not a stale local copy.
     if base.startswith("origin/"):
         gitcmd.git(repo, "fetch", "origin", base.split("/", 1)[1], timeout=30)
+    # Carry uncommitted tracked edits onto the fresh branch. A dirty tree whose files differ
+    # between HEAD and base makes `checkout -b` refuse ("would be overwritten"), which used to
+    # strand work done *before* the branch was decided — e.g. a version bump run on whichever
+    # branch HEAD happened to sit on, then `--branch` to a fresh one. Stash → cut → pop lets that
+    # work follow you over, so edit-then-cut works as well as cut-then-edit (order stops mattering).
+    st = gitcmd.git(repo, "stash", "push", "-m", f"devloop: cutting {name}")
+    stashed = st.ok and "No local changes" not in (st.out + st.err)
     r = gitcmd.git(repo, "checkout", "-b", name, base)
     if not r.ok:
-        raise SmartError(
-            f"could not cut '{name}' off {base}: {r.err}\n"
-            "If you have conflicting uncommitted changes, stash them first."
-        )
-    plan.append(f"cut new branch '{name}' off {base}")
+        if stashed:
+            gitcmd.git(repo, "stash", "pop")   # restore the working tree on the original branch
+        raise SmartError(f"could not cut '{name}' off {base}: {r.err}")
+    if stashed:
+        pop = gitcmd.git(repo, "stash", "pop")
+        if not pop.ok:
+            raise SmartError(
+                f"cut '{name}' off {base} but reapplying your local changes conflicted: {pop.err}\n"
+                "The changes are partially applied with conflict markers and kept in `git stash` — "
+                "resolve the conflicts, then `git stash drop`."
+            )
+    plan.append(f"cut new branch '{name}' off {base}" + (" (carried over local changes)" if stashed else ""))
 
 
 def decide_branch(
@@ -333,6 +347,30 @@ def resolve_intent(ns: argparse.Namespace, invoke_cwd: str) -> GitIntent:
     )
 
 
+def refusal_detail(gv: gate.GateView, fallback: str) -> str:
+    """Enrich a refuse-to-continue reason with the live-polled PR evidence the gate already holds.
+
+    The push gate runs an authoritative forge poll (`live_refresh`) before deciding, so when it
+    refuses a stale branch it KNOWS the PR's number/state/sha — but the bare "current branch's MR
+    is merged/closed" line dropped all of it. A caller that just created the MR then distrusts the
+    verdict as a stale-context false-positive and re-queries the forge by hand to second-guess it.
+    Quoting the evidence inline (e.g. "MR !129 merged, sha 541268f") makes the verdict self-proving:
+    nothing to re-verify when it's right, self-evidently wrong when it isn't. The protected-branch
+    case has no PR — fall back to the plain reason."""
+    pr = gv.active_pr
+    if pr is None or not pr.inactive:
+        return fallback
+    bits = [f"{pr_label(gv.provider, pr.number)} {pr.state}"]
+    if pr.sha:
+        bits.append(f"sha {pr.sha[:9]}")
+    if pr.updated_at:
+        bits.append(f"updated {pr.updated_at}")
+    detail = ", ".join(bits)
+    if pr.web_url:
+        detail += f" — {pr.web_url}"
+    return detail
+
+
 def prepare_branch(intent: GitIntent, gv: gate.GateView, plan: list[str]) -> BranchResult:
     """Phase 2: position the working branch — intent-driven, independent of where HEAD sits
     (see decide_branch for the cut/continue/error policy). Decides on gate truth (LIVE branch +
@@ -342,7 +380,8 @@ def prepare_branch(intent: GitIntent, gv: gate.GateView, plan: list[str]) -> Bra
     )
     if action == "error":
         raise SmartError(
-            f"on '{gv.branch}' ({detail}) — pass --branch <name> to cut a fresh branch off {intent.base}."
+            f"on '{gv.branch}' ({refusal_detail(gv, detail)}) — "
+            f"pass --branch <name> to cut a fresh branch off {intent.base}."
         )
     if action == "cut":
         cut_new_branch(intent.repo, intent.requested_branch, intent.base, plan)
