@@ -1691,6 +1691,54 @@ def test_code_policy_engine():
     assert evl(ed).action == "deny"
 
 
+def test_migrated_command_rules_parity():
+    """平替校验：5 个原先无测试的命令侧规则经新引擎跑通，行为与原 guard 一致。"""
+    import json as _json
+
+    from lib.context import RepoContext, session as session_lock
+    bash = _load_hook("pretool_policy_bash")
+
+    def d(cmd, cwd="/tmp", sid=""):
+        return bash.decide(_hook_input("Bash", {"cwd": cwd, "session_id": sid, "tool_input": {"command": cmd}}))
+
+    # add_all：-A / . / --all 拦，显式 staging 放行
+    assert d("git add -A") and d("git add .") and d("git add --all")
+    assert d("git add foo.py") is None
+
+    # checkout_owner：他人占有 checkout → 切分支拦；文件恢复 / owner 自己 → 放行
+    R = "/tmp/dlut_co"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q")
+    session_lock.acquire(R, "other", "br", pid=os.getpid())
+    assert "worktree" in (d("git checkout main", cwd=R, sid="me") or "")
+    assert d("git switch main", cwd=R, sid="me")
+    assert d("git checkout -- f", cwd=R, sid="me") is None      # 文件恢复(非切分支)
+    assert d("git checkout main", cwd=R, sid="other") is None   # owner 自己
+
+    # pip_install：uv-managed 仓拦 pip install，放行 -e . 与非 uv 仓
+    P = "/tmp/dlut_pip"; shutil.rmtree(P, ignore_errors=True); os.makedirs(P)
+    _git(P, "init", "-q"); Path(f"{P}/pyproject.toml").write_text("[project]\nname = 'x'\n")
+    Path(f"{P}/uv.lock").write_text(""); RepoContext.refresh_all(P)
+    assert d("pip install requests", cwd=P)
+    assert d("pip install -e .", cwd=P) is None
+    assert d("pip install requests", cwd="/tmp") is None        # 非 uv 仓
+
+    # pytest_naked：有 make test 时裸 pytest 拦，env 前缀 / make test 放行
+    T = "/tmp/dlut_pt"; shutil.rmtree(T, ignore_errors=True); os.makedirs(T)
+    _git(T, "init", "-q"); Path(f"{T}/Makefile").write_text("test:\n\techo hi\n"); RepoContext.refresh_all(T)
+    assert d("pytest", cwd=T)
+    assert d("PYTHONPATH=. pytest", cwd=T) is None              # env 前缀
+    assert d("make test", cwd=T) is None
+
+    # precommit_gate：项目级 config 开 gate + lint 从未跑 → 拦 commit
+    G = "/tmp/dlut_pcg"; shutil.rmtree(G, ignore_errors=True); os.makedirs(f"{G}/.devloop")
+    _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
+    _git(G, "checkout", "-q", "-b", "feat/x")
+    Path(f"{G}/.devloop/config.json").write_text(
+        _json.dumps({"precommit": {"repos": {str(Path(G).resolve()): {"commit_gate_lint": True}}}}))
+    RepoContext.refresh_all(G)
+    assert "precommit gate" in (d("git commit -m x", cwd=G) or "")
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = []
