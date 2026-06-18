@@ -19,7 +19,8 @@
         "hooks": [
           { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_edit_owner_guard.py", "timeout": 5, "statusMessage": "Checking checkout ownership" },
           { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_branch_merged_guard.py", "timeout": 5, "statusMessage": "Checking branch merge status" },
-          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_requirements_edit_block.py", "timeout": 5, "statusMessage": "Checking requirements edit guard" }
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_requirements_edit_block.py", "timeout": 5, "statusMessage": "Checking requirements edit guard" },
+          { "type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_code_policy.py", "timeout": 5, "statusMessage": "Checking code policy" }
         ]
       }
     ],

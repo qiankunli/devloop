@@ -48,6 +48,15 @@ _DEFAULTS: dict = {
     "workspaces": [],
     "forges": {},
     "precommit": {"default": {}, "repos": {}},
+    # 代码策略引擎的架构/层级规则。enabled 默认 False：opt-in per repo，装上不按猜的层映射误拦。
+    "arch": {
+        "default": {
+            "enabled": False,
+            "layers": {"/api/": "api", "/service/": "service", "/dao/": "dao", "/model/": "model"},
+            "order": ["api", "service", "dao", "model"],
+        },
+        "repos": {},
+    },
 }
 
 _LOCAL_NAME = ".devloop"
@@ -150,6 +159,19 @@ def forge_token(host: str, provider: str, repo_dir: str | Path | None = None) ->
 
 def precommit(repo_dir: str | Path | None = None) -> dict:
     return load(repo_dir).get("precommit") or {}
+
+
+def arch(repo_dir: str | Path | None = None) -> dict:
+    """已解析的架构规则配置：section 的 `default` 叠上 `repos[<repo_dir 绝对路径>]`。
+    代码策略引擎的层级规则读它（layer 映射 + 方向序 + 开关）。"""
+    section = load(repo_dir).get("arch") or {}
+    merged = dict(section.get("default") or {})
+    if repo_dir:
+        key = os.path.abspath(_expand(str(repo_dir)))
+        repo_over = (section.get("repos") or {}).get(key)
+        if isinstance(repo_over, dict):
+            merged = _deep_merge(merged, repo_over)
+    return merged
 
 
 # ── internals ────────────────────────────────────────────────────────────────

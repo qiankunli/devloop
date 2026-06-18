@@ -1646,6 +1646,50 @@ def test_sync_pr_description_append_only():
         sgo.forge_for_repo = orig
 
 
+def test_code_policy_engine():
+    """变更策略引擎纵切：project(工具→Target) + codemodel(惰性解析改后全文) + LayerDepsRule(层级方向)。
+    现有 10 个 guard 尚未迁入，这里只验代码侧 lint-deps 这条新规则端到端跑通。"""
+    from lib import rules
+    from lib.core import engine
+    from lib.core.domain import Command, FileChange
+
+    arch = {"enabled": True, "layers": {"/dao/": "dao", "/service/": "service"},
+            "order": ["api", "service", "dao", "model"]}
+
+    class Ctx:  # 假 PolicyContext：代码侧规则只用到 .arch
+        def __init__(self, a=None):
+            self.arch = arch if a is None else a
+
+    def evl(inp, ctx=None):
+        return engine.evaluate(engine.project(inp), ctx or Ctx(), rules.REGISTRY)
+
+    # project：工具 → Target 类型 + mode；Bash 拆多条 Command
+    w = engine.project(_hook_input("Write", {"tool_input": {"file_path": "/r/a.py", "content": ""}}))
+    assert isinstance(w.targets[0], FileChange) and w.targets[0].mode == "write"
+    e = engine.project(_hook_input("Edit", {"tool_input": {"file_path": "/r/a.py", "old_string": "a", "new_string": "b"}}))
+    assert e.targets[0].mode == "edit"
+    bash = engine.project(_hook_input("Bash", {"cwd": "/r", "tool_input": {"command": "cd x && go build ./..."}}))
+    assert len(bash.targets) == 2 and all(isinstance(t, Command) for t in bash.targets)
+
+    # Write content：dao import service → DENY；service import dao → allow
+    dao = _hook_input("Write", {"tool_input": {"file_path": "/r/internal/dao/u.py", "content": "from app.service import x\n"}})
+    assert evl(dao).action == "deny"
+    svc = _hook_input("Write", {"tool_input": {"file_path": "/r/internal/service/u.py", "content": "from app.dao import x\n"}})
+    assert evl(svc).action == "allow"
+
+    # 非分层路径 → allow；arch 关 → allow；语法错 → allow（fail-open）
+    assert evl(_hook_input("Write", {"tool_input": {"file_path": "/r/util/u.py", "content": "from app.service import x\n"}})).action == "allow"
+    assert evl(dao, Ctx({"enabled": False})).action == "allow"
+    assert evl(_hook_input("Write", {"tool_input": {"file_path": "/r/internal/dao/u.py", "content": "def (:\n"}})).action == "allow"
+
+    # Edit "改后全文"：盘上无 import，edit 插入 import service → 命中（验证读盘+套用替换，而非只看片段）
+    R = "/tmp/dlut_codepolicy"; shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/internal/dao", exist_ok=True)
+    fp = f"{R}/internal/dao/u.py"; Path(fp).write_text("x = 1\n")
+    ed = _hook_input("Edit", {"tool_input": {"file_path": fp, "old_string": "x = 1", "new_string": "from app.service import y\nx = 1"}})
+    assert evl(ed).action == "deny"
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = []
