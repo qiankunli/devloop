@@ -1100,6 +1100,12 @@ def test_cmdparse_command_invocations():
     # run_dir 把 cd 叠在 base 上
     assert Inv(argv=["uv"], cd="sub").run_dir("/ws") == Path("/ws/sub")
     assert Inv(argv=["uv"], cd=None).run_dir("/ws") == Path("/ws")
+    # go/make 自带的 `-C <dir>` 同 git -C：chdir 后再跑,run_dir 要据此落到真目录(否则在根上误拦)
+    assert ci("go -C /repo build ./...")[0].dash_c == "/repo"
+    assert ci("go -C /repo build ./...")[0].run_dir("/ws") == Path("/repo")
+    assert ci("make -C sub test")[0].run_dir("/ws") == Path("/ws/sub")
+    assert ci("make -Csub test")[0].run_dir("/ws") == Path("/ws/sub")   # make 粘连写法
+    assert ci("go build ./...")[0].dash_c is None
 
 
 def test_workspace_cwd_guard_cd_scope():
@@ -1119,6 +1125,10 @@ def test_workspace_cwd_guard_cd_scope():
     assert at_root("cd sub && uv run pytest") is None   # cd 进子项目 → 放行
     assert at_root("(cd sub); uv run pytest")           # 子 shell cd 不外泄 → 仍拦(修复点)
     assert at_root("git status") is None                # 非子项目命令 → 放行
+    # go/make 的 `-C <dir>` 自身就 chdir 到真仓,不在根上跑 → 放行(此前误拦,只认 git -C)
+    assert at_root("go -C /repo build ./...") is None
+    assert at_root("make -C sub build") is None
+    assert at_root("go build ./...")                    # 无 -C 的裸 go 在根 → 仍拦
     # 不在 workspace 根 → 与本守卫无关
     assert guard.decide(_hook_input("Bash", {"cwd": "/tmp", "tool_input": {"command": "uv run x"}})) is None
 
