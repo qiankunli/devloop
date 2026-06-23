@@ -6,8 +6,10 @@
     "gitlab.example.com": { "type": "gitlab", "token": "", "api_host": "" }
   },
 
-  "precommit": {
-    "default": { "commit_gate_lint": false },
-    "repos": {}
+  "lifecycle": {
+    "default": { "pre_commit": [], "post_commit": [], "pre_mr": [], "post_mr": [] },
+    "repos": {
+      "/abs/repo": { "pre_commit": ["lint", "test"] }
+    }
   }
 }

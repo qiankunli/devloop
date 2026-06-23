@@ -47,7 +47,13 @@ from pathlib import Path
 _DEFAULTS: dict = {
     "workspaces": [],
     "forges": {},
-    "precommit": {"default": {}, "repos": {}},
+    "precommit": {"default": {}, "repos": {}},   # deprecated：lint commit-gate，已收编进 lifecycle
+    # devops 生命周期 hook：相位 → [hook 名]。opt-in，默认全空 = dispatch 每相位 no-op、零行为
+    # 变化。lib.lifecycle.dispatch 读它；旧 precommit.commit_gate_lint 由 precommit_gate 守卫兼容读。
+    "lifecycle": {
+        "default": {"pre_commit": [], "post_commit": [], "pre_mr": [], "post_mr": []},
+        "repos": {},
+    },
     # 代码策略引擎的架构/层级规则。enabled 默认 False：opt-in per repo，装上不按猜的层映射误拦。
     "arch": {
         "default": {
@@ -159,6 +165,20 @@ def forge_token(host: str, provider: str, repo_dir: str | Path | None = None) ->
 
 def precommit(repo_dir: str | Path | None = None) -> dict:
     return load(repo_dir).get("precommit") or {}
+
+
+def lifecycle(repo_dir: str | Path | None = None) -> dict:
+    """已解析的 devops 生命周期 hook 配置：section 的 `default` 叠上 `repos[<repo_dir 绝对路径>]`，
+    返回 `phase → [hook 名]`。`lib.lifecycle.dispatch` 读它决定每个相位跑哪些 hook。
+    opt-in：默认全空 → 每相位 no-op、零行为变化。"""
+    section = load(repo_dir).get("lifecycle") or {}
+    merged = dict(section.get("default") or {})
+    if repo_dir:
+        key = os.path.abspath(_expand(str(repo_dir)))
+        repo_over = (section.get("repos") or {}).get(key)
+        if isinstance(repo_over, dict):
+            merged = _deep_merge(merged, repo_over)
+    return merged
 
 
 def arch(repo_dir: str | Path | None = None) -> dict:

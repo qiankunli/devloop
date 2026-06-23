@@ -33,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
-from lib import cli, git_state, gitcmd, repo_resolve  # noqa: E402
+from lib import cli, git_state, gitcmd, lifecycle, repo_resolve  # noqa: E402
 from lib.context import RepoContext, gate, prstate, record_active_repo  # noqa: E402
 from lib.forge import Forge, ForgeError, PullRequest, forge_for_repo, pr_label  # noqa: E402
 
@@ -510,6 +510,24 @@ def _build_parser() -> cli.ArgParser:
     return ap
 
 
+def run_lifecycle_gate(repo: str, phase: str, plan: list[str]) -> None:
+    """跑某相位的 lifecycle hook（lint/test 等 inline gate），把结果写进 PLAN。
+
+    配置为空 → 静默 no-op（opt-in，零行为变化）。任一 gate 失败 → 抛 SmartError 中止本次
+    git 动作。pre_commit 故意排在 staging 之前：lint 的 `make fix` 改的文件要被随后的
+    stage 收进同一个 commit。signal hook 的后台下游（`res.to_launch`）由 MR2 在此 emit
+    `ARMED:` 行交给 agent 用 run_in_background 起——MR1 无 signal hook，恒空。
+    """
+    res = lifecycle.dispatch(phase, repo)
+    if not res.results:
+        return
+    plan.append(f"{phase}: " + ", ".join(f"{r.name} {'✓' if r.ok else '✗'}" for r in res.results))
+    if not res.proceed:
+        detail = "\n".join(f"    [{r.name}] {r.summary}" for r in res.failures)
+        step = "commit" if phase == "pre_commit" else "MR"
+        raise SmartError(f"{phase} gate failed — aborting before {step}:\n{detail}")
+
+
 def main(argv: list[str]) -> int:
     ap = _build_parser()
     ns = ap.parse_args(argv)
@@ -532,7 +550,10 @@ def main(argv: list[str]) -> int:
     ]
     try:
         branch = prepare_branch(intent, gv, plan)
+        run_lifecycle_gate(intent.repo, "pre_commit", plan)   # before staging: lint's `make fix` lands in this commit
         staged = stage_and_commit(intent, plan)
+        if intent.mode == "mr":
+            run_lifecycle_gate(intent.repo, "pre_mr", plan)   # before push/MR (default empty; opt-in per repo)
         publish(intent, branch, staged, plan)
         RepoContext.refresh_branch(intent.repo)
     except SmartError as e:
