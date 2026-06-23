@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """`/lint` 的 CLI 入口：解析 repo，跑 `make fix` + lint target，通过则盖 lint 戳。
 
-实际逻辑（target 选择、warm-cache / CI-entry drift 的处理、盖戳）在 `lib.checks.lint`——
-和 lifecycle 的 pre_commit gate 共用同一段，避免漂移。本脚本只做 repo 解析 + 实时输出 +
-退出码。只有 `make fix` 能改文件，从不手改代码来满足 linter。
+lint 逻辑见 `lib.lifecycle.checks.lint`（与 lifecycle 的 pre_commit gate 是同一段）。本脚本
+只做 repo 解析 + 实时输出 + 退出码。只有 `make fix` 能改文件，从不手改代码来满足 linter。
 
 Usage: run_fixlint.py [--repo R | R]   (R = 路径或 workspace 子项目名；
 默认 = cwd 的 repo，回退到 workspace 最近活跃 repo)
@@ -17,8 +16,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
-from lib import checks, cli  # noqa: E402
+from lib import cli  # noqa: E402
 from lib.context import record_active_repo  # noqa: E402
+from lib.lifecycle import checks  # noqa: E402
 
 
 def main(argv: list[str]) -> int:

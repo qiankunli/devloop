@@ -739,7 +739,7 @@ def test_version_bump_mix_hint():
 def test_pick_lint_target():
     """lint 戳记对齐 CI 入口:有 lint-ci(通常 uv sync 锁定工具链)优先于 lint,
     消灭'本地 lint 绿、CI lint-ci 红'的版本漂移。"""
-    from lib import checks as rf   # lint/test 逻辑已抽到 lib.checks（CLI + lifecycle 共用）
+    from lib.lifecycle import checks as rf   # lint/test handler（CLI + pre_commit gate 共用）
     D = "/tmp/dlut_lint"
     shutil.rmtree(D, ignore_errors=True); os.makedirs(D)
     Path(f"{D}/Makefile").write_text("lint:\n\ttrue\n")
@@ -1222,8 +1222,8 @@ def test_workspace_registry_user_level():
             os.environ["DEVLOOP_CONFIG_DIR"] = old_env
 
 
-def test_unified_config_forges_and_precommit():
-    """config.json 统一承载 workspaces / forges(host→token/type) / precommit;token 按
+def test_unified_config_forges_and_lifecycle():
+    """config.json 统一承载 workspaces / forges(host→token/type) / lifecycle;token 按
     provider 的约定 env 覆写 config,update 保留其它段。"""
     from lib import config
     W = "/tmp/dlut_cfg"
@@ -1238,21 +1238,21 @@ def test_unified_config_forges_and_precommit():
             '{"workspaces": ["/tmp/ws"],'
             ' "forges": {"github.com": {"type": "github", "token": "gh-config"},'
             '            "gitlab.example.com": {"type": "gitlab", "token": "gl-config"}},'
-            ' "precommit": {"default": {"commit_gate_lint": true}, "repos": {}}}'
+            ' "lifecycle": {"default": {"pre_commit": ["lint"]}, "repos": {}}}'
         )
         assert config.forge_entry("github.com")["type"] == "github"
         assert config.forge_token("github.com", "github") == "gh-config"
         assert config.forge_token("gitlab.example.com", "gitlab") == "gl-config"
-        assert config.precommit()["default"]["commit_gate_lint"] is True
+        assert config.lifecycle()["pre_commit"] == ["lint"]
         # provider 约定 env 覆写 config 里的 token
         os.environ["GITHUB_TOKEN"] = "gh-env"
         assert config.forge_token("github.com", "github") == "gh-env"
         os.environ["GITLAB_TOKEN"] = "gl-env"
         assert config.forge_token("gitlab.example.com", "gitlab") == "gl-env"
-        # update 改 workspaces 不丢 forges/precommit
+        # update 改 workspaces 不丢 forges/lifecycle
         config.set_workspaces(["/tmp/ws-new"])
         assert config.forge_entry("gitlab.example.com")["type"] == "gitlab"
-        assert config.precommit()["default"]["commit_gate_lint"] is True
+        assert config.lifecycle()["pre_commit"] == ["lint"]
     finally:
         os.environ.pop("GITHUB_TOKEN", None)
         for k, v in (("DEVLOOP_CONFIG_DIR", old_env), ("GITLAB_TOKEN", old_gl), ("GITHUB_TOKEN", old_gh)):
@@ -1729,22 +1729,16 @@ def test_migrated_command_rules_parity():
     assert d("PYTHONPATH=. pytest", cwd=T) is None              # env 前缀
     assert d("make test", cwd=T) is None
 
-    # precommit_gate：lint 被纳入 pre_commit gate + lint 从未跑 → 拦 commit。
+    # precommit_gate：lint 在 lifecycle.pre_commit + lint 从未跑 → 拦 commit。
     G = "/tmp/dlut_pcg"; shutil.rmtree(G, ignore_errors=True); os.makedirs(f"{G}/.devloop")
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
     _git(G, "checkout", "-q", "-b", "feat/x")
     gabs = str(Path(G).resolve())
-    # (a) 旧 precommit.commit_gate_lint 兼容路径仍拦
-    Path(f"{G}/.devloop/config.json").write_text(
-        _json.dumps({"precommit": {"repos": {gabs: {"commit_gate_lint": True}}}}))
-    RepoContext.refresh_all(G)
-    assert "Refusing `git commit`" in (d("git commit -m x", cwd=G) or "")
-    # (b) 新 lifecycle.pre_commit 含 lint 同样拦
     Path(f"{G}/.devloop/config.json").write_text(
         _json.dumps({"lifecycle": {"repos": {gabs: {"pre_commit": ["lint"]}}}}))
     RepoContext.refresh_all(G)
     assert "Refusing `git commit`" in (d("git commit -m x", cwd=G) or "")
-    # (c) lint 不在 pre_commit → 不拦（opt-in 默认放行）
+    # lint 不在 pre_commit → 不拦（opt-in 默认放行）
     Path(f"{G}/.devloop/config.json").write_text(_json.dumps({"lifecycle": {"repos": {gabs: {"pre_commit": ["test"]}}}}))
     RepoContext.refresh_all(G)
     assert d("git commit -m x", cwd=G) is None

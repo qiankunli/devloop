@@ -16,9 +16,9 @@ the external dependencies (which forge, which token) are explicit in one place:
           "api_host": ""         # optional: real API host when origin is an SSH alias / mirror
         }
       },
-      "precommit": {            # per-repo lint commit-gate (default off)
-        "default": {"commit_gate_lint": false},
-        "repos":   {"/abs/repo": {"commit_gate_lint": true}}
+      "lifecycle": {            # devops lifecycle hooks per phase (opt-in, default empty)
+        "default": {"pre_commit": [], "post_commit": [], "pre_mr": [], "post_mr": []},
+        "repos":   {"/abs/repo": {"pre_commit": ["lint", "test"]}}
       }
     }
 
@@ -43,13 +43,12 @@ import os
 from pathlib import Path
 
 # Section defaults — every load() deep-merges real layers over these, so a partial
-# config (e.g. only `workspaces`) still yields sane `forges` / `precommit`.
+# config (e.g. only `workspaces`) still yields sane `forges` / `lifecycle`.
 _DEFAULTS: dict = {
     "workspaces": [],
     "forges": {},
-    "precommit": {"default": {}, "repos": {}},   # deprecated：lint commit-gate，已收编进 lifecycle
     # devops 生命周期 hook：相位 → [hook 名]。opt-in，默认全空 = dispatch 每相位 no-op、零行为
-    # 变化。lib.lifecycle.dispatch 读它；旧 precommit.commit_gate_lint 由 precommit_gate 守卫兼容读。
+    # 变化。lib.lifecycle.dispatch 读它决定每个相位跑哪些 hook。
     "lifecycle": {
         "default": {"pre_commit": [], "post_commit": [], "pre_mr": [], "post_mr": []},
         "repos": {},
@@ -161,10 +160,6 @@ def forge_token(host: str, provider: str, repo_dir: str | Path | None = None) ->
             return v.strip()
     tok = (forge_entry(host, repo_dir).get("token") or "").strip()
     return tok or None
-
-
-def precommit(repo_dir: str | Path | None = None) -> dict:
-    return load(repo_dir).get("precommit") or {}
 
 
 def lifecycle(repo_dir: str | Path | None = None) -> dict:

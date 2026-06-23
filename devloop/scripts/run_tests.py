@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """`/test` 的 CLI 入口：解析 repo，跑 `make test`，通过则盖 test 戳。
 
-实际逻辑在 `lib.checks.test`——和 lifecycle 的 pre_commit / pre_mr gate 共用同一段。
+test 逻辑见 `lib.lifecycle.checks.test`（与 lifecycle 的 pre_commit / pre_mr gate 是同一段）。
 本脚本只做 repo 解析 + 实时输出 + 退出码，并把 `--` 之后的额外参数透传给 make 以手动收窄
 范围（按改动收敛 test 选择是后续优化）。
 
@@ -17,8 +17,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
-from lib import checks, cli  # noqa: E402
+from lib import cli  # noqa: E402
 from lib.context import record_active_repo  # noqa: E402
+from lib.lifecycle import checks  # noqa: E402
 
 
 def main(argv: list[str]) -> int:

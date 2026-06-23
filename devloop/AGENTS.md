@@ -49,8 +49,9 @@ devloop/
 │   │   │   └── __init__.py        #     resolve_forge（origin+config+env 一处合一）+ forge_for_repo 分发
 │   │   ├── cmdtree/               #   ★命令解析子系统（可插拔后端）：base（中立命令树 IR + Parser 接口）+ parable（Parable AST→IR 后端）+ cmdparse（在 IR 上走 commands/git_invocations/cd-scope 的 walker+facade）；换 parser=改 cmdparse 一行 import
 │   │   ├── _vendor/               #   ★第三方原样 vendor（parable.py MIT + LICENSE/PROVENANCE）；永不手改
-│   │   ├── lifecycle.py           #   ★devops 生命周期 hook facade（pre_commit/post_commit/pre_mr/post_mr）：并发 join + 聚合
-│   │   ├── checks.py              #     lint/test 内置 inline-gate handler（与 /lint /test 共用，单一事实源）
+│   │   ├── lifecycle/             #   ★devops 生命周期 hook 子系统（pre_commit/post_commit/pre_mr/post_mr）
+│   │   │   ├── base.py            #     facade：dispatch 并发 join + 聚合 + 内置注册表
+│   │   │   └── checks.py          #     内置 inline-gate handler（lint/test，与 /lint /test 共用）
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
 │   │   └── context/               #   .devloop/ 状态总线，按 owner 粒度分模块：base / session / repo / workspace
