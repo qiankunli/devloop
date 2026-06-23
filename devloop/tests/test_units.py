@@ -739,7 +739,7 @@ def test_version_bump_mix_hint():
 def test_pick_lint_target():
     """lint 戳记对齐 CI 入口:有 lint-ci(通常 uv sync 锁定工具链)优先于 lint,
     消灭'本地 lint 绿、CI lint-ci 红'的版本漂移。"""
-    rf = _load_script("run_fixlint")
+    from lib.lifecycle import checks as rf   # lint/test handler（CLI + pre_commit gate 共用）
     D = "/tmp/dlut_lint"
     shutil.rmtree(D, ignore_errors=True); os.makedirs(D)
     Path(f"{D}/Makefile").write_text("lint:\n\ttrue\n")
@@ -1222,8 +1222,8 @@ def test_workspace_registry_user_level():
             os.environ["DEVLOOP_CONFIG_DIR"] = old_env
 
 
-def test_unified_config_forges_and_precommit():
-    """config.json 统一承载 workspaces / forges(host→token/type) / precommit;token 按
+def test_unified_config_forges_and_lifecycle():
+    """config.json 统一承载 workspaces / forges(host→token/type) / lifecycle;token 按
     provider 的约定 env 覆写 config,update 保留其它段。"""
     from lib import config
     W = "/tmp/dlut_cfg"
@@ -1238,21 +1238,21 @@ def test_unified_config_forges_and_precommit():
             '{"workspaces": ["/tmp/ws"],'
             ' "forges": {"github.com": {"type": "github", "token": "gh-config"},'
             '            "gitlab.example.com": {"type": "gitlab", "token": "gl-config"}},'
-            ' "precommit": {"default": {"commit_gate_lint": true}, "repos": {}}}'
+            ' "lifecycle": {"default": {"pre_commit": ["lint"]}, "repos": {}}}'
         )
         assert config.forge_entry("github.com")["type"] == "github"
         assert config.forge_token("github.com", "github") == "gh-config"
         assert config.forge_token("gitlab.example.com", "gitlab") == "gl-config"
-        assert config.precommit()["default"]["commit_gate_lint"] is True
+        assert config.lifecycle()["pre_commit"] == ["lint"]
         # provider 约定 env 覆写 config 里的 token
         os.environ["GITHUB_TOKEN"] = "gh-env"
         assert config.forge_token("github.com", "github") == "gh-env"
         os.environ["GITLAB_TOKEN"] = "gl-env"
         assert config.forge_token("gitlab.example.com", "gitlab") == "gl-env"
-        # update 改 workspaces 不丢 forges/precommit
+        # update 改 workspaces 不丢 forges/lifecycle
         config.set_workspaces(["/tmp/ws-new"])
         assert config.forge_entry("gitlab.example.com")["type"] == "gitlab"
-        assert config.precommit()["default"]["commit_gate_lint"] is True
+        assert config.lifecycle()["pre_commit"] == ["lint"]
     finally:
         os.environ.pop("GITHUB_TOKEN", None)
         for k, v in (("DEVLOOP_CONFIG_DIR", old_env), ("GITLAB_TOKEN", old_gl), ("GITHUB_TOKEN", old_gh)):
@@ -1729,14 +1729,80 @@ def test_migrated_command_rules_parity():
     assert d("PYTHONPATH=. pytest", cwd=T) is None              # env 前缀
     assert d("make test", cwd=T) is None
 
-    # precommit_gate：项目级 config 开 gate + lint 从未跑 → 拦 commit
+    # precommit_gate：lint 在 lifecycle.pre_commit + lint 从未跑 → 拦 commit。
     G = "/tmp/dlut_pcg"; shutil.rmtree(G, ignore_errors=True); os.makedirs(f"{G}/.devloop")
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
     _git(G, "checkout", "-q", "-b", "feat/x")
+    gabs = str(Path(G).resolve())
     Path(f"{G}/.devloop/config.json").write_text(
-        _json.dumps({"precommit": {"repos": {str(Path(G).resolve()): {"commit_gate_lint": True}}}}))
+        _json.dumps({"lifecycle": {"repos": {gabs: {"pre_commit": ["lint"]}}}}))
     RepoContext.refresh_all(G)
-    assert "precommit gate" in (d("git commit -m x", cwd=G) or "")
+    assert "Refusing `git commit`" in (d("git commit -m x", cwd=G) or "")
+    # lint 不在 pre_commit → 不拦（opt-in 默认放行）
+    Path(f"{G}/.devloop/config.json").write_text(_json.dumps({"lifecycle": {"repos": {gabs: {"pre_commit": ["test"]}}}}))
+    RepoContext.refresh_all(G)
+    assert d("git commit -m x", cwd=G) is None
+
+
+def test_lifecycle_dispatch():
+    """facade 机制：并发 join + 聚合。gate fail / 异常 fail-closed / 未知 hook 可见 /
+    signal hook 不挡且其 relay 进 to_launch / 空配置 no-op / 未知相位抛。"""
+    from lib import lifecycle as lc
+    HR, BG = lc.HookResult, lc.BackgroundSpec
+
+    reg = {
+        "ok":   lambda repo: HR("ok", ok=True, summary="fine"),
+        "bad":  lambda repo: HR("bad", ok=False, summary="boom"),
+        "boom": lambda repo: (_ for _ in ()).throw(RuntimeError("kaboom")),
+        "sig":  lambda repo: HR("sig", ok=True, relay=BG("sig", ["run", "x"])),
+    }
+
+    # 全过 → proceed；ex.map 保序
+    r = lc.dispatch("pre_commit", "/r", names=["ok", "sig"], registry=reg)
+    assert r.proceed and [x.name for x in r.results] == ["ok", "sig"]
+    # signal hook 不挡，其 relay 进 to_launch
+    assert [b.name for b in r.to_launch] == ["sig"]
+    # inline gate 失败 → 不放行
+    r = lc.dispatch("pre_commit", "/r", names=["ok", "bad"], registry=reg)
+    assert not r.proceed and [x.name for x in r.failures] == ["bad"]
+    # handler 抛异常 → fail-closed
+    r = lc.dispatch("pre_commit", "/r", names=["boom"], registry=reg)
+    assert not r.proceed and "kaboom" in r.results[0].summary
+    # 未知 hook 名 → 可见的 ok=False，不静默吞
+    r = lc.dispatch("pre_commit", "/r", names=["nope"], registry=reg)
+    assert not r.proceed and "unknown" in r.results[0].summary
+    # 空配置 → no-op、proceed
+    assert lc.dispatch("pre_commit", "/r", names=[]).proceed
+    # 未知相位 → 抛
+    try:
+        lc.dispatch("nope", "/r", names=["ok"], registry=reg)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    # 内置注册表解析得到可调用 handler
+    assert callable(lc.resolve_handler("lint")) and lc.resolve_handler("nope") is None
+
+
+def test_lifecycle_config_layering():
+    """config.lifecycle()：default 全空（opt-in），repo 级 .devloop/config.json 覆盖该 repo 的相位。"""
+    import json as _json
+    from lib import config
+    W = "/tmp/dlut_lcfg"; shutil.rmtree(W, ignore_errors=True); os.makedirs(f"{W}/cfg"); os.makedirs(f"{W}/repo/.devloop")
+    old = os.environ.get("DEVLOOP_CONFIG_DIR")
+    os.environ["DEVLOOP_CONFIG_DIR"] = f"{W}/cfg"   # 隔离全局，免被本机 ~/.devloop 干扰
+    try:
+        assert (config.lifecycle(f"{W}/repo").get("pre_commit") or []) == []   # 默认空
+        # key 用 abspath（非 resolve）对齐 config.lifecycle 的查找：macOS /tmp 是 /private/tmp
+        # 软链，resolve 会解开导致 key 不匹配。
+        rabs = os.path.abspath(f"{W}/repo")
+        Path(f"{W}/repo/.devloop/config.json").write_text(
+            _json.dumps({"lifecycle": {"repos": {rabs: {"pre_commit": ["lint", "test"]}}}}))
+        assert config.lifecycle(f"{W}/repo")["pre_commit"] == ["lint", "test"]
+    finally:
+        if old is None:
+            os.environ.pop("DEVLOOP_CONFIG_DIR", None)
+        else:
+            os.environ["DEVLOOP_CONFIG_DIR"] = old
 
 
 def _run_all():
