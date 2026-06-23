@@ -51,7 +51,8 @@ devloop/
 │   │   ├── _vendor/               #   ★第三方原样 vendor（parable.py MIT + LICENSE/PROVENANCE）；永不手改
 │   │   ├── lifecycle/             #   ★devops 生命周期 hook 子系统（pre_commit/post_commit/pre_mr/post_mr）
 │   │   │   ├── base.py            #     facade：dispatch 并发 join + 聚合 + 内置注册表
-│   │   │   └── checks.py          #     内置 inline-gate handler（lint/test，与 /lint /test 共用）
+│   │   │   ├── checks.py          #     内置 inline-gate handler（lint/test，与 /lint /test 共用）
+│   │   │   └── review.py          #     code-review signal handler（armed 后台 ocr，返回 relay）
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
 │   │   └── context/               #   .devloop/ 状态总线，按 owner 粒度分模块：base / session / repo / workspace
@@ -64,7 +65,7 @@ devloop/
 │   ├── posttool_git_refresh.py / posttool_track_edits.py   # PostToolUse 状态写入
 │   ├── sessionend_release.py      # SessionEnd：释放本 session 的 owner 锁（正常退出路径）
 │   └── pretool_*.py               # 10 个硬拦截（guard harness；含 checkout/edit owner 锁）
-├── scripts/                        # smart_git_ops + smart_*.sh / pr.py（show/list/update/close；create 归 gcampr）/ run_fixlint / run_tests / poll_pr_status / init_*
+├── scripts/                        # smart_git_ops + smart_*.sh / pr.py（show/list/update/close；create 归 gcampr）/ run_fixlint / run_tests / run_review（后台 ocr→review.json）/ poll_pr_status / init_*
 ├── monitors/monitors.json          # ★PR-sweep 后台轮询（替代 hook 心跳 scheduler）
 ├── commands/                       # slash：enter / gcam / gcamp / gcampr / lint / test
 ├── skills/                         # git-ops / gcam / gcamp / gcampr / fix-lint / run-test
@@ -136,6 +137,7 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 - 一轮循环端到端流程（事件 → hook/script → 状态）：[`docs/loop.md`](./docs/loop.md)
 - 外部事件驱动的会话续跑（感知 → 唤醒 → 按 auto-mode 决策，含设计/实现分层）：[`docs/event-driven-resume.md`](./docs/event-driven-resume.md)
 - devops 生命周期 hook（pre_commit/post_commit/pre_mr/post_mr，统一 lint/test/review 等的触发；hook 皆阻塞，异步=发信号+既有 wake）：[`docs/lifecycle-hooks.md`](./docs/lifecycle-hooks.md)
+- 提交期 code-review（signal hook：commit 期触发、后台跑 ocr、不挡 commit、跑完唤醒汇报）：[`docs/code-review.md`](./docs/code-review.md)
 - 使用 / 安装 / 配置：[`README.md`](./README.md)
 - 共享术语（repo_dir / repo_code_dir / 保护分支 / PR 模型 / `<PLUGIN_ROOT>`）：[`CONCEPTS.md`](./CONCEPTS.md)
 - 仓库级（marketplace / 多 CLI）：[`../AGENTS.md`](../AGENTS.md)

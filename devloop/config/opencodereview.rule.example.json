@@ -1,0 +1,17 @@
+{
+  "_comment": "Open Code Review (ocr) 的项目规则模板。复制到 <repo>/.opencodereview/rule.json 后按本仓约定增删。path 为 glob，首个匹配命中。这里只放可积累的稳定业务约定，让 ocr 不靠运气。",
+  "rules": [
+    {
+      "path": "**/*.go",
+      "rule": "访问 DB / Redis / 远端 HTTP 等外部资源必须显式配置超时与容量（连接池、并发上限、读写超时），不可依赖库默认值——发现裸用默认值要标记。SQL 用通用语法，避开方言 / 高版本特性（ON DUPLICATE KEY UPDATE、DATE_ADD/INTERVAL、ON CONFLICT、各家窗口函数差异）。检查分层：业务编排 / 事务应在 service 层，单表 CRUD 在 dao 层，model 不应承载业务逻辑——越层调用要标记。"
+    },
+    {
+      "path": "**/*.py",
+      "rule": "访问 DB / Redis / 远端 HTTP 必须显式配超时与连接池 / 并发上限，不依赖默认值。UPSERT / 时间运算 / 复杂判断在语言侧做（ORM + datetime），不绑定 SQL 方言。新增公开函数 / 方法应校验必需参数；对外依赖配置应集中而非散落。"
+    },
+    {
+      "path": "**/*{mapper,dao}*.xml",
+      "rule": "检查 SQL 注入风险与未闭合标签；动态 SQL 的边界条件。此类宁可漏报不可误报。"
+    }
+  ]
+}

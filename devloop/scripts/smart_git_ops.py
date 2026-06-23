@@ -513,10 +513,14 @@ def _build_parser() -> cli.ArgParser:
 def run_lifecycle_gate(repo: str, phase: str, plan: list[str]) -> None:
     """跑某相位的 lifecycle hook（lint/test 等 inline gate），把结果写进 PLAN。
 
-    配置为空 → 静默 no-op（opt-in，零行为变化）。任一 gate 失败 → 抛 SmartError 中止本次
-    git 动作。pre_commit 故意排在 staging 之前：lint 的 `make fix` 改的文件要被随后的
-    stage 收进同一个 commit。signal hook 的后台下游（`res.to_launch`）由 MR2 在此 emit
-    `ARMED:` 行交给 agent 用 run_in_background 起——MR1 无 signal hook，恒空。
+    配置为空 → 静默 no-op（opt-in，零行为变化）。inline gate 失败 → 抛 SmartError 中止本次
+    git 动作。pre_commit 故意排在 staging 之前：lint 的 `make fix` 改的文件要被随后的 stage
+    收进同一个 commit。
+
+    signal hook（如 code-review）不挡，返回一个后台下游（`res.to_launch`）；本函数把它写成
+    PLAN 的 `ARMED:` 行——dispatch 自己**不能**起「跑完唤醒 session」的后台任务（subprocess
+    派生的子进程 harness 不跟踪），故交给 agent 读 PLAN 后用 run_in_background 起（见
+    docs/code-review.md）。
     """
     res = lifecycle.dispatch(phase, repo)
     if not res.results:
@@ -526,6 +530,8 @@ def run_lifecycle_gate(repo: str, phase: str, plan: list[str]) -> None:
         detail = "\n".join(f"    [{r.name}] {r.summary}" for r in res.failures)
         step = "commit" if phase == "pre_commit" else "MR"
         raise SmartError(f"{phase} gate failed — aborting before {step}:\n{detail}")
+    for spec in res.to_launch:
+        plan.append(f"ARMED: {' '.join(spec.argv)}")
 
 
 def main(argv: list[str]) -> int:

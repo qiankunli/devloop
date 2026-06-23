@@ -12,3 +12,5 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/smart_gcamp.sh" --message "<commit message>"
 ```
 
 Same rules as `/gcampr` (no `cd` prefix needed — `--repo` targets a subproject; preflight `--branch` on PROTECTED/INACTIVE branches; explicit `--files` or tracked-only staging; never `git add -A`; short subject + detail body message shape). Trust the `PLAN:` banner. This does **not** create a PR/MR — but if the branch has an in-flight (open) PR/MR, the message's body is appended to its description automatically.
+
+If the `PLAN:` shows `ARMED:` line(s) and a commit was made, launch each with Bash `run_in_background: true` (a non-blocking background code-review); when it finishes it wakes the session — read `.devloop/review.json` and report by priority. See `docs/code-review.md`.

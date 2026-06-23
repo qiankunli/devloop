@@ -39,6 +39,15 @@ staging, auto-rebased onto the repo root; else tracked modifications — never
 quotes the MR's number / state / sha — so it's ground truth even right after you created the MR
 (a colleague can merge it in seconds); add `--branch` and re-run.
 
+## 提交后的后台 code-review（`ARMED:` 行）
+
+若 PLAN 里出现 `ARMED: <cmd>` 行（lifecycle 的 review signal hook 在 commit 期排了一个后台
+code-review），且这次**确实 committed**：把每条 `<cmd>` 用 **`run_in_background: true`** 起
+（不阻塞主窗口），告诉用户 review 在后台跑。它跑完会**自动唤醒会话**——届时读
+`.devloop/review.json`，按优先级（High/Medium/Low）汇报，**只有用户要求或处于 auto 模式才
+动手修**；review 是 advisory，从不代替人 merge。完整契约见 [`docs/code-review.md`](../../docs/code-review.md)。
+没有 `ARMED:` 行就什么都不用做（该 repo 没把 `review` 加进 `lifecycle.pre_commit`）。
+
 ## Inspect / manage a PR/MR — the `pr` CLI
 
 One provider-neutral, config-driven surface for **inspecting / managing an existing** PR/MR

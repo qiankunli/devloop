@@ -1805,6 +1805,35 @@ def test_lifecycle_config_layering():
             os.environ["DEVLOOP_CONFIG_DIR"] = old
 
 
+def test_lifecycle_review_signal_hook():
+    """code-review 是 signal hook：恒不挡（proceed），返回一个指向 run_review.py 的后台 relay。"""
+    from lib import lifecycle as lc
+    r = lc.dispatch("pre_commit", "/some/repo", names=["review"])   # 走真实 _BUILTIN 解析
+    assert r.proceed                                               # signal hook 永不挡
+    assert [s.name for s in r.to_launch] == ["review"]
+    spec = r.to_launch[0]
+    assert spec.argv[0] == "python3" and spec.argv[-2:] == ["--repo", "/some/repo"]
+    assert spec.argv[1].endswith("run_review.py")
+
+
+def test_run_review_skips_without_ocr():
+    """ocr 没装 → run_review 写 status=skipped、退出 0（advisory，从不报错/挡事）。"""
+    from lib.context import base
+    rr = _load_script("run_review")
+    G = "/tmp/dlut_rr"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
+    _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
+    Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
+    orig = rr.shutil.which
+    rr.shutil.which = lambda name: None          # 假装 ocr 不在 PATH
+    try:
+        rc = rr.main(["--repo", G])
+    finally:
+        rr.shutil.which = orig
+    assert rc == 0
+    seg = base.load_segment(G, "review")
+    assert seg and seg["status"] == "skipped" and "ocr" in seg["message"] and seg["count"] == 0
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = []
