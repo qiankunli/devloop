@@ -117,3 +117,6 @@ class GitLabForge(Forge):
             for d in discussions for n in d.get("notes", [])
             if not n.get("system")
         ]
+
+    def comment(self, number: int, body: str) -> None:
+        self.c.post(f"merge_requests/{number}/notes", {"body": body})

@@ -94,6 +94,10 @@ class _FakeForge(Forge):
     def comments(self, number):
         return [Comment(author="x", body="y")]
 
+    def comment(self, number, body):
+        self.posted = getattr(self, "posted", [])
+        self.posted.append((number, body))
+
 
 def _load_from(base, name):
     spec = importlib.util.spec_from_file_location(name, str(base / f"{name}.py"))
@@ -1817,7 +1821,7 @@ def test_lifecycle_config_layering():
 def test_lifecycle_review_signal_hook():
     """code-review 是 signal hook：恒不挡（proceed），返回一个指向 run_review.py 的后台 relay。"""
     from lib import lifecycle as lc
-    r = lc.dispatch("pre_commit", "/some/repo", names=["review"])   # 走真实 _BUILTIN 解析
+    r = lc.dispatch("post_mr", "/some/repo", names=["review"])   # 走真实 _BUILTIN 解析
     assert r.proceed                                               # signal hook 永不挡
     assert [s.name for s in r.to_launch] == ["review"]
     spec = r.to_launch[0]
@@ -1873,6 +1877,30 @@ def test_launch_background_relays():
     sgo.launch_background_relays([BackgroundSpec("review", ["python3", "-c", "pass"])], G, plan)
     assert any("launched in background" in p for p in plan)
     p2: list = []; sgo.launch_background_relays([], G, p2); assert p2 == []
+
+
+def test_forge_comment_endpoint():
+    """comment() 发到正确端点：gitlab → merge_requests/{n}/notes；github → issues/{n}/comments。"""
+    from lib.forge.github import GitHubForge
+    from lib.forge.gitlab import GitLabForge
+
+    class _Cap:
+        def __init__(self): self.calls = []
+        def post(self, path, body): self.calls.append((path, body)); return {"id": 1}
+
+    gl = GitLabForge("h", "o/r", "t"); gl.c = _Cap(); gl.comment(7, "hi")
+    assert gl.c.calls == [("merge_requests/7/notes", {"body": "hi"})]
+    gh = GitHubForge("api.github.com", "o", "r", "t"); gh.c = _Cap(); gh.comment(7, "hi")
+    assert gh.c.calls == [("issues/7/comments", {"body": "hi"})]
+
+
+def test_run_review_format_comment():
+    """MR 评论格式化：clean / findings+failed。"""
+    rr = _load_script("run_review")
+    assert "无 findings" in rr._format_comment([], 0, "origin/main..HEAD", "abc1234567")
+    out = rr._format_comment([{"path": "a.py", "start_line": 3, "end_line": 5, "content": "bug here"}],
+                             2, "origin/main..HEAD", "abc1234567")
+    assert "1 finding(s)" in out and "`a.py:3-5`" in out and "bug here" in out and "2 个文件未能 review" in out
 
 
 def _run_all():

@@ -96,3 +96,7 @@ class GitHubForge(Forge):
             Comment(author=(n.get("user") or {}).get("login", "?"), body=n.get("body") or "")
             for n in notes
         ]
+
+    def comment(self, number: int, body: str) -> None:
+        # Conversation comment on the PR (= issue comment), same surface `comments()` reads.
+        self.c.post(f"issues/{number}/comments", {"body": body})

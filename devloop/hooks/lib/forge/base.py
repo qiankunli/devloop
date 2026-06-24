@@ -198,6 +198,11 @@ class Forge(abc.ABC):
     @abc.abstractmethod
     def comments(self, number: int) -> list[Comment]: ...
 
+    @abc.abstractmethod
+    def comment(self, number: int, body: str) -> None:
+        """Post a new comment on PR/MR `number` (GitHub issue comment / GitLab MR note).
+        Write primitive — used to attach code-review history to the MR."""
+
     def merge_readiness(self, number: int) -> MergeReadiness:
         """Why MR/PR `number` can't merge yet (CONFLICT / DISCUSSIONS_UNRESOLVED / …), or READY.
         A fetch primitive (peer of `description`), NOT a `PullRequest` field — see `MergeReadiness`.

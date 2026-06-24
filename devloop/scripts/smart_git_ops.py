@@ -571,14 +571,20 @@ def main(argv: list[str]) -> int:
         f"branch={gv.branch} target={intent.target}"
     ]
     try:
+        # signal hook（如 review）可配在任意相位（由 config 决定）；每相位的 relay 在它所「裹」的
+        # git 动作完成后 detach 起：pre/post_commit 在 commit 后、pre/post_mr 在 publish 后。
+        # review 的 MR 评论是机会性的——relay 跑时查到分支有开放 MR 就发，没有就只落 review.json。
         branch = prepare_branch(intent, gv, plan)
-        pre = run_lifecycle_gate(intent.repo, "pre_commit", plan)   # blocking gates (lint/test) + signal relays (review)
+        pre_c = run_lifecycle_gate(intent.repo, "pre_commit", plan)   # 必在 commit 前（lint/test 阻塞门禁）
         staged = stage_and_commit(intent, plan)
         if staged.committed:
-            launch_background_relays(pre.to_launch, intent.repo, plan)   # detach review post-commit (reviews new HEAD)
-        if intent.mode == "mr":
-            run_lifecycle_gate(intent.repo, "pre_mr", plan)   # before push/MR (default empty; opt-in per repo)
+            post_c = run_lifecycle_gate(intent.repo, "post_commit", plan)
+            launch_background_relays(pre_c.to_launch + post_c.to_launch, intent.repo, plan)
+        pre_m = run_lifecycle_gate(intent.repo, "pre_mr", plan) if intent.mode == "mr" else None  # 在 publish 前（阻塞门禁）
         publish(intent, branch, staged, plan)
+        if intent.mode == "mr":
+            post_m = run_lifecycle_gate(intent.repo, "post_mr", plan)   # MR 此刻已建好
+            launch_background_relays((pre_m.to_launch if pre_m else []) + post_m.to_launch, intent.repo, plan)
         RepoContext.refresh_branch(intent.repo)
     except SmartError as e:
         _banner(plan)

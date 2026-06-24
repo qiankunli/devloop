@@ -14,10 +14,9 @@ from lib.lifecycle.base import BackgroundSpec, HookResult
 
 
 def review(repo: str) -> HookResult:
+    """post_mr 用：detach 起 run_review——审整条 MR 的全量改动（origin/<target>..HEAD），
+    结果写 review.json + 发评论到该分支的 MR 上做历史。"""
     script = str(config.plugin_root() / "scripts" / "run_review.py")
-    spec = BackgroundSpec(
-        name="review",
-        argv=["python3", script, "--repo", repo],
-        note="ocr review HEAD → .devloop/review.json",
-    )
-    return HookResult("review", ok=True, summary="armed background code-review", relay=spec)
+    spec = BackgroundSpec("review", ["python3", script, "--repo", repo],
+                          note="ocr review origin/<target>..HEAD → .devloop/review.json + MR comment")
+    return HookResult("review", ok=True, summary="armed background MR code-review", relay=spec)
