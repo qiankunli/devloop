@@ -70,10 +70,15 @@ def main(argv: list[str]) -> int:
         return 0
 
     comments = out.get("comments") or []
+    warnings = out.get("warnings") or []
+    # ocr 的 subtask_error = 某文件没 review 成（LLM 超时 / token 超限 / 解析失败）。存下数量 + 原始
+    # warnings，让 completed_with_errors 这种「0 评论但其实出错」可被注入侧诚实呈现、可被诊断。
+    failed = sum(1 for w in warnings if isinstance(w, dict) and w.get("type") == "subtask_error")
     _write(repo, status=out.get("status", "success"), reviewed_sha=sha, comments=comments,
-           count=len(comments), message=out.get("message", ""), generated_at=base.now())
-    print(f"run_review: {len(comments)} comment(s) on {sha[:9]} → .devloop/review.json "
-          f"(status={out.get('status', 'success')}). Read it and report by priority.")
+           count=len(comments), failed=failed, warnings=warnings, message=out.get("message", ""),
+           generated_at=base.now())
+    print(f"run_review: {len(comments)} comment(s), {failed} file(s) failed on {sha[:9]} → "
+          f".devloop/review.json (status={out.get('status', 'success')})")
     return 0
 
 

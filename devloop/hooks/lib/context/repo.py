@@ -516,12 +516,19 @@ def _format_turn(ctx: "RepoContext") -> str:
     _rs, _sha = _rv.get("status"), (_rv.get("reviewed_sha") or "")[:9]
     if _rs == "running":
         lines.append(f"Review: running on {_sha} (.devloop/review.json)")
-    elif _rs in ("success", "completed_with_warnings", "completed_with_errors"):
-        _n = _rv.get("count", 0)
-        lines.append(f"Review: {_n} finding(s) on {_sha} — see .devloop/review.json (advisory)"
-                     if _n else f"Review: clean on {_sha} (no findings)")
-    elif _rs == "error":
-        lines.append("Review: errored — see .devloop/review.json")
+    elif _rs and _rs != "skipped":   # success / completed_with_(warnings|errors) / error；skipped 不出（噪声）
+        _n, _failed = _rv.get("count", 0), _rv.get("failed", 0)
+        # 诚实呈现：findings 与「N 文件 review 失败」分别报；都没有才是 clean。
+        # 关键修正：completed_with_errors+0 评论曾被误报成 clean——失败要看得见。
+        parts = []
+        if _n:
+            parts.append(f"{_n} finding(s)")
+        if _failed:
+            parts.append(f"{_failed} file(s) failed")
+        if _rs == "error":
+            parts.append("review errored")
+        summary = ", ".join(parts) if parts else "clean (no findings)"
+        lines.append(f"Review: {summary} on {_sha} — see .devloop/review.json")
 
     if ctx.prs:
         noun, sigil = vocab(ctx.provider)
