@@ -1854,9 +1854,14 @@ def test_review_injection_line():
 
     def seg(**kw): base.save_segment(R, "review", {"reviewed_sha": "abcdef1234567", "comments": [], "generated_at": 1.0, **kw})
     seg(status="success", count=2); assert "Review: 2 finding(s) on abcdef123" in ctx.turn_text()
-    seg(status="success", count=0); assert "Review: clean on abcdef123" in ctx.turn_text()
+    seg(status="success", count=0); assert "Review: clean (no findings) on abcdef123" in ctx.turn_text()
     seg(status="running", count=0); assert "Review: running on abcdef123" in ctx.turn_text()
     seg(status="skipped", count=0); assert "Review:" not in ctx.turn_text()   # 噪声不进注入
+    # 关键：completed_with_errors + 0 评论不再伪装 clean——失败诚实呈现
+    seg(status="completed_with_errors", count=0, failed=3); assert "Review: 3 file(s) failed on abcdef123" in ctx.turn_text()
+    seg(status="completed_with_errors", count=2, failed=1); t = ctx.turn_text()
+    assert "2 finding(s)" in t and "1 file(s) failed" in t
+    seg(status="error", count=0); assert "Review: review errored on abcdef123" in ctx.turn_text()
 
 
 def test_launch_background_relays():
