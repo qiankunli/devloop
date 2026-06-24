@@ -52,7 +52,7 @@ devloop/
 │   │   ├── lifecycle/             #   ★devops 生命周期 hook 子系统（pre_commit/post_commit/pre_mr/post_mr）
 │   │   │   ├── base.py            #     facade：dispatch 并发 join + 聚合 + 内置注册表
 │   │   │   ├── checks.py          #     内置 inline-gate handler（lint/test，与 /lint /test 共用）
-│   │   │   └── review.py          #     code-review signal handler（armed 后台 ocr，返回 relay）
+│   │   │   └── review.py          #     code-review signal handler（返回 relay；smart_git_ops commit 后 detach 起后台 ocr）
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
 │   │   └── context/               #   .devloop/ 状态总线，按 owner 粒度分模块：base / session / repo / workspace
@@ -137,7 +137,7 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 - 一轮循环端到端流程（事件 → hook/script → 状态）：[`docs/loop.md`](./docs/loop.md)
 - 外部事件驱动的会话续跑（感知 → 唤醒 → 按 auto-mode 决策，含设计/实现分层）：[`docs/event-driven-resume.md`](./docs/event-driven-resume.md)
 - devops 生命周期 hook（pre_commit/post_commit/pre_mr/post_mr，统一 lint/test/review 等的触发；hook 皆阻塞，异步=发信号+既有 wake）：[`docs/lifecycle-hooks.md`](./docs/lifecycle-hooks.md)
-- 提交期 code-review（signal hook：commit 期触发、后台跑 ocr、不挡 commit、跑完唤醒汇报）：[`docs/code-review.md`](./docs/code-review.md)
+- 提交期 code-review（signal hook：commit 后 smart_git_ops detach 起后台 ocr、不挡 commit、结果下一轮经状态总线 pull 注入浮现）：[`docs/code-review.md`](./docs/code-review.md)
 - 使用 / 安装 / 配置：[`README.md`](./README.md)
 - 共享术语（repo_dir / repo_code_dir / 保护分支 / PR 模型 / `<PLUGIN_ROOT>`）：[`CONCEPTS.md`](./CONCEPTS.md)
 - 仓库级（marketplace / 多 CLI）：[`../AGENTS.md`](../AGENTS.md)

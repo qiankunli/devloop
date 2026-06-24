@@ -509,6 +509,20 @@ def _format_turn(ctx: "RepoContext") -> str:
     stale = f", {v.edits_since_lint} edits since" if v.edits_since_lint else ""
     lines.append(f"Validation: lint={base.fmt_ts(v.last_lint_at)}{stale}; test={base.fmt_ts(v.last_test_at)}")
 
+    # 后台 code-review 的结果回流（pull）：run_review（由 smart_git_ops detach 起）跑完写
+    # review.json，这里在下一轮把它捎进上下文——advisory，只通报、不挟持。读 fresh（段由
+    # 外部进程写，RepoContext 视图可能滞后）；skipped 不出（无信号价值、避免噪声）。
+    _rv = base.load_segment(ctx.repo.repo_dir, "review") or {}
+    _rs, _sha = _rv.get("status"), (_rv.get("reviewed_sha") or "")[:9]
+    if _rs == "running":
+        lines.append(f"Review: running on {_sha} (.devloop/review.json)")
+    elif _rs in ("success", "completed_with_warnings", "completed_with_errors"):
+        _n = _rv.get("count", 0)
+        lines.append(f"Review: {_n} finding(s) on {_sha} — see .devloop/review.json (advisory)"
+                     if _n else f"Review: clean on {_sha} (no findings)")
+    elif _rs == "error":
+        lines.append("Review: errored — see .devloop/review.json")
+
     if ctx.prs:
         noun, sigil = vocab(ctx.provider)
         parts = []

@@ -39,16 +39,16 @@ staging, auto-rebased onto the repo root; else tracked modifications — never
 quotes the MR's number / state / sha — so it's ground truth even right after you created the MR
 (a colleague can merge it in seconds); add `--branch` and re-run.
 
-## 提交后的后台 code-review（`ARMED:` 行）
+## 后台 code-review（自动，无需你操作）
 
-若 PLAN 里出现 `ARMED: <cmd>` 行（lifecycle 的 review signal hook 在 commit 期排了一个后台
-code-review），且这次**确实 committed**：把每条 `<cmd>` 用 **`run_in_background: true`** 起
-（不阻塞主窗口），告诉用户 review 在后台跑。它跑完会**自动唤醒会话**——届时读
-`.devloop/review.json`，按优先级（High/Medium/Low）**简明通报，然后交还控制权**：这一步是
-「递信息」，**不打断 / 不挟持 session 的后续动作**，默认只通报不动手，仅用户明确要才修。
-review 端到端 advisory（不挡 commit、wake 也不夺控制权），从不代替人 merge。完整契约见
-[`docs/code-review.md`](../../docs/code-review.md)。没有 `ARMED:` 行就什么都不用做（该 repo 没把
-`review` 加进 `lifecycle.pre_commit`）。
+启用了 `review` 的仓,commit 后 smart_git_ops 会**自动 detach 起后台 ocr review**(PLAN 出
+`review: launched in background`)——**你不用起任何东西**。它跑完写 `.devloop/review.json`,
+结果**下一轮**经注入上下文的 `Review:` 行浮现(`running` / `N finding(s)` / `clean`)。
+
+看到 `Review: N finding(s)` 时:可读 `.devloop/review.json` 把问题按优先级(High/Medium/Low)
+**简明通报**——这是「递信息」,**不打断 / 不挟持 session 的后续动作**,默认只通报不动手,仅
+用户明确要才修。review 端到端 advisory(不挡 commit、不夺控制权),从不代替人 merge。完整
+契约见 [`docs/code-review.md`](../../docs/code-review.md)。
 
 ## Inspect / manage a PR/MR — the `pr` CLI
 

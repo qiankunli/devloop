@@ -43,6 +43,8 @@ def main(argv: list[str]) -> int:
     repo = resolved.git_root
     record_active_repo(repo)
     sha = _head_sha(repo)
+    # 先落一个 running 态：注入侧据此在下一轮显示「Review: running on <sha>」，跑完再覆盖。
+    _write(repo, status="running", reviewed_sha=sha, comments=[], count=0, message="review in progress", generated_at=base.now())
 
     if not shutil.which("ocr"):
         _write(repo, status="skipped", reviewed_sha=sha, comments=[], count=0,
