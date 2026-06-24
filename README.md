@@ -99,7 +99,7 @@ The marketplace layout is CLI-agnostic: a new CLI just needs a `.<cli>-plugin/ma
 
 | Plugin | What it is | README |
 |--------|-----------|--------|
-| `devloop` | Developer workflow: git/PR (GitHub + GitLab) + cwd-aware enter + lint/test gates + live state injection + execution-level hard intercepts (Claude-only) | [devloop/README.md](./devloop/README.md) |
+| `devloop` | Developer workflow: git/PR (GitHub + GitLab) + cwd-aware enter + lifecycle hooks (lint/test/code-review per phase) + live state injection + execution-level hard intercepts (Claude-only) | [devloop/README.md](./devloop/README.md) |
 | `example` | Placeholder demonstrating the multi-plugin marketplace structure | [example/README.md](./example/README.md) |
 
 ## Adding a plugin

@@ -99,7 +99,7 @@ marketplace 结构是 CLI 无关的：新 CLI 接入只需在仓库根加 `.<cli
 
 | Plugin | 简介 | README |
 |--------|------|--------|
-| `devloop` | 开发者工作流：git/PR（GitHub + GitLab）+ cwd-aware enter + lint/test gates + 实时状态注入 + 执行级硬拦截（Claude-only） | [devloop/README.md](./devloop/README.md) |
+| `devloop` | 开发者工作流：git/PR（GitHub + GitLab）+ cwd-aware enter + 生命周期 hook（按相位挂 lint/test/code-review）+ 实时状态注入 + 执行级硬拦截（Claude-only） | [devloop/README.md](./devloop/README.md) |
 | `example` | 占位 plugin，演示多 plugin marketplace 结构 | [example/README.md](./example/README.md) |
 
 ## 新增 plugin
