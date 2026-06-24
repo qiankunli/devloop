@@ -14,7 +14,7 @@ PHASES = ("pre_commit", "post_commit", "pre_mr", "post_mr")
 _BUILTIN: dict[str, str] = {
     "lint": "lib.lifecycle.checks:lint",
     "test": "lib.lifecycle.checks:test",
-    "review": "lib.lifecycle.review:review",
+    "review": "lib.lifecycle.review:review",   # post_mr：审全量 MR diff，写 review.json + 发评论到 MR
 }
 
 

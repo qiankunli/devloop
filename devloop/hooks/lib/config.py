@@ -18,7 +18,7 @@ the external dependencies (which forge, which token) are explicit in one place:
       },
       "lifecycle": {            # devops lifecycle hooks per phase (opt-in, default empty)
         "default": {"pre_commit": [], "post_commit": [], "pre_mr": [], "post_mr": []},
-        "repos":   {"/abs/repo": {"pre_commit": ["lint", "test"]}}
+        "repos":   {"/abs/repo": {"pre_commit": ["lint", "test"], "post_mr": ["review"]}}
       }
     }
 

@@ -52,7 +52,7 @@ devloop/
 │   │   ├── lifecycle/             #   ★devops 生命周期 hook 子系统（pre_commit/post_commit/pre_mr/post_mr）
 │   │   │   ├── base.py            #     facade：dispatch 并发 join + 聚合 + 内置注册表
 │   │   │   ├── checks.py          #     内置 inline-gate handler（lint/test，与 /lint /test 共用）
-│   │   │   └── review.py          #     code-review signal handler（返回 relay；smart_git_ops commit 后 detach 起后台 ocr）
+│   │   │   └── review.py          #     code-review signal handler（任意相位；审全量 diff，分支有开放 MR 时机会性发评论）
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
 │   │   └── context/               #   .devloop/ 状态总线，按 owner 粒度分模块：base / session / repo / workspace
@@ -92,7 +92,7 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 
 ### 2. 三个统一 seam（集中、规范、可替换）
 - **git → `gitcmd`**：所有 git 子进程的唯一入口，超时 + failure-safe（rc=-1 不抛）。
-- **forge → `lib/forge`**：所有代码评审平台（GitHub / GitLab）访问的唯一入口，**缝在 provider 层而非 transport 层**。`base.py` 是中立领域核心：领域对象 `PullRequest`（`number`/`state` 归一，不带任一家行话、**不带 provider**——provider 是 repo 级)+ `Forge` port（**只暴露 `create/get/update/prs_for_branch/recent/comments` 取数原语**）+ 跨家一致的窗口**策略** `build_window`（组合在 `recent`+`get` 上，不让 adapter 各写一份)+ 展示 `pr_label`/`vocab`；`gitlab.py` / `github.py` 是平级 adapter，只实现差异（iid↔number、state 归一、API 路径），原生 JSON→`PullRequest` 的映射全困在各自 adapter；`_rest.py` 是唯一 HTTP 缝（urllib）。`resolve_forge(repo)` 把 origin/config/env 三源一处合一、`forge_for_repo` 据此分发——**聚合工作区里一个子项目 GitHub、一个 GitLab 可共存**。脚本一律是 facade 的薄包装，**不散写 urllib、不写死 provider**。
+- **forge → `lib/forge`**：所有代码评审平台（GitHub / GitLab）访问的唯一入口，**缝在 provider 层而非 transport 层**。`base.py` 是中立领域核心：领域对象 `PullRequest`（`number`/`state` 归一，不带任一家行话、**不带 provider**——provider 是 repo 级)+ `Forge` port（取数原语 `create/get/update/prs_for_branch/recent/comments` + 写原语 `comment`（发 MR/PR 评论，code-review 历史用））+ 跨家一致的窗口**策略** `build_window`（组合在 `recent`+`get` 上，不让 adapter 各写一份)+ 展示 `pr_label`/`vocab`；`gitlab.py` / `github.py` 是平级 adapter，只实现差异（iid↔number、state 归一、API 路径），原生 JSON→`PullRequest` 的映射全困在各自 adapter；`_rest.py` 是唯一 HTTP 缝（urllib）。`resolve_forge(repo)` 把 origin/config/env 三源一处合一、`forge_for_repo` 据此分发——**聚合工作区里一个子项目 GitHub、一个 GitLab 可共存**。脚本一律是 facade 的薄包装，**不散写 urllib、不写死 provider**。
 - **用户配置 → `lib/config`**：所有对外部依赖的配置（`forges`：按 host 索引的 token/type/api_host）+ workspace 注册表 + precommit 门禁的唯一入口。**分层读取**：`默认值 < 全局 ~/.devloop/config.json < 上层 .devloop/config.json（离 repo 最近的赢，可只含部分配置）`；写入只落全局（`/plugin update` 不清；`DEVLOOP_CONFIG_DIR` 可覆写全局目录）。本地覆盖靠 `load(repo_dir)` 从 repo_dir 向上收集 `.devloop/config.json`，故 `forge_*`/precommit 访问器都带 `repo_dir` 参数；`workspaces` 是全局发现态、不参与就近覆盖。token 读取按 provider 的约定 env（`GITHUB_TOKEN`/`GH_TOKEN` / `GITLAB_TOKEN`）优先于 config；provider 由 host 推断、`forges[host].type` 可覆写。`workspace` / `forge` / precommit gate 都委托它，**不各自读文件**。
 
 ### 3. native-first 事件映射（本插件的设计本质）
@@ -137,7 +137,7 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 - 一轮循环端到端流程（事件 → hook/script → 状态）：[`docs/loop.md`](./docs/loop.md)
 - 外部事件驱动的会话续跑（感知 → 唤醒 → 按 auto-mode 决策，含设计/实现分层）：[`docs/event-driven-resume.md`](./docs/event-driven-resume.md)
 - devops 生命周期 hook（pre_commit/post_commit/pre_mr/post_mr，统一 lint/test/review 等的触发；hook 皆阻塞，异步=发信号+既有 wake）：[`docs/lifecycle-hooks.md`](./docs/lifecycle-hooks.md)
-- 提交期 code-review（signal hook：commit 后 smart_git_ops detach 起后台 ocr、不挡 commit、结果下一轮经状态总线 pull 注入浮现）：[`docs/code-review.md`](./docs/code-review.md)
+- 提交期 code-review（signal hook `review`，任意相位由 config 决定：detach 起、审全量 diff、不挡 commit、结果经状态总线 pull 注入；分支有开放 MR 时（典型 post_mr）机会性发评论到 MR 做历史）：[`docs/code-review.md`](./docs/code-review.md)
 - 使用 / 安装 / 配置：[`README.md`](./README.md)
 - 共享术语（repo_dir / repo_code_dir / 保护分支 / PR 模型 / `<PLUGIN_ROOT>`）：[`CONCEPTS.md`](./CONCEPTS.md)
 - 仓库级（marketplace / 多 CLI）：[`../AGENTS.md`](../AGENTS.md)

@@ -9,7 +9,7 @@
   "lifecycle": {
     "default": { "pre_commit": [], "post_commit": [], "pre_mr": [], "post_mr": [] },
     "repos": {
-      "/abs/repo": { "pre_commit": ["lint", "test"] }
+      "/abs/repo": { "pre_commit": ["lint", "test"], "post_mr": ["review"] }
     }
   }
 }
