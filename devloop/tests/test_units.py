@@ -1923,6 +1923,24 @@ def test_run_review_build_background():
     assert rr._build_background("/no/such/repo", "main", None, None, "only extra").strip() == "only extra"
 
 
+def test_run_review_append_history():
+    """每次 review 终态追加一行 jsonl（append-only），含 ts/secs/status，且多次运行累积不覆盖。"""
+    import json as _json
+    import tempfile
+    from pathlib import Path as _Path
+    rr = _load_script("run_review")
+    with tempfile.TemporaryDirectory() as d:
+        rr._append_history(d, 100.0, status="success", sha="abc", count=3, failed=0)
+        rr._append_history(d, 100.0, status="skipped", sha="def", count=0, failed=0)
+        p = _Path(d) / ".devloop" / "review-history.jsonl"
+        lines = p.read_text().strip().splitlines()
+        assert len(lines) == 2                       # 累积，不覆盖
+        r0 = _json.loads(lines[0])
+        assert r0["status"] == "success" and r0["count"] == 3 and r0["sha"] == "abc"
+        assert "ts" in r0 and "secs" in r0           # 时间戳 + 时长，供按天统计
+        assert _json.loads(lines[1])["status"] == "skipped"
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = []

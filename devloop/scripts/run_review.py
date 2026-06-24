@@ -8,6 +8,9 @@
 为提准，自动给 ocr 拼 `--background`（业务上下文）：本次提交说明 + MR 标题/描述（detach 进程
 自己经 git log / forge 取，不依赖会话）。
 
+每次运行终态还追加一行到 `.devloop/review-history.jsonl`（append-only）——review.json 只留最新一次，
+这条历史用于统计运行次数 / 跟踪。
+
 advisory：从不挡 commit。ocr 没装 / LLM 没配好 → 写 `status=skipped` 退出 0，不报错。
 """
 from __future__ import annotations
@@ -40,6 +43,20 @@ def _branch(repo: str) -> str:
 
 def _write(repo: str, **fields) -> None:
     base.save_segment(repo, "review", fields)
+
+
+def _append_history(repo: str, started: float, **fields) -> None:
+    """每次 review **终态**追加一行到 `.devloop/review-history.jsonl`（append-only，与每次覆盖的
+    review.json 并存）——review.json 只留最新一次，这里攒每次运行用于统计次数 / 跟踪历史。
+    best-effort：写失败不影响 review 本身。"""
+    rec = {"ts": round(base.now(), 1), "secs": round(base.now() - started, 1), **fields}
+    try:
+        p = base.state_dir(repo) / "review-history.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def _format_comment(comments: list, failed: int, range_label: str, sha: str) -> str:
@@ -126,10 +143,12 @@ def main(argv: list[str]) -> int:
     repo = resolved.git_root
     record_active_repo(repo)
     sha = _head_sha(repo)
+    started = base.now()
     _write(repo, status="running", reviewed_sha=sha, comments=[], count=0, message="review in progress", generated_at=base.now())
 
     def skip(msg: str) -> int:
         _write(repo, status="skipped", reviewed_sha=sha, comments=[], count=0, failed=0, message=msg, generated_at=base.now())
+        _append_history(repo, started, status="skipped", sha=sha, count=0, failed=0, message=msg)
         print(f"run_review: {msg} — skipped")
         return 0
 
@@ -152,6 +171,7 @@ def main(argv: list[str]) -> int:
     except json.JSONDecodeError:
         _write(repo, status="error", reviewed_sha=sha, comments=[], count=0, failed=0,
                message=(r.stderr or r.stdout or "ocr produced no JSON")[-2000:], generated_at=base.now())
+        _append_history(repo, started, status="error", sha=sha, count=0, failed=0, range=range_label)
         print(f"run_review: ocr output not parseable (rc={r.returncode}) — see .devloop/review.json")
         return 0
 
@@ -159,9 +179,12 @@ def main(argv: list[str]) -> int:
     warnings = out.get("warnings") or []
     failed = sum(1 for w in warnings if isinstance(w, dict) and w.get("type") == "subtask_error")
     posted = _post(forge, pr, _format_comment(comments, failed, range_label, sha))
-    _write(repo, status=out.get("status", "success"), reviewed_sha=sha, comments=comments,
+    status = out.get("status", "success")
+    _write(repo, status=status, reviewed_sha=sha, comments=comments,
            count=len(comments), failed=failed, warnings=warnings, message=out.get("message", ""),
            reviewed_range=range_label, mr_comment=posted, generated_at=base.now())
+    _append_history(repo, started, status=status, sha=sha, count=len(comments), failed=failed,
+                    range=range_label, posted=posted)
     print(f"run_review: {len(comments)} comment(s), {failed} file(s) failed on {range_label}"
           + (f" · {posted}" if posted else "") + " → .devloop/review.json")
     return 0
