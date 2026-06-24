@@ -5,6 +5,9 @@
 由 lifecycle 的 `review` signal hook（挂 `post_mr`）经 detach 起（见 docs/code-review.md）。审
 `origin/<target>..HEAD`（整条分支 vs target）；查到分支的开放 MR 就发评论，没有就只落 review.json。
 
+为提准，自动给 ocr 拼 `--background`（业务上下文）：本次提交说明 + MR 标题/描述（detach 进程
+自己经 git log / forge 取，不依赖会话）。
+
 advisory：从不挡 commit。ocr 没装 / LLM 没配好 → 写 `status=skipped` 退出 0，不报错。
 """
 from __future__ import annotations
@@ -63,17 +66,51 @@ def _format_comment(comments: list, failed: int, range_label: str, sha: str) -> 
     return "\n".join(lines)
 
 
-def _post_to_mr(repo: str, branch: str, body: str) -> str:
-    """把评论发到 `branch` 对应的开放 MR;返回一句状态(供 stdout / review.json)。"""
+_BG_CAP = 1800   # background 每段上限：它会注入每个文件的 review prompt，必须压住 token
+
+
+def _open_mr(repo: str, branch: str):
+    """(forge, 该分支的开放 MR)——找一次，给 background 取标题/描述 + 发评论复用。无则补 None。"""
     if not branch:
-        return "branch unresolved — MR comment skipped"   # 空分支别去 prs_for_branch("")
+        return None, None
     forge = forge_for_repo(repo)
     if forge is None:
-        return "no forge/token — MR comment skipped"
+        return None, None
     try:
-        pr = next((p for p in forge.prs_for_branch(branch) if p.is_open), None)
-        if pr is None:
-            return f"no open MR for {branch} — comment skipped"
+        return forge, next((p for p in forge.prs_for_branch(branch) if p.is_open), None)
+    except ForgeError:
+        return forge, None
+
+
+def _build_background(repo: str, target: str, forge, pr, extra: str | None) -> str:
+    """拼 ocr 的 `--background`（业务上下文，喂进每个文件的 review prompt 以提准）：
+    本次提交说明（git log）+ MR 标题/描述（forge）+ 显式 `-b`。全是 detach 进程自己能拿到的，
+    不依赖会话。每段 `_BG_CAP` 截断——它每文件都注，务必控长。"""
+    parts = []
+    if extra and extra.strip():
+        parts.append(extra.strip()[:_BG_CAP])
+    log = subprocess.run(
+        ["git", "-C", repo, "log", f"origin/{target}..HEAD", "--no-merges", "--pretty=format:- %s%n%b"],
+        capture_output=True, text=True,
+    )
+    if log.stdout.strip():
+        parts.append("## 本次改动的提交说明\n" + log.stdout.strip()[:_BG_CAP])
+    if forge is not None and pr is not None:
+        title = (pr.title or "").strip()
+        try:
+            desc = (forge.description(pr.number) or "").strip()
+        except ForgeError:
+            desc = ""
+        if title or desc:
+            parts.append(f"## MR：{title}\n{desc[:_BG_CAP]}".rstrip())
+    return "\n\n".join(parts).strip()
+
+
+def _post(forge, pr, body: str) -> str:
+    """把评论发到已解析的开放 MR;返回一句状态(供 stdout / review.json)。"""
+    if forge is None or pr is None:
+        return "no open MR — comment skipped"
+    try:
         forge.comment(pr.number, body)
         return f"posted to {pr_label(forge.provider, pr.number)}"
     except ForgeError as e:
@@ -103,9 +140,11 @@ def main(argv: list[str]) -> int:
 
     target = git_state.get_default_target(repo)
     range_label = f"origin/{target}..HEAD"
+    forge, pr = _open_mr(repo, _branch(repo))                       # 找一次，下面 background + 发评论都复用
+    background = _build_background(repo, target, forge, pr, ns.background)
     cmd = ["ocr", "review", "--from", f"origin/{target}", "--to", "HEAD", "--format", "json", "--repo", repo]
-    if ns.background:
-        cmd += ["--background", ns.background]
+    if background:
+        cmd += ["--background", background]
 
     r = subprocess.run(cmd, cwd=repo, capture_output=True, text=True)
     try:
@@ -119,7 +158,7 @@ def main(argv: list[str]) -> int:
     comments = out.get("comments") or []
     warnings = out.get("warnings") or []
     failed = sum(1 for w in warnings if isinstance(w, dict) and w.get("type") == "subtask_error")
-    posted = _post_to_mr(repo, _branch(repo), _format_comment(comments, failed, range_label, sha))
+    posted = _post(forge, pr, _format_comment(comments, failed, range_label, sha))
     _write(repo, status=out.get("status", "success"), reviewed_sha=sha, comments=comments,
            count=len(comments), failed=failed, warnings=warnings, message=out.get("message", ""),
            reviewed_range=range_label, mr_comment=posted, generated_at=base.now())

@@ -29,10 +29,16 @@ smart_git_ops 自动 detach 起后台 [open-code-review](https://github.com/alib
 gcampr → … → commit → publish（建/复用 MR）→ post_mr relay
    → smart_git_ops detach 起 run_review（PLAN 出 `review: launched in background`）
 run_review（后台、独立进程）：先写 status=running
-   → ocr review --from origin/<target> --to HEAD --format json
+   → 自动拼 --background（业务上下文）：本次提交说明（git log）+ MR 标题/描述（forge）
+   → ocr review --from origin/<target> --to HEAD --background <ctx> --format json
    → 写 .devloop/review.json（通用）+ 若分支有开放 MR：forge.comment(MR, 格式化结果)
 下一轮：userprompt 注入读 review.json → 上下文出现 `Review: …`（含 mr_comment 状态）
 ```
+
+**给 ocr 喂上下文以提准**（`--background`，注入到每个文件的 review prompt）：run_review 自动从
+本次提交说明 + MR 标题/描述拼出（detach 进程经 git log / forge 自取，不依赖会话）。每段有上限
+（`_BG_CAP`），因为它每文件都注、要控 token。AGENTS.md / 受影响 spec 等更多上下文是后续增量
+（往同一个 background 里加）。
 
 关键对象（锚点）：`lib/lifecycle/review.py`（`review` handler，返回 relay）、`smart_git_ops`
 （`launch_background_relays`，各相位 git 动作后 detach 起）、`scripts/run_review.py`（后台执行体：

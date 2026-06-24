@@ -1907,6 +1907,22 @@ def test_run_review_format_comment():
     assert "- `a.py`" in out2 and "`a.py` —" not in out2
 
 
+def test_run_review_build_background():
+    """--background 自动拼装：显式 extra + MR 标题/描述都进 background（commit 段在无 origin 的临时路径下为空）。"""
+    rr = _load_script("run_review")
+
+    class _PR:
+        number, title = 7, "Add dark mode"
+
+    class _Forge:
+        def description(self, n): return "why: users asked for dark mode"
+
+    bg = rr._build_background("/no/such/repo", "main", _Forge(), _PR(), "extra ctx")
+    assert "extra ctx" in bg and "Add dark mode" in bg and "users asked for dark mode" in bg
+    # 无 forge/pr → 只有 extra（commit 段在该假路径为空）
+    assert rr._build_background("/no/such/repo", "main", None, None, "only extra").strip() == "only extra"
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = []
