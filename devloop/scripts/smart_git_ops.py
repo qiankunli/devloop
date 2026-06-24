@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -510,28 +511,43 @@ def _build_parser() -> cli.ArgParser:
     return ap
 
 
-def run_lifecycle_gate(repo: str, phase: str, plan: list[str]) -> None:
-    """跑某相位的 lifecycle hook（lint/test 等 inline gate），把结果写进 PLAN。
+def run_lifecycle_gate(repo: str, phase: str, plan: list[str]) -> lifecycle.DispatchResult:
+    """跑某相位的 lifecycle hook（lint/test 等 inline gate），写进 PLAN，返回 DispatchResult。
 
     配置为空 → 静默 no-op（opt-in，零行为变化）。inline gate 失败 → 抛 SmartError 中止本次
     git 动作。pre_commit 故意排在 staging 之前：lint 的 `make fix` 改的文件要被随后的 stage
-    收进同一个 commit。
-
-    signal hook（如 code-review）不挡，返回一个后台下游（`res.to_launch`）；本函数把它写成
-    PLAN 的 `ARMED:` 行——dispatch 自己**不能**起「跑完唤醒 session」的后台任务（subprocess
-    派生的子进程 harness 不跟踪），故交给 agent 读 PLAN 后用 run_in_background 起（见
-    docs/code-review.md）。
+    收进同一个 commit。signal hook（如 code-review）不挡、把后台下游放进 `res.to_launch`，由
+    调用方在 git 动作完成后用 launch_background_relays detach 起。
     """
     res = lifecycle.dispatch(phase, repo)
     if not res.results:
-        return
+        return res
     plan.append(f"{phase}: " + ", ".join(f"{r.name} {'✓' if r.ok else '✗'}" for r in res.results))
     if not res.proceed:
         detail = "\n".join(f"    [{r.name}] {r.summary}" for r in res.failures)
         step = "commit" if phase == "pre_commit" else "MR"
         raise SmartError(f"{phase} gate failed — aborting before {step}:\n{detail}")
-    for spec in res.to_launch:
-        plan.append(f"ARMED: {' '.join(spec.argv)}")
+    return res
+
+
+def launch_background_relays(specs: list[lifecycle.BackgroundSpec], repo: str, plan: list[str]) -> None:
+    """把 signal hook 的后台下游（如 code-review）detach 起来——fire-and-forget，不阻塞、不靠 agent。
+
+    `start_new_session=True` 让子进程脱离本进程组：smart_git_ops（及调用它的 Bash）退出后它仍
+    存活，跑完写 `.devloop/review.json`，结果在下一轮经状态总线注入浮现（pull）。**须在 commit
+    之后调用**——review 审的是新 HEAD。输出导向 `.devloop/review.log`（.devloop 已 gitignore）。
+    """
+    if not specs:
+        return
+    logp = Path(repo) / ".devloop" / "review.log"
+    logp.parent.mkdir(parents=True, exist_ok=True)
+    for spec in specs:
+        try:
+            with open(logp, "ab") as log:
+                subprocess.Popen(spec.argv, cwd=repo, stdout=log, stderr=log, start_new_session=True)
+            plan.append(f"{spec.name}: launched in background → .devloop/review.json (surfaces next turn)")
+        except OSError as e:
+            plan.append(f"{spec.name}: background launch failed (non-fatal): {e}")
 
 
 def main(argv: list[str]) -> int:
@@ -556,8 +572,10 @@ def main(argv: list[str]) -> int:
     ]
     try:
         branch = prepare_branch(intent, gv, plan)
-        run_lifecycle_gate(intent.repo, "pre_commit", plan)   # before staging: lint's `make fix` lands in this commit
+        pre = run_lifecycle_gate(intent.repo, "pre_commit", plan)   # blocking gates (lint/test) + signal relays (review)
         staged = stage_and_commit(intent, plan)
+        if staged.committed:
+            launch_background_relays(pre.to_launch, intent.repo, plan)   # detach review post-commit (reviews new HEAD)
         if intent.mode == "mr":
             run_lifecycle_gate(intent.repo, "pre_mr", plan)   # before push/MR (default empty; opt-in per repo)
         publish(intent, branch, staged, plan)

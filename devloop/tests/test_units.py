@@ -22,6 +22,15 @@ HOOKS = Path(__file__).resolve().parent.parent / "hooks"
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(HOOKS))
 
+# Hermetic：测试绝不读开发机的真实 ~/.devloop/config.json（否则一个全局 lifecycle.pre_commit
+# 会让 precommit-gate 在每个测试 repo 上生效、拦住 commit）。把全局 config 指向空临时目录；
+# 需要 config 的测试各自写自己的。
+import shutil as _shutil_boot  # noqa: E402
+_GCFG = "/tmp/dlut_global_cfg"
+_shutil_boot.rmtree(_GCFG, ignore_errors=True)
+os.makedirs(_GCFG, exist_ok=True)
+os.environ["DEVLOOP_CONFIG_DIR"] = _GCFG
+
 from lib.cmdtree import cmdparse  # noqa: E402
 from lib.context import Cadence, PullRequest  # noqa: E402
 from lib.forge import detect_provider, parse_origin  # noqa: E402
@@ -1832,6 +1841,33 @@ def test_run_review_skips_without_ocr():
     assert rc == 0
     seg = base.load_segment(G, "review")
     assert seg and seg["status"] == "skipped" and "ocr" in seg["message"] and seg["count"] == 0
+
+
+def test_review_injection_line():
+    """review.json 经 _format_turn 在下一轮注入浮现（pull）：running / N findings / clean；skipped 不出。"""
+    from lib.context import RepoContext, base
+    G = "/tmp/dlut_revinj"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
+    _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
+    Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
+    ctx = RepoContext.refresh_all(G)
+    R = ctx.repo.repo_dir   # save 用与注入侧 load 相同的路径，避开 /tmp→/private/tmp 软链不一致
+
+    def seg(**kw): base.save_segment(R, "review", {"reviewed_sha": "abcdef1234567", "comments": [], "generated_at": 1.0, **kw})
+    seg(status="success", count=2); assert "Review: 2 finding(s) on abcdef123" in ctx.turn_text()
+    seg(status="success", count=0); assert "Review: clean on abcdef123" in ctx.turn_text()
+    seg(status="running", count=0); assert "Review: running on abcdef123" in ctx.turn_text()
+    seg(status="skipped", count=0); assert "Review:" not in ctx.turn_text()   # 噪声不进注入
+
+
+def test_launch_background_relays():
+    """detach 起后台 relay：不抛、写 PLAN 行；空列表 no-op。"""
+    sgo = _load_script("smart_git_ops")
+    from lib.lifecycle import BackgroundSpec
+    G = "/tmp/dlut_relay"; shutil.rmtree(G, ignore_errors=True); os.makedirs(f"{G}/.devloop")
+    plan: list = []
+    sgo.launch_background_relays([BackgroundSpec("review", ["python3", "-c", "pass"])], G, plan)
+    assert any("launched in background" in p for p in plan)
+    p2: list = []; sgo.launch_background_relays([], G, p2); assert p2 == []
 
 
 def _run_all():
