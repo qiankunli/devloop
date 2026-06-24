@@ -514,7 +514,12 @@ def _format_turn(ctx: "RepoContext") -> str:
     # 外部进程写，RepoContext 视图可能滞后）；skipped 不出（无信号价值、避免噪声）。
     _rv = base.load_segment(ctx.repo.repo_dir, "review") or {}
     _rs, _sha = _rv.get("status"), (_rv.get("reviewed_sha") or "")[:9]
-    if _rs == "running":
+    # staleness 兜底：detach 的 run_review 不归 harness 跟踪，若中途被杀（休眠 / OOM / kill）就
+    # 没机会写终态，review.json 会永远卡在 "running"。running 超过 REVIEW_STALE_SEC 即按 stale 报，
+    # 不永远显示 running。
+    if _rs == "running" and (base.now() - (_rv.get("generated_at") or 0)) > base.REVIEW_STALE_SEC:
+        lines.append(f"Review: stale on {_sha} — 疑似中途中断（见 .devloop/review.json），可重跑")
+    elif _rs == "running":
         lines.append(f"Review: running on {_sha} (.devloop/review.json)")
     elif _rs and _rs != "skipped":   # success / completed_with_(warnings|errors) / error；skipped 不出（噪声）
         _n, _failed = _rv.get("count", 0), _rv.get("failed", 0)

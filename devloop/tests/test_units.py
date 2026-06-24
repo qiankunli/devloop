@@ -1859,7 +1859,8 @@ def test_review_injection_line():
     def seg(**kw): base.save_segment(R, "review", {"reviewed_sha": "abcdef1234567", "comments": [], "generated_at": 1.0, **kw})
     seg(status="success", count=2); assert "Review: 2 finding(s) on abcdef123" in ctx.turn_text()
     seg(status="success", count=0); assert "Review: clean (no findings) on abcdef123" in ctx.turn_text()
-    seg(status="running", count=0); assert "Review: running on abcdef123" in ctx.turn_text()
+    seg(status="running", count=0, generated_at=base.now()); assert "Review: running on abcdef123" in ctx.turn_text()
+    seg(status="running", count=0, generated_at=1.0); assert "Review: stale on abcdef123" in ctx.turn_text()  # 卡死的 running → stale 兜底
     seg(status="skipped", count=0); assert "Review:" not in ctx.turn_text()   # 噪声不进注入
     # 关键：completed_with_errors + 0 评论不再伪装 clean——失败诚实呈现
     seg(status="completed_with_errors", count=0, failed=3); assert "Review: 3 file(s) failed on abcdef123" in ctx.turn_text()
@@ -1901,6 +1902,9 @@ def test_run_review_format_comment():
     out = rr._format_comment([{"path": "a.py", "start_line": 3, "end_line": 5, "content": "bug here"}],
                              2, "origin/main..HEAD", "abc1234567")
     assert "1 finding(s)" in out and "`a.py:3-5`" in out and "bug here" in out and "2 个文件未能 review" in out
+    # 空 content 不留悬空破折号（ocr 自审挑出的 bug）
+    out2 = rr._format_comment([{"path": "a.py", "start_line": 0, "end_line": 0, "content": ""}], 0, "r", "abc1234567")
+    assert "- `a.py`" in out2 and "`a.py` —" not in out2
 
 
 def _run_all():

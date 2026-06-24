@@ -57,7 +57,7 @@ def _format_comment(comments: list, failed: int, range_label: str, sha: str) -> 
         if s or e:
             loc += f":{s}-{e}"
         body = (c.get("content") or "").strip().replace("\n", " ")
-        lines.append(f"- `{loc}` — {body[:300]}")
+        lines.append(f"- `{loc}` — {body[:300]}" if body else f"- `{loc}`")   # 空 content 不留悬空破折号
     if len(comments) > _MAX_COMMENT_FINDINGS:
         lines.append(f"- … 另有 {len(comments) - _MAX_COMMENT_FINDINGS} 条,见 `.devloop/review.json`")
     return "\n".join(lines)
@@ -65,6 +65,8 @@ def _format_comment(comments: list, failed: int, range_label: str, sha: str) -> 
 
 def _post_to_mr(repo: str, branch: str, body: str) -> str:
     """把评论发到 `branch` 对应的开放 MR;返回一句状态(供 stdout / review.json)。"""
+    if not branch:
+        return "branch unresolved — MR comment skipped"   # 空分支别去 prs_for_branch("")
     forge = forge_for_repo(repo)
     if forge is None:
         return "no forge/token — MR comment skipped"

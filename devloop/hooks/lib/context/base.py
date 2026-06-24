@@ -43,6 +43,8 @@ SESSION_TTL_SEC = 14400       # session-cadence (References) re-emit backstop (~
 PR_POLL_INTERVAL_SEC = 90     # monitor poll cadence for PR/MR status
 REMOTE_VIEW_STALE_SEC = 120   # remote_branches snapshot older than this → re-pull trunk tips on enter
 ACTIVE_REPO_TTL_SEC = 21600   # workspace last-active repo validity (~6 h); stale → don't guess
+REVIEW_STALE_SEC = 1800       # review.json stuck at "running" longer than this (~30 min) → run_review
+                              # almost certainly died mid-flight (sleep/OOM/kill); surface as stale, not running
 
 STATE_DIRNAME = ".devloop"
 STATE_FILENAME = "context.json"   # workspace-level state (single owner: the refresh)
