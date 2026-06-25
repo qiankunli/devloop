@@ -76,8 +76,10 @@ def _format_comment(comments: list, failed: int, range_label: str, sha: str) -> 
         s, e = c.get("start_line", 0), c.get("end_line", 0)
         if s or e:
             loc += f":{s}-{e}"
+        alias = (c.get("alias") or "").strip()   # 多 model 池里哪个 model 出的（ocr routing alias），便于对比
+        tag = f" ({alias})" if alias else ""
         body = (c.get("content") or "").strip().replace("\n", " ")
-        lines.append(f"- `{loc}` — {body[:300]}" if body else f"- `{loc}`")   # 空 content 不留悬空破折号
+        lines.append(f"- `{loc}`{tag} — {body[:300]}" if body else f"- `{loc}`{tag}")   # 空 content 不留悬空破折号
     if len(comments) > _MAX_COMMENT_FINDINGS:
         lines.append(f"- … 另有 {len(comments) - _MAX_COMMENT_FINDINGS} 条,见 `.devloop/review.json`")
     return "\n".join(lines)
