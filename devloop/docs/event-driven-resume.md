@@ -72,6 +72,8 @@ Claude Code 的 **channels**（research preview，v2.1.80+；[channels-reference
 - 唤醒轮是**受 permission 模型约束的完整回合**——能动手（受权限提示），不是被动只读。
 - 角色：**Perceive + Wake + Inform 三合一**落在 channel；**Execute** 仍是醒来那轮的事。
 - **不强制 TS**：channel = MCP server，MCP 也有 **Python SDK**，devloop 可用 Python 写 forge channel、复用现有 forge facade / `pr.json`，**不必换栈**（官方示例是 TS/Bun 只是生态熟路，非技术约束）。
+- **会话关了即丢**：channel 是纯 push，事件**只在会话开着时**到达——关掉终端，停机期间发生的变化**不会补投、直接丢失**。这是保留下面 waiter fallback 的第一理由：waiter 盯的是状态总线 delta（pr.json / review.json），下次起会话仍能从落差里看出"错过了啥"。
+- **meta 只收 identifier**：`Notification.meta` 的 key/value 会成 `<channel …>` 标签属性，**连字符会被丢弃**——kind / meta 一律用下划线或字母（我们的 `pr_change` / `merge_blocked` / `review_done` 是安全的，别写成 `review-done`）。
 - **保留**：preview，自定义 channel 要 `--dangerously-load-development-channels`、不在 allowlist、Team/Enterprise 需管理员开 → 故保留下面的 fallback。
 
 ### 代码落点（devloop）
@@ -80,18 +82,19 @@ Claude Code 的 **channels**（research preview，v2.1.80+；[channels-reference
 
 - **`hooks/lib/notify/`** —— notify 端口。`base.py`：`Notification`（content/kind/meta，只说"surface 什么"）+ `Notifier` 协议（`deliver`）；`channel.py`：`ChannelNotifier`（push 成 `notifications/claude/channel`）+ `run_channel`（MCP server handshake + `claude/channel` 能力的复用壳）。`mcp` lazy import，无依赖也能导入 / 测。
 - **`scripts/forge_channel.py`** —— forge **生产者**（薄）。复用 monitor 的 `repos_to_poll` + `.devloop/pr.json` 与同一 change-key，变化时 build `Notification` 交给 `Notifier` deliver——只加通知，不二次 poll forge。
+- **`scripts/review_channel.py`** —— code-review **生产者**（薄）。复用 `repos_to_poll`，盯各 repo 的 `.devloop/review.json`：后台 `run_review.py` 写出终态、且有可动作内容（findings / 文件失败 / error）时，build 一条**带 findings 详情**的 `Notification` 交给 `Notifier`——idle 会话醒来即拿到 findings，不必回读。change-key（`wake_key`）含 `generated_at`，同 sha 重跑也唤醒一次；clean / skipped / running 不唤醒（无可动作信号，留给下一轮 prompt 的 pull——见 `context/repo.py`）。
 - 加一个 deploy / verdict channel = 写个生产者 + `run_channel(...)`，不碰 `notify/channel`。
 
-**实验启用**（channel 是 preview，**不自动挂载**——以免给非 channel 用户起 MCP server / 强加 `mcp` 依赖）：需 `mcp` 包，并以 dev flag 起会话：
+**实验启用**（channel 是 preview，**不自动挂载**——以免给非 channel 用户起 MCP server / 强加 `mcp` 依赖）：需 `mcp` 包，并以 dev flag 起会话（forge / review 可同挂、按需取舍）：
 
 ```json
-{ "mcpServers": { "forge": {
-  "command": "python3",
-  "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/forge_channel.py", "${CLAUDE_PROJECT_DIR}"]
-}}}
+{ "mcpServers": {
+  "forge":  { "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/forge_channel.py",  "${CLAUDE_PROJECT_DIR}"] },
+  "review": { "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/review_channel.py", "${CLAUDE_PROJECT_DIR}"] }
+}}
 ```
 ```bash
-claude --dangerously-load-development-channels server:forge
+claude --dangerously-load-development-channels server:forge server:review
 ```
 
 ### 唤醒机制（fallback）：一次性后台任务"退出"
