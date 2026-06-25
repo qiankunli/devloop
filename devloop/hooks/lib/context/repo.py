@@ -546,6 +546,8 @@ def _format_turn(ctx: "RepoContext") -> str:
     # 后台 code-review 的结果回流（pull）：run_review（由 smart_git_ops detach 起）跑完写
     # review.json，这里在下一轮把它捎进上下文——advisory，只通报、不挟持。读 fresh（段由
     # 外部进程写，RepoContext 视图可能滞后）；skipped 不出（无信号价值、避免噪声）。
+    # 这是 pull 路径（醒着才看见）；另有 push 路径 scripts/review_channel.py（opt-in channel）能在
+    # review 出终态时主动唤醒 idle 会话并带上 findings 详情——两条并存，pull 是无 channel 时的兜底。
     _rv = base.load_segment(ctx.repo.repo_dir, "review") or {}
     _rs, _sha = _rv.get("status"), (_rv.get("reviewed_sha") or "")[:9]
     # staleness 兜底：detach 的 run_review 不归 harness 跟踪，若中途被杀（休眠 / OOM / kill）就

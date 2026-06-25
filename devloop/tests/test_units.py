@@ -565,6 +565,30 @@ def test_forge_channel_merge_block_edge_detection():
     assert ev(None, None) == (None, None)                                                                 # no MR → hold-clear
 
 
+def test_review_channel_wake_key_and_summary():
+    """review producer: wake_key fires only for an ACTIONABLE terminal review (findings / failures /
+    error) and stays None for running / skipped / clean — so an idle session is woken only when
+    there's something to act on (a clean review is left to the next-prompt pull). generated_at is in
+    the key so a re-run on the same sha wakes again. summarize carries the findings inline."""
+    rc = _load_script("review_channel")
+    assert rc.wake_key(None) is None
+    assert rc.wake_key({"status": "running", "reviewed_sha": "a"}) is None
+    assert rc.wake_key({"status": "skipped", "reviewed_sha": "a"}) is None
+    assert rc.wake_key({"status": "success", "count": 0, "failed": 0, "reviewed_sha": "a"}) is None  # clean → no push
+    k1 = rc.wake_key({"status": "success", "count": 2, "reviewed_sha": "a", "generated_at": 100.0})
+    assert k1 == ("a", "success", 100.0)
+    # same sha re-reviewed later → different generated_at → new key → wakes again
+    assert rc.wake_key({"status": "success", "count": 2, "reviewed_sha": "a", "generated_at": 200.0}) != k1
+    assert rc.wake_key({"status": "completed_with_errors", "count": 0, "failed": 1, "reviewed_sha": "b"}) is not None  # failures wake
+    assert rc.wake_key({"status": "error", "count": 0, "failed": 0, "reviewed_sha": "c"}) is not None  # error wakes
+    s = rc.summarize({"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
+                      "reviewed_range": "origin/main..HEAD",
+                      "comments": [{"path": "a.py", "start_line": 3, "end_line": 5,
+                                    "alias": "ds-v4", "content": "bug here"}]}, "/x/devloop")
+    assert s.splitlines()[0] == "review[devloop]: 1 finding(s) on abcdef123 [origin/main..HEAD]"
+    assert s.splitlines()[1] == "  - a.py:3-5 (ds-v4) — bug here"
+
+
 def test_pullrequest_and_cadence():
     pr = PullRequest.from_dict({"number": 7, "state": "merged", "source_branch": "f", "target_branch": "m"})
     assert pr.inactive and PullRequest.from_dict({"number": 8, "state": "open"}).inactive is False

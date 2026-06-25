@@ -78,7 +78,7 @@ devloop/
 
 ### 1. hook harness + notify 端口（两个 producer 侧）
 - **hook 侧（CC 原生 event）→ `hooks/lib/hook_io.py`**：每个 hook = 一个函数 + 一个 runner：`guard(decide)`（PreToolUse，返回 deny 理由或 None，异常→放行 fail-open）、`inject(produce, event)`（返回注入文本）、`observe(handle)`（副作用，恒输出 `{}`）、`run(build, event)`（富 payload，如 SessionStart 的 additionalContext+watchPaths）。runner 保证 hook 永不打断用户工具调用。
-- **非 hook 侧（外部系统）→ monitor（拉）+ `hooks/lib/notify`（推）**：forge / deploy / verdict 这类外部状态没有 CC 原生 event。**拉**：monitor 轮询写状态总线（`poll_pr_status.py` 写 `.devloop/pr.json`，**persist-only**，喂 guard / inject）。**推**：走 notify 端口——`base` 定义 `Notification` + `Notifier`，`channel` 的 `ChannelNotifier`（push 成 Claude Code channel 事件 → 唤醒会话、内容 inline）是第一种投递，`run_channel` 是复用壳；producer（`scripts/forge_channel.py`）盯状态总线的变化、build `Notification` 交给 `Notifier`。deploy/verdict 源照此加一个 producer 即可。channel 是 research preview / opt-in（见 References）。
+- **非 hook 侧（外部系统）→ monitor（拉）+ `hooks/lib/notify`（推）**：forge / deploy / verdict 这类外部状态没有 CC 原生 event。**拉**：monitor 轮询写状态总线（`poll_pr_status.py` 写 `.devloop/pr.json`，**persist-only**，喂 guard / inject）。**推**：走 notify 端口——`base` 定义 `Notification` + `Notifier`，`channel` 的 `ChannelNotifier`（push 成 Claude Code channel 事件 → 唤醒会话、内容 inline）是第一种投递，`run_channel` 是复用壳；producer（`scripts/forge_channel.py` 盯 pr.json；`scripts/review_channel.py` 盯 review.json、唤醒时带 findings 详情）盯状态总线的变化、build `Notification` 交给 `Notifier`。deploy/verdict 源照此加一个 producer 即可。channel 是 research preview / opt-in（见 References）。
 
 一个变化同时走"喂状态总线（拉）"与"推给 agent"两条路：
 
