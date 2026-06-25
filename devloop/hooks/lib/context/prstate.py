@@ -29,11 +29,12 @@ TRUNK_CANDIDATES = ("main", "master", "release")
 
 def _baseline_branches(repo: str) -> tuple[str, ...]:
     """The branches whose remote tip matters for THIS repo: the conventional trunks plus the
-    configured `target` and the recorded `fork_from` (read from the branch segment). Without this
-    a non-conventional baseline would have no tracked tip and the 'trunk moved' signal would never
-    fire for it (Codex P2)."""
+    repo's default branch (`meta.default_branch`) and the recorded `fork_from` (branch segment).
+    Without this a non-conventional baseline would have no tracked tip and the 'trunk moved'
+    signal would never fire for it."""
+    mseg = base.load_segment(repo, "meta") or {}
     bseg = base.load_segment(repo, "branch") or {}
-    extra = (bseg.get("target"), (bseg.get("local") or {}).get("fork_from"))
+    extra = ((mseg.get("repo") or {}).get("default_branch"), (bseg.get("local") or {}).get("fork_from"))
     seen: set[str] = set()
     out: list[str] = []
     for b in (*TRUNK_CANDIDATES, *(e for e in extra if e)):

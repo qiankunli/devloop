@@ -1468,29 +1468,14 @@ def test_remote_branches_segment_is_monitor_owned():
     assert RepoContext.load(R).branch.remote_tip("main").commit == "abc"
 
 
-def test_branch_json_backcompat_old_schema():
-    """A pre-existing flat branch.json (old current/worktree schema) loads without blanking to
-    'Branch: ?' — `current` migrates into local.name until the next refresh rewrites it (Codex P2)."""
-    from lib.context import RepoContext, base
-    R = "/tmp/dlut_oldschema"
-    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
-    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
-    _git(R, "checkout", "-q", "-b", "feat/a")
-    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
-    RepoContext.refresh_all(R)
-    base.save_segment(R, "branch", {"current": "feat/legacy", "protected": False, "target": "main",
-                                    "ahead": 0, "behind": 0, "worktree": {"is_linked": False}})
-    topo = RepoContext.load(R).branch
-    assert topo.local.name == "feat/legacy" and topo.target == "main"
-
-
 def test_remote_baseline_includes_target_and_fork_from():
     """Remote-tip polling tracks the repo's actual baseline (target + fork_from), not just the
     conventional trunks — so a develop/staging baseline gets a 'trunk moved' signal (Codex P2)."""
     from lib.context import base, prstate
     R = "/tmp/dlut_baseline"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/.devloop")
-    base.save_segment(R, "branch", {"local": {"name": "feat/x", "fork_from": "develop"}, "target": "staging"})
+    base.save_segment(R, "meta", {"repo": {"default_branch": "staging"}})   # target is now meta.default_branch
+    base.save_segment(R, "branch", {"local": {"name": "feat/x", "fork_from": "develop"}})
     bases = prstate._baseline_branches(R)
     assert "develop" in bases and "staging" in bases
     assert bases[:len(prstate.TRUNK_CANDIDATES)] == prstate.TRUNK_CANDIDATES   # conventional trunks first

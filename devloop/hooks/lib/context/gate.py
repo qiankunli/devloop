@@ -72,10 +72,10 @@ def evaluate(git_root: str, *, live_refresh: bool = False) -> GateView:
     branch_prs = [p for p in prs if p.source_branch == branch] if branch else []
     active_pr = prstate.pick_branch_pr(branch_prs, git_root, head)
 
-    # target is stable (the repo's trunk) → fine to read from the cached branch segment;
-    # only identity must be live. Fall back to a live derive when uninitialized.
-    bseg = base.load_segment(git_root, "branch") or {}
-    target = bseg.get("target") or git_state.get_default_target(git_root)
+    # target is stable (the repo's trunk) → read the cached repo fact (meta.default_branch, the
+    # single source); only identity must be live. Fall back to a live local derive if uninitialized.
+    mseg = base.load_segment(git_root, "meta") or {}
+    target = (mseg.get("repo") or {}).get("default_branch") or git_state.local_default_target(git_root)
 
     return GateView(
         git_root=str(git_root),

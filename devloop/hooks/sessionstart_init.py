@@ -8,7 +8,7 @@ devloop gets to cache-stable injection for session-grained content (plan §4/§6
 We `mark_session_emitted` so UserPromptSubmit dedups it until it actually changes
 (FileChanged / PostCompact clear the stamp to force a re-emit). `reset_turn_injection`
 makes the first prompt re-emit the volatile turn block (new session lost history).
-Also runs the normal-impl `refresh_remote_head` so the MR target is fresh.
+(MR-target freshness is handled inside `refresh_all` — TTL-gated, forge-first.)
 """
 from __future__ import annotations
 

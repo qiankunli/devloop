@@ -157,7 +157,7 @@ def main(argv: list[str]) -> int:
     if subprocess.run(["ocr", "llm", "test"], cwd=repo, capture_output=True).returncode != 0:
         return skip("ocr LLM not configured (ocr config set llm.* or OCR_LLM_*)")
 
-    target = git_state.get_default_target(repo)
+    target = git_state.local_default_target(repo)
     range_label = f"origin/{target}..HEAD"
     forge, pr = _open_mr(repo, _branch(repo))                       # 找一次，下面 background + 发评论都复用
     background = _build_background(repo, target, forge, pr, ns.background)

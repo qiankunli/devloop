@@ -65,15 +65,14 @@ def target_exists(repo_dir: str | Path, target: str = "main") -> bool:
     return gitcmd.git(repo_dir, "rev-parse", "--verify", f"origin/{target}").ok
 
 
-def get_default_target(repo_dir: str | Path) -> str:
-    """fast impl: derive default MR target from the *local* origin/HEAD cache.
+def local_default_target(repo_dir: str | Path) -> str:
+    """Read the default MR target from the *local* origin/HEAD cache — the offline FALLBACK.
 
-    Pure-local, offline-safe, zero network — safe on hot paths. Tradeoff: the
-    local `refs/remotes/origin/HEAD` is NOT refreshed by `git fetch`, so it can
-    lag a remote default-branch change; the authoritative value is fetched from the
-    forge on a TTL boundary and cached in repo meta (`RepoMeta.default_branch`) — that
-    cache is what callers should prefer. This is its offline fallback. No "release"
-    bias: when origin/HEAD is absent, fall back to whichever of main/master exists, else main.
+    Pure-local, zero network, safe on hot paths. NOT the authority: `git fetch` never refreshes
+    `refs/remotes/origin/HEAD`, so this can lag. The authority is the forge value cached in
+    `RepoMeta.default_branch` (resolved on a TTL boundary) — callers prefer that and only fall
+    here when it's empty / unavailable. No "release" bias: when origin/HEAD is absent, fall back
+    to whichever of main/master exists, else main.
     """
     r = gitcmd.git(repo_dir, "symbolic-ref", "refs/remotes/origin/HEAD")
     if r.ok and r.out.startswith("refs/remotes/origin/"):
@@ -95,7 +94,7 @@ def set_local_default_head(repo_dir: str | Path, branch: str) -> bool:
     """Point local `refs/remotes/origin/HEAD` at `branch` — purely local, no network.
 
     Keeps the git-side cache consistent with an authoritative value resolved elsewhere (the
-    forge), so every `get_default_target` caller (gcampr, run_review, …) reads the same answer
+    forge), so every `local_default_target` caller (gcampr, run_review, …) reads the same answer
     without each re-querying. Best-effort.
     """
     if not branch:

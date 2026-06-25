@@ -64,15 +64,15 @@ def _resolve_default_branch(repo_dir: str, prev_branch: str, prev_at: float) -> 
         try:
             db = (forge.default_branch() or "").strip()
             if db:
-                git_state.set_local_default_head(repo_dir, db)  # sync git cache so get_default_target agrees
+                git_state.set_local_default_head(repo_dir, db)  # sync git cache so local_default_target agrees
                 return db, base.now()
         except ForgeError:
             pass
-    git_state.refresh_remote_head(repo_dir)                  # no token / forge failed → git fallback (also syncs origin/HEAD)
-    db = git_state.get_default_target(repo_dir)
-    if db and db != prev_branch:
-        return db, base.now()                                # git gave a fresh authoritative value
-    return (prev_branch or db), prev_at                      # keep cache; leave at stale to retry next time
+    refreshed = git_state.refresh_remote_head(repo_dir)      # network set-head (syncs origin/HEAD); True if it succeeded
+    db = git_state.local_default_target(repo_dir)
+    if refreshed and db:
+        return db, base.now()                                # remote HEAD synced → authoritative → stamp (TTL now applies)
+    return (db or prev_branch or "main"), prev_at            # offline/forge-down → best available, leave at stale to retry
 
 
 # ── segment dataclasses ──────────────────────────────────────────────────────
@@ -138,19 +138,13 @@ class BranchTopology:
 
     @classmethod
     def from_local_dict(cls, d: dict | None) -> "BranchTopology":
-        """Build the refresh-owned half (local + worktrees + target) from branch.json. remotes /
-        remotes_fetched_at / pr_number are merged in by `load` from their own segments.
-
-        Back-compat: a pre-existing flat branch.json (old `current`/`worktree` schema written by an
-        earlier devloop) has no `local` key — read its `current` into `local.name` so display and
-        the pr-join don't blank to 'Branch: ?' in the window between an upgrade and the next
-        git-state refresh (the cache is gitignored and regenerates fully then)."""
+        """Build the refresh-owned half (local + worktrees) from branch.json. `target` is derived
+        from RepoMeta.default_branch by `load` (single source — not stored here); remotes /
+        remotes_fetched_at / pr_number are merged in from their own segments."""
         d = d or {}
-        local = Branch.from_dict(d["local"]) if "local" in d else Branch(name=d.get("current"))
         return cls(
-            local=local,
+            local=Branch.from_dict(d.get("local")),
             worktrees=[Branch.from_dict(w) for w in (d.get("worktrees") or [])],
-            target=d.get("target", ""),
         )
 
     def base_branch(self) -> str:
@@ -217,6 +211,7 @@ class RepoContext:
         if meta is None:
             return None
         branch = BranchTopology.from_local_dict(base.load_segment(repo_dir, "branch") or {})
+        branch.target = (meta.get("repo") or {}).get("default_branch", "")   # single source: RepoMeta.default_branch
         # monitor-owned remote trunk tips (remote_branches.json) + their provenance stamp.
         rb = base.load_segment(repo_dir, "remote_branches") or {}
         branch.remotes = [Branch.from_dict(r) for r in (rb.get("remotes") or [])]
@@ -269,8 +264,7 @@ class RepoContext:
         base.save_segment(self._root(), "branch", {
             "local": asdict(self.branch.local),
             "worktrees": [asdict(w) for w in self.branch.worktrees],
-            "target": self.branch.target,
-        })
+        })   # target not persisted here — derived from meta.default_branch (single source)
 
     def _save_pr(self) -> None:
         """Monitor's write surface (also used by gcampr via a one-shot poll). Branch-keyed
@@ -342,8 +336,8 @@ class RepoContext:
         ctx = cls.load(repo_dir)
         if ctx is None:
             return cls.refresh_all(repo_dir)
-        # cached repo fact first (zero network); local origin/HEAD only if cache empty
-        target = ctx.branch.target or ctx.repo.default_branch or git_state.get_default_target(ctx.repo.real_repo_dir)
+        # cached repo fact (zero network); local origin/HEAD only if cache empty
+        target = ctx.repo.default_branch or git_state.local_default_target(ctx.repo.real_repo_dir)
         ctx.branch = _build_topology(ctx.repo.real_repo_dir, target, ctx.branch)
         ctx._save_branch()
         return ctx
@@ -558,7 +552,7 @@ def _format_turn(ctx: "RepoContext") -> str:
     # 没机会写终态，review.json 会永远卡在 "running"。running 超过 REVIEW_STALE_SEC 即按 stale 报，
     # 不永远显示 running。
     if _rs == "running" and (base.now() - (_rv.get("generated_at") or 0)) > base.REVIEW_STALE_SEC:
-        lines.append(f"Review: stale on {_sha} — 疑似中途中断（见 .devloop/review.json），可重跑")
+        lines.append(f"Review: stale on {_sha} — 疑似中途中断（见 .devloop/review.json）；下次 gcampr/commit 会重跑")
     elif _rs == "running":
         lines.append(f"Review: running on {_sha} (.devloop/review.json)")
     elif _rs and _rs != "skipped":   # success / completed_with_(warnings|errors) / error；skipped 不出（噪声）
