@@ -1784,6 +1784,15 @@ def test_lifecycle_dispatch():
     # 未知 hook 名 → 可见的 ok=False，不静默吞
     r = lc.dispatch("pre_commit", "/r", names=["nope"], registry=reg)
     assert not r.proceed and "unknown" in r.results[0].summary
+    # 软提示（advisory）失败 → 通报但不阻断（proceed），进 advisory_failures 而非 blocking_failures
+    reg["soft"] = lambda repo: HR("soft", ok=False, advisory=True, summary="advisory boom")
+    r = lc.dispatch("pre_commit", "/r", names=["ok", "soft"], registry=reg)
+    assert r.proceed
+    assert [x.name for x in r.advisory_failures] == ["soft"] and r.blocking_failures == []
+    # 硬拦截 + 软提示混合：硬的仍挡，软的只进 advisory
+    r = lc.dispatch("pre_commit", "/r", names=["bad", "soft"], registry=reg)
+    assert not r.proceed and [x.name for x in r.blocking_failures] == ["bad"]
+    assert [x.name for x in r.advisory_failures] == ["soft"]
     # 空配置 → no-op、proceed
     assert lc.dispatch("pre_commit", "/r", names=[]).proceed
     # 未知相位 → 抛

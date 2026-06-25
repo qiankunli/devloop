@@ -522,9 +522,17 @@ def run_lifecycle_gate(repo: str, phase: str, plan: list[str]) -> lifecycle.Disp
     res = lifecycle.dispatch(phase, repo)
     if not res.results:
         return res
-    plan.append(f"{phase}: " + ", ".join(f"{r.name} {'✓' if r.ok else '✗'}" for r in res.results))
+
+    def mark(r: lifecycle.HookResult) -> str:
+        if r.ok:
+            return "✓"
+        return "⚠" if r.advisory else "✗"   # ⚠ = 软提示失败（不阻断）；✗ = 硬拦截失败
+
+    plan.append(f"{phase}: " + ", ".join(f"{r.name} {mark(r)}" for r in res.results))
+    for r in res.advisory_failures:         # 软提示：本轮通报、不阻断（如 test 挂常因基线/环境）
+        plan.append(f"  ⚠ {r.name} failed (advisory, not blocking): {r.summary.splitlines()[0] if r.summary else ''}")
     if not res.proceed:
-        detail = "\n".join(f"    [{r.name}] {r.summary}" for r in res.failures)
+        detail = "\n".join(f"    [{r.name}] {r.summary}" for r in res.blocking_failures)
         step = "commit" if phase == "pre_commit" else "MR"
         raise SmartError(f"{phase} gate failed — aborting before {step}:\n{detail}")
     return res
