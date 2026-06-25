@@ -196,6 +196,14 @@ class Forge(abc.ABC):
         """The `limit` most-recently-created PRs in the repo, newest first."""
 
     @abc.abstractmethod
+    def default_branch(self) -> str:
+        """The repo's **forge-configured** default branch, e.g. 'main' / 'master' (one
+        repo-level GET). This is the remote source of truth, fresher and more reliable than
+        the local `refs/remotes/origin/HEAD` cache (which `git fetch` never updates). It is
+        NOT necessarily the branch a team merges into — a repo may default to `main` yet treat
+        `release` as trunk — so callers still layer a per-repo config override on top."""
+
+    @abc.abstractmethod
     def comments(self, number: int) -> list[Comment]: ...
 
     @abc.abstractmethod

@@ -67,6 +67,9 @@ class GitLabForge(Forge):
     def get(self, number: int) -> PullRequest:
         return self._to_pr(self.c.get(f"merge_requests/{number}"))
 
+    def default_branch(self) -> str:
+        return (self.c.get("") or {}).get("default_branch") or ""   # GET /projects/{id}
+
     def merge_readiness(self, number: int) -> MergeReadiness:
         return self._readiness(self.c.get(f"merge_requests/{number}"))
 

@@ -31,7 +31,7 @@ def is_protected_branch(branch: str | None) -> bool:
     return any(p.match(branch) for p in PROTECTED_BRANCH_PATTERNS)
 
 
-def get_ahead_behind(repo_dir: str | Path, target: str = "release") -> tuple[int, int] | None:
+def get_ahead_behind(repo_dir: str | Path, target: str = "main") -> tuple[int, int] | None:
     """(ahead, behind) relative to origin/<target>. None if target/count unavailable."""
     r = gitcmd.git(repo_dir, "rev-list", "--count", f"origin/{target}..HEAD")
     if not r.ok:
@@ -61,7 +61,7 @@ def get_workspace_status(repo_dir: str | Path) -> dict:
     return {"dirty": bool(lines), "modified_count": modified, "untracked_count": untracked}
 
 
-def target_exists(repo_dir: str | Path, target: str = "release") -> bool:
+def target_exists(repo_dir: str | Path, target: str = "main") -> bool:
     return gitcmd.git(repo_dir, "rev-parse", "--verify", f"origin/{target}").ok
 
 
@@ -70,23 +70,38 @@ def get_default_target(repo_dir: str | Path) -> str:
 
     Pure-local, offline-safe, zero network — safe on hot paths. Tradeoff: the
     local `refs/remotes/origin/HEAD` is NOT refreshed by `git fetch`, so it can
-    lag a remote default-branch change. `refresh_remote_head` (normal impl) keeps
-    it fresh at a low-freq boundary (SessionStart). See plan §5.2.
+    lag a remote default-branch change; the authoritative value is fetched from the
+    forge on a TTL boundary and cached in repo meta (`RepoMeta.default_branch`) — that
+    cache is what callers should prefer. This is its offline fallback. No "release"
+    bias: when origin/HEAD is absent, fall back to whichever of main/master exists, else main.
     """
     r = gitcmd.git(repo_dir, "symbolic-ref", "refs/remotes/origin/HEAD")
     if r.ok and r.out.startswith("refs/remotes/origin/"):
         return r.out.split("/", 3)[-1]
-    return "release"
+    for b in ("main", "master"):
+        if target_exists(repo_dir, b):
+            return b
+    return "main"
 
 
 def refresh_remote_head(repo_dir: str | Path, timeout: int = 5) -> bool:
-    """normal impl: refresh local origin/HEAD from the remote default branch.
-
-    One network round-trip. `git fetch` never touches origin/HEAD, so without
-    this a remote default-branch change leaves every derived target stale
-    forever. Call only at low-freq boundaries (SessionStart). Best-effort.
-    """
+    """Refresh local origin/HEAD from the remote default branch via one network round-trip
+    (`git fetch` never touches origin/HEAD). Best-effort. Used as the no-token fallback when
+    the forge can't supply the default branch (see context.repo._resolve_default_branch)."""
     return gitcmd.git(repo_dir, "remote", "set-head", "origin", "--auto", timeout=timeout).ok
+
+
+def set_local_default_head(repo_dir: str | Path, branch: str) -> bool:
+    """Point local `refs/remotes/origin/HEAD` at `branch` — purely local, no network.
+
+    Keeps the git-side cache consistent with an authoritative value resolved elsewhere (the
+    forge), so every `get_default_target` caller (gcampr, run_review, …) reads the same answer
+    without each re-querying. Best-effort.
+    """
+    if not branch:
+        return False
+    return gitcmd.git(repo_dir, "symbolic-ref", "refs/remotes/origin/HEAD",
+                      f"refs/remotes/origin/{branch}").ok
 
 
 def get_worktree_metadata(repo_dir: str | Path) -> tuple[bool, str, str | None]:

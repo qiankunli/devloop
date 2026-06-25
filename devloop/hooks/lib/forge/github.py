@@ -62,6 +62,9 @@ class GitHubForge(Forge):
     def get(self, number: int) -> PullRequest:
         return self._to_pr(self.c.get(f"pulls/{number}"))
 
+    def default_branch(self) -> str:
+        return (self.c.get("") or {}).get("default_branch") or ""   # GET /repos/{owner}/{name}
+
     def description(self, number: int) -> str:
         return self.c.get(f"pulls/{number}").get("body") or ""
 

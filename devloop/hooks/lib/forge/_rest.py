@@ -33,7 +33,7 @@ class RestClient:
         Maps 401/403 → ForgeAuthError, 404 → ForgeNotFound, else ForgeError. The
         ONLY HTTP call in the forge layer.
         """
-        url = f"{self.base_url}/{path.lstrip('/')}"
+        url = f"{self.base_url}/{path.lstrip('/')}" if path else self.base_url  # "" → repo root, no trailing slash
         if params:
             url += "?" + urllib.parse.urlencode(params, doseq=True)
         data = json.dumps(body).encode("utf-8") if body is not None else None
