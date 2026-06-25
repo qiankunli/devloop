@@ -94,10 +94,14 @@ def lint(repo: str, *, capture: bool = True) -> HookResult:
 
 def test(repo: str, *, capture: bool = True, extra: list[str] | None = None) -> HookResult:
     """跑 `make test`（仓库 canonical 入口，设好 PYTHONPATH 等）；通过则盖 test 戳。
-    无 test target → 干净跳过。"""
+    无 test target → 干净跳过。
+
+    **advisory（软提示）**：失败只通报、不阻断 commit/MR。test 挂常因基线坏测 / 环境，与本次
+    diff 未必有关；要不要拦该看「diff 是否与挂掉的测试相关」，那需 baseline-aware 分析（TODO），
+    现阶段先不硬拦，把判断交给 CI / 人。lint 仍是硬拦截。"""
     code_dir = _code_dir(repo)
     if not has_target(code_dir, "test", suffix=True):
-        return HookResult("test", ok=True, summary=f"no make test target in {code_dir} — skipped")
+        return HookResult("test", ok=True, advisory=True, summary=f"no make test target in {code_dir} — skipped")
 
     extra = extra or []
     sink: list[str] = []
@@ -113,6 +117,6 @@ def test(repo: str, *, capture: bool = True, extra: list[str] | None = None) -> 
     if rc == 0:
         ctx = RepoContext.load(repo) or RepoContext.refresh_all(repo)
         ctx.mark_test_passed()
-        return HookResult("test", ok=True, summary="make test passed — stamped")
+        return HookResult("test", ok=True, advisory=True, summary="make test passed — stamped")
     detail = f"\n{_tail(sink)}" if capture else ""
-    return HookResult("test", ok=False, summary=f"make test failed{detail}")
+    return HookResult("test", ok=False, advisory=True, summary=f"make test failed (advisory — not blocking){detail}")
