@@ -1957,6 +1957,10 @@ def test_run_review_format_comment():
     # 空 content 不留悬空破折号（ocr 自审挑出的 bug）
     out2 = rr._format_comment([{"path": "a.py", "start_line": 0, "end_line": 0, "content": ""}], 0, "r", "abc1234567")
     assert "- `a.py`" in out2 and "`a.py` —" not in out2
+    # 多 model：alias 显示在 loc 后，便于跨 model 对比
+    out3 = rr._format_comment([{"path": "a.py", "start_line": 1, "end_line": 1, "content": "x", "alias": "deepseek-v4-pro"}],
+                              0, "r", "abc1234567")
+    assert "`a.py:1-1` (deepseek-v4-pro) — x" in out3
 
 
 def test_run_review_build_background():
