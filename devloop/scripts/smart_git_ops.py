@@ -331,7 +331,7 @@ def resolve_intent(ns: argparse.Namespace, invoke_cwd: str) -> GitIntent:
     if not resolved:
         raise SmartError(how)
     record_active_repo(resolved.git_root)
-    target = ns.target or git_state.get_default_target(resolved.git_root)
+    target = ns.target or git_state.local_default_target(resolved.git_root)
     return GitIntent(
         mode=ns.mode,
         message=ns.message,

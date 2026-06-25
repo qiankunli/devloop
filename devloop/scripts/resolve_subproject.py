@@ -38,7 +38,7 @@ def make_worktree(repo_dir: str, tag: str) -> tuple[str | None, str]:
     wt_path = base / "worktrees" / tag
     if wt_path.is_dir():
         return str(wt_path.resolve()), "reused existing worktree"
-    target = git_state.get_default_target(repo_dir)
+    target = git_state.local_default_target(repo_dir)
     branch = f"worktree-{tag}"
     r = gitcmd.git(repo_dir, "worktree", "add", "-b", branch,
                    str(Path("worktrees") / tag), f"origin/{target}", timeout=30)

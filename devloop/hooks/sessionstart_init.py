@@ -8,7 +8,7 @@ devloop gets to cache-stable injection for session-grained content (plan §4/§6
 We `mark_session_emitted` so UserPromptSubmit dedups it until it actually changes
 (FileChanged / PostCompact clear the stamp to force a re-emit). `reset_turn_injection`
 makes the first prompt re-emit the volatile turn block (new session lost history).
-Also runs the normal-impl `refresh_remote_head` so the MR target is fresh.
+(MR-target freshness is handled inside `refresh_all` — TTL-gated, forge-first.)
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import git_state, hook_io, repo_layout, workspace  # noqa: E402
+from lib import hook_io, repo_layout, workspace  # noqa: E402
 from lib.context import RepoContext, WorkspaceContext  # noqa: E402
 
 
@@ -47,7 +47,8 @@ def build(inp: hook_io.HookInput) -> dict | None:
 
     git_root = repo_layout.find_git_root(inp.cwd)
     if git_root:
-        git_state.refresh_remote_head(git_root)   # normal impl: keep MR target fresh
+        # default-branch freshness is handled (TTL-gated, forge-first) inside refresh_all below;
+        # no separate unconditional set-head call here.
         # deliberately NO owner acquire: starting here only selects context, it doesn't
         # touch the checkout's mutable surface (working tree / index / branch position)。
         # 占有由第一笔变更动作建立(edit/checkout guard、posttool git refresh)——与

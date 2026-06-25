@@ -98,6 +98,9 @@ class _FakeForge(Forge):
         self.posted = getattr(self, "posted", [])
         self.posted.append((number, body))
 
+    def default_branch(self):
+        return "main"
+
 
 def _load_from(base, name):
     spec = importlib.util.spec_from_file_location(name, str(base / f"{name}.py"))
@@ -1465,29 +1468,14 @@ def test_remote_branches_segment_is_monitor_owned():
     assert RepoContext.load(R).branch.remote_tip("main").commit == "abc"
 
 
-def test_branch_json_backcompat_old_schema():
-    """A pre-existing flat branch.json (old current/worktree schema) loads without blanking to
-    'Branch: ?' — `current` migrates into local.name until the next refresh rewrites it (Codex P2)."""
-    from lib.context import RepoContext, base
-    R = "/tmp/dlut_oldschema"
-    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
-    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
-    _git(R, "checkout", "-q", "-b", "feat/a")
-    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
-    RepoContext.refresh_all(R)
-    base.save_segment(R, "branch", {"current": "feat/legacy", "protected": False, "target": "main",
-                                    "ahead": 0, "behind": 0, "worktree": {"is_linked": False}})
-    topo = RepoContext.load(R).branch
-    assert topo.local.name == "feat/legacy" and topo.target == "main"
-
-
 def test_remote_baseline_includes_target_and_fork_from():
     """Remote-tip polling tracks the repo's actual baseline (target + fork_from), not just the
     conventional trunks — so a develop/staging baseline gets a 'trunk moved' signal (Codex P2)."""
     from lib.context import base, prstate
     R = "/tmp/dlut_baseline"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/.devloop")
-    base.save_segment(R, "branch", {"local": {"name": "feat/x", "fork_from": "develop"}, "target": "staging"})
+    base.save_segment(R, "meta", {"repo": {"default_branch": "staging"}})   # target is now meta.default_branch
+    base.save_segment(R, "branch", {"local": {"name": "feat/x", "fork_from": "develop"}})
     bases = prstate._baseline_branches(R)
     assert "develop" in bases and "staging" in bases
     assert bases[:len(prstate.TRUNK_CANDIDATES)] == prstate.TRUNK_CANDIDATES   # conventional trunks first
@@ -1902,6 +1890,61 @@ def test_forge_comment_endpoint():
     assert gl.c.calls == [("merge_requests/7/notes", {"body": "hi"})]
     gh = GitHubForge("api.github.com", "o", "r", "t"); gh.c = _Cap(); gh.comment(7, "hi")
     assert gh.c.calls == [("issues/7/comments", {"body": "hi"})]
+
+
+def test_forge_default_branch():
+    """default_branch() 读 repo 根对象的 default_branch（gitlab GET /projects/{id}、
+    github GET /repos/{o}/{n}，路径为 ""）；缺字段 → ""。"""
+    from lib.forge.github import GitHubForge
+    from lib.forge.gitlab import GitLabForge
+
+    class _C:
+        def __init__(self, d): self.d, self.paths = d, []
+        def get(self, path): self.paths.append(path); return self.d
+
+    gl = GitLabForge("h", "o/r", "t"); gl.c = _C({"default_branch": "release"})
+    assert gl.default_branch() == "release" and gl.c.paths == [""]   # repo root
+    gh = GitHubForge("api.github.com", "o", "r", "t"); gh.c = _C({"default_branch": "main"})
+    assert gh.default_branch() == "main"
+    gl2 = GitLabForge("h", "o/r", "t"); gl2.c = _C({})
+    assert gl2.default_branch() == ""                                # missing field → empty
+
+
+def test_repo_meta_default_branch_roundtrip():
+    """default_branch + default_branch_at 经 asdict/from_dict 往返不丢(meta 段持久化路径)。"""
+    from dataclasses import asdict
+
+    from lib.context.repo import RepoMeta
+    m = RepoMeta(repo_dir="/r", default_branch="release", default_branch_at=123.0)
+    m2 = RepoMeta.from_dict(asdict(m))
+    assert m2.default_branch == "release" and m2.default_branch_at == 123.0
+
+
+def test_resolve_default_branch_ttl():
+    """TTL 门控:新鲜缓存零网络(不碰 forge);过期才取 forge 的权威值并打新时间戳。"""
+    from lib.context import base as B
+    from lib.context import repo as R
+
+    calls = {"forge": 0}
+
+    def _no_forge(d):
+        calls["forge"] += 1
+        return None
+
+    orig = R.forge_for_repo
+    R.forge_for_repo = _no_forge
+    try:
+        db, at = R._resolve_default_branch("/r", "main", B.now())   # 新鲜
+        assert db == "main" and calls["forge"] == 0                 # 命中缓存、未拉
+
+        class _F:
+            def default_branch(self): return "release"
+
+        R.forge_for_repo = lambda d: _F()
+        db2, at2 = R._resolve_default_branch("/r", "main", 0.0)     # 过期(at=0)
+        assert db2 == "release" and at2 > 0                         # forge 权威值 + 新时间戳
+    finally:
+        R.forge_for_repo = orig
 
 
 def test_run_review_format_comment():

@@ -14,17 +14,18 @@ PHASES = ("pre_commit", "post_commit", "pre_mr", "post_mr")
 _BUILTIN: dict[str, str] = {
     "lint": "lib.lifecycle.checks:lint",
     "test": "lib.lifecycle.checks:test",
-    "review": "lib.lifecycle.review:review",   # post_mr：审全量 MR diff，写 review.json + 发评论到 MR
+    "review": "lib.lifecycle.review:review",   # signal hook：后台审全量改动、写 review.json + 有开放 MR 时发评论（挂哪相位由 config 决定）
 }
 
 
 @dataclass(frozen=True)
 class BackgroundSpec:
-    """signal hook 的下游：一条由 agent/harness 起到后台、跑完唤醒 session 的命令。
+    """signal hook 的下游：一条跑到后台的命令。
 
     `dispatch` 自己**不能**起它——subprocess 派生的子进程 harness 不跟踪、跑完不会 re-invoke
-    会话。故 signal hook 把这条 spec 作为 `HookResult.relay` 返回，由调用方（smart_git_ops →
-    PLAN 的 `ARMED:` 行 → agent 用 run_in_background 起）落地。
+    会话。故 signal hook 把这条 spec 作为 `HookResult.relay` 返回，由调用方 `smart_git_ops`
+    在所裹的 git 动作后用 `Popen(start_new_session=True)` detach 起（fire-and-forget，结果经
+    状态总线下轮浮现，不靠 wake）。
     """
     name: str
     argv: list[str]

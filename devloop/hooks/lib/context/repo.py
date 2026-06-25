@@ -30,8 +30,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .. import git_state, parsers, repo_layout
+from ..forge import ForgeError, forge_for_repo
 from . import base
 from .base import (
+    DEFAULT_BRANCH_TTL_SEC,
     REPO_STALE_SEC,
     SESSION_TTL_SEC,
     TURN_TTL_SEC,
@@ -45,6 +47,34 @@ from .base import (
 )
 
 
+def _resolve_default_branch(repo_dir: str, prev_branch: str, prev_at: float) -> tuple[str, float]:
+    """The repo's default branch + when it was fetched. TTL-gated: a fresh cache is returned
+    as-is (zero network); only when stale do we hit the forge (the authoritative source,
+    fresher than the local origin/HEAD cache that `git fetch` never updates).
+
+    Fail-open: a forge error / missing token falls back to refreshing the local origin/HEAD
+    (git `set-head --auto`) then reading it; if even that yields nothing, the previous cached
+    value is kept (and `at` left stale so the next refresh retries). The timestamp only
+    advances on a successful authoritative fetch.
+    """
+    if prev_branch and not base.is_stale(prev_at, DEFAULT_BRANCH_TTL_SEC):
+        return prev_branch, prev_at                          # fresh cache → no network
+    forge = forge_for_repo(repo_dir)
+    if forge is not None:
+        try:
+            db = (forge.default_branch() or "").strip()
+            if db:
+                git_state.set_local_default_head(repo_dir, db)  # sync git cache so local_default_target agrees
+                return db, base.now()
+        except ForgeError:
+            pass
+    refreshed = git_state.refresh_remote_head(repo_dir)      # network set-head (syncs origin/HEAD); True if it succeeded
+    db = git_state.local_default_target(repo_dir)
+    if refreshed and db:
+        return db, base.now()                                # remote HEAD synced → authoritative → stamp (TTL now applies)
+    return (db or prev_branch or "main"), prev_at            # offline/forge-down → best available, leave at stale to retry
+
+
 # ── segment dataclasses ──────────────────────────────────────────────────────
 @dataclass
 class RepoMeta:
@@ -52,6 +82,8 @@ class RepoMeta:
     real_repo_dir: str = ""   # Path(repo_dir).resolve() — for git IO
     code_dir: str = ""        # where make/uv run (repo root or server/ backend/)
     language: str | None = None
+    default_branch: str = ""        # repo characteristic: the forge's default branch (canonical trunk).
+    default_branch_at: float = 0.0  # when it was last fetched from the forge (TTL freshness gate)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "RepoMeta":
@@ -61,6 +93,8 @@ class RepoMeta:
             real_repo_dir=d.get("real_repo_dir", ""),
             code_dir=d.get("code_dir", ""),
             language=d.get("language"),
+            default_branch=d.get("default_branch", ""),
+            default_branch_at=d.get("default_branch_at", 0.0),
         )
 
 
@@ -98,25 +132,19 @@ class BranchTopology:
     local: Branch = field(default_factory=Branch)
     remotes: list[Branch] = field(default_factory=list)        # monitor-owned (remote_branches.json)
     worktrees: list[Branch] = field(default_factory=list)
-    target: str = "release"                                    # canonical trunk to MR into / fork from
+    target: str = ""                                           # this checkout's trunk; derived from RepoMeta.default_branch at refresh
     pr_number: int | None = None                               # joined from pr.json (monitor-owned)
     remotes_fetched_at: float | None = None                    # provenance of `remotes`
 
     @classmethod
     def from_local_dict(cls, d: dict | None) -> "BranchTopology":
-        """Build the refresh-owned half (local + worktrees + target) from branch.json. remotes /
-        remotes_fetched_at / pr_number are merged in by `load` from their own segments.
-
-        Back-compat: a pre-existing flat branch.json (old `current`/`worktree` schema written by an
-        earlier devloop) has no `local` key — read its `current` into `local.name` so display and
-        the pr-join don't blank to 'Branch: ?' in the window between an upgrade and the next
-        git-state refresh (the cache is gitignored and regenerates fully then)."""
+        """Build the refresh-owned half (local + worktrees) from branch.json. `target` is derived
+        from RepoMeta.default_branch by `load` (single source — not stored here); remotes /
+        remotes_fetched_at / pr_number are merged in from their own segments."""
         d = d or {}
-        local = Branch.from_dict(d["local"]) if "local" in d else Branch(name=d.get("current"))
         return cls(
-            local=local,
+            local=Branch.from_dict(d.get("local")),
             worktrees=[Branch.from_dict(w) for w in (d.get("worktrees") or [])],
-            target=d.get("target", "release"),
         )
 
     def base_branch(self) -> str:
@@ -183,6 +211,7 @@ class RepoContext:
         if meta is None:
             return None
         branch = BranchTopology.from_local_dict(base.load_segment(repo_dir, "branch") or {})
+        branch.target = (meta.get("repo") or {}).get("default_branch", "")   # single source: RepoMeta.default_branch
         # monitor-owned remote trunk tips (remote_branches.json) + their provenance stamp.
         rb = base.load_segment(repo_dir, "remote_branches") or {}
         branch.remotes = [Branch.from_dict(r) for r in (rb.get("remotes") or [])]
@@ -235,8 +264,7 @@ class RepoContext:
         base.save_segment(self._root(), "branch", {
             "local": asdict(self.branch.local),
             "worktrees": [asdict(w) for w in self.branch.worktrees],
-            "target": self.branch.target,
-        })
+        })   # target not persisted here — derived from meta.default_branch (single source)
 
     def _save_pr(self) -> None:
         """Monitor's write surface (also used by gcampr via a one-shot poll). Branch-keyed
@@ -274,13 +302,18 @@ class RepoContext:
         code_dir = repo_layout.find_repo_code_dir(repo_dir_abs)
         language = repo_layout.detect_language(code_dir)
         agents_md_path = repo_layout.find_agents_md(repo_dir_abs, code_dir)
-        target = git_state.get_default_target(repo_dir_abs)
 
         prev = cls.load(repo_dir_abs) or cls()
+        # refresh_all is the TTL boundary (docstring): resolve the repo's default branch here,
+        # gated so the forge is hit at most once per DEFAULT_BRANCH_TTL_SEC despite frequent rebuilds.
+        default_branch, default_branch_at = _resolve_default_branch(
+            repo_dir_abs, prev.repo.default_branch, prev.repo.default_branch_at)
+        target = default_branch
         items = parsers.parse_references_section(agents_md_path) if agents_md_path else []
         ctx = cls(
             repo=RepoMeta(repo_dir=repo_dir_in, real_repo_dir=repo_dir_abs,
-                          code_dir=code_dir, language=language),
+                          code_dir=code_dir, language=language,
+                          default_branch=default_branch, default_branch_at=default_branch_at),
             agents_md=AgentsMd(
                 path=agents_md_path,
                 references=[Reference(title=r.get("title", ""), path=r.get("path", ""),
@@ -303,7 +336,8 @@ class RepoContext:
         ctx = cls.load(repo_dir)
         if ctx is None:
             return cls.refresh_all(repo_dir)
-        target = ctx.branch.target or git_state.get_default_target(ctx.repo.real_repo_dir)
+        # cached repo fact (zero network); local origin/HEAD only if cache empty
+        target = ctx.repo.default_branch or git_state.local_default_target(ctx.repo.real_repo_dir)
         ctx.branch = _build_topology(ctx.repo.real_repo_dir, target, ctx.branch)
         ctx._save_branch()
         return ctx
@@ -518,7 +552,7 @@ def _format_turn(ctx: "RepoContext") -> str:
     # 没机会写终态，review.json 会永远卡在 "running"。running 超过 REVIEW_STALE_SEC 即按 stale 报，
     # 不永远显示 running。
     if _rs == "running" and (base.now() - (_rv.get("generated_at") or 0)) > base.REVIEW_STALE_SEC:
-        lines.append(f"Review: stale on {_sha} — 疑似中途中断（见 .devloop/review.json），可重跑")
+        lines.append(f"Review: stale on {_sha} — 疑似中途中断（见 .devloop/review.json）；下次 gcampr/commit 会重跑")
     elif _rs == "running":
         lines.append(f"Review: running on {_sha} (.devloop/review.json)")
     elif _rs and _rs != "skipped":   # success / completed_with_(warnings|errors) / error；skipped 不出（噪声）
