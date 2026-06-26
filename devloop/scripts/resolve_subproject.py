@@ -32,22 +32,26 @@ def emit(line: str, code: int) -> int:
 
 
 def make_worktree(repo_dir: str, tag: str) -> tuple[str | None, str]:
-    """Create/reuse `worktrees/<tag>` (branch `worktree-<tag>`) off origin/<target>.
-    Returns (path, message). Idempotent: existing worktree dir is reused."""
+    """Create/reuse a worktree at `.worktrees/<tag>` (branch `worktree-<tag>`) off origin/<target>.
+    Worktrees live INSIDE the repo, never as siblings of it. New ones go under `.worktrees/`;
+    reuse also accepts the legacy `worktrees/` layout so older checkouts keep resolving.
+    Returns (path, message). Idempotent: an existing worktree dir is reused."""
     base = Path(repo_dir)
-    wt_path = base / "worktrees" / tag
-    if wt_path.is_dir():
-        return str(wt_path.resolve()), "reused existing worktree"
+    rel = Path(".worktrees") / tag
+    # reuse: prefer .worktrees/, fall back to the legacy worktrees/ dir
+    for legacy in (rel, Path("worktrees") / tag):
+        if (base / legacy).is_dir():
+            return str((base / legacy).resolve()), "reused existing worktree"
     target = git_state.local_default_target(repo_dir)
     branch = f"worktree-{tag}"
     r = gitcmd.git(repo_dir, "worktree", "add", "-b", branch,
-                   str(Path("worktrees") / tag), f"origin/{target}", timeout=30)
+                   str(rel), f"origin/{target}", timeout=30)
     if not r.ok:
         # branch may already exist → try without -b
-        r2 = gitcmd.git(repo_dir, "worktree", "add", str(Path("worktrees") / tag), branch, timeout=30)
+        r2 = gitcmd.git(repo_dir, "worktree", "add", str(rel), branch, timeout=30)
         if not r2.ok:
             return None, f"worktree add failed: {r.err or r2.err}"
-    return str(wt_path.resolve()), "created worktree"
+    return str((base / rel).resolve()), "created worktree"
 
 
 def parse_args(argv: list[str]) -> tuple[str | None, str | None]:
