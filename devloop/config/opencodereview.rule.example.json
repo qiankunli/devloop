@@ -1,5 +1,5 @@
 {
-  "_comment": "Open Code Review (ocr) 的项目规则模板。复制到 <repo>/.opencodereview/rule.json 后按本仓约定增删。path 为 glob，首个匹配命中。这里只放可积累的稳定业务约定，让 ocr 不靠运气。",
+  "_comment": "review 引擎的项目规则模板（schema 通用）。按引擎复制到对应路径：ccr→<repo>/.ccr/rule.json、ocr→<repo>/.opencodereview/rule.json，再按本仓约定增删。path 为 glob，首个匹配命中。这里只放可积累的稳定业务约定，让 review 不靠运气。",
   "rules": [
     {
       "path": "**/*.go",
