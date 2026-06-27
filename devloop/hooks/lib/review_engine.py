@@ -83,7 +83,7 @@ class CcrEngine:
         return "see github.com/qiankunli/case-code-review"
 
     def rule_path(self) -> str:
-        return "<repo>/.ccr/rule.json"
+        return "<repo>/.casecodereview/rule.json"
 
     def review(self, repo: str, from_ref: str, to_ref: str, background: str | None) -> ReviewResult:
         cmd = ["ccr", "review", "--from", from_ref, "--to", to_ref, "--format", "json", "--repo", repo]

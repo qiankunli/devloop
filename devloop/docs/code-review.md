@@ -126,8 +126,8 @@ review 才变。`status=skipped`（引擎/LLM 没配）不进注入,避免噪声
 
 ## 规则积累（让 review 不靠运气）
 
-引擎按 `--rule` > 项目级 > 全局 > 内置解析规则；**路径随引擎**：`ccr` 读 `<repo>/.ccr/rule.json`
-（全局 `~/.ccr/rule.json`），`ocr` 读 `<repo>/.opencodereview/rule.json`。把本项目稳定的业务约定
+引擎按 `--rule` > 项目级 > 全局 > 内置解析规则；**路径随引擎**：`ccr` 读 `<repo>/.casecodereview/rule.json`
+（全局 `~/.casecodereview/rule.json`），`ocr` 读 `<repo>/.opencodereview/rule.json`。把本项目稳定的业务约定
 （超时 / 连接池、SQL 可移植、分层、易错点）写进项目级 `rule.json`——它之于 review 就像 AGENTS.md
 之于进项目的人。模板（schema 通用，按引擎放对应路径）见
 [`config/opencodereview.rule.example.json`](../config/opencodereview.rule.example.json)。
