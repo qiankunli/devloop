@@ -62,8 +62,8 @@ tool 协议** `ReviewEngine` + `ReviewResult` + ocr/ccr adapter）、`forge.comm
 
 **切引擎**：默认 `ccr`，切回 ocr 在 `~/.devloop/config.json` 加 `"review": {"tool": "ocr"}`。
 devloop 只依赖 **review tool 协议**（`lib/review_engine.py` 的 `ReviewEngine`：`available()` /
-`configured()` / `review() → ReviewResult`）——ocr/ccr 是 adapter（恰好共用一套 CLI，复用
-`OcrFamilyEngine`）。**接一个非 ocr 系列的引擎 = 加个 adapter 实现协议，`run_review` 一行不动**。
+`configured()` / `review() → ReviewResult`）——ocr/ccr 各自独立 adapter（`CcrEngine` / `OcrEngine`，
+**刻意不共享基类、接受重复**，好让它们自由演进）。**接一个非 ocr 系列的引擎 = 加个 adapter 实现协议，`run_review` 一行不动**。
 引擎需自备 LLM（保留各自 key/endpoint，devloop 不接管）。未装引擎或未配 LLM → run_review 写
 `status=skipped` 退出，**不报错、不挡任何东西**。
 
