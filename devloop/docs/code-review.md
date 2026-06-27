@@ -42,7 +42,8 @@ run_review（后台、独立进程）：先写 status=running
 
 关键对象（锚点）：`lib/lifecycle/review.py`（`review` handler，返回 relay）、`smart_git_ops`
 （`launch_background_relays`，各相位 git 动作后 detach 起）、`scripts/run_review.py`（后台执行体：
-审全量 diff + 机会性发评论）、`forge.comment`（写评论原语，gitlab notes / github issue comment）、
+审全量 diff + 机会性发评论，经 `lib/review_engine.py` 协议调引擎）、`lib/review_engine.py`（**review
+tool 协议** `ReviewEngine` + `ReviewResult` + ocr/ccr adapter）、`forge.comment`（写评论原语，gitlab notes / github issue comment）、
 `.devloop/review.json`（结果段）、`context/repo.py` 的 `Review:` 注入行（pull）。
 
 ## 启用
@@ -59,9 +60,12 @@ run_review（后台、独立进程）：先写 status=running
 放 `post_mr` 是为了拿到 MR 号发评论;若只想要本地 review（不发 MR）放 `pre_commit`/`post_commit`
 也行——一样审、一样注入,只是没 MR 可评时不发评论。
 
-**切引擎**：默认 `ccr`，切回 ocr 在 `~/.devloop/config.json` 加 `"review": {"tool": "ocr"}`
-（二者共用 CLI，见 `run_review.py` 的 `_REVIEW_TOOLS`）。引擎需自备 LLM（保留各自 key/endpoint，
-devloop 不接管）。未装引擎或未配 LLM → run_review 写 `status=skipped` 退出，**不报错、不挡任何东西**。
+**切引擎**：默认 `ccr`，切回 ocr 在 `~/.devloop/config.json` 加 `"review": {"tool": "ocr"}`。
+devloop 只依赖 **review tool 协议**（`lib/review_engine.py` 的 `ReviewEngine`：`available()` /
+`configured()` / `review() → ReviewResult`）——ocr/ccr 是 adapter（恰好共用一套 CLI，复用
+`OcrFamilyEngine`）。**接一个非 ocr 系列的引擎 = 加个 adapter 实现协议，`run_review` 一行不动**。
+引擎需自备 LLM（保留各自 key/endpoint，devloop 不接管）。未装引擎或未配 LLM → run_review 写
+`status=skipped` 退出，**不报错、不挡任何东西**。
 
 ## `.devloop/review.json`
 

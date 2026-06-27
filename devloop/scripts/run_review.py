@@ -16,7 +16,6 @@ advisory：从不挡 commit。引擎没装 / LLM 没配好 → 写 `status=skipp
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -24,28 +23,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
-from lib import cli, config, git_state  # noqa: E402
+from lib import cli, config, git_state, review_engine  # noqa: E402
 from lib.context import base, record_active_repo  # noqa: E402
 from lib.forge import ForgeError, forge_for_repo, pr_label  # noqa: E402
 
 _MAX_COMMENT_FINDINGS = 30   # 评论里最多列几条，避免超长 MR 评论
-
-# Review 引擎抽象：ccr 是 ocr 的 fork，二者共用一套 CLI——都讲
-# `review --from --to --format json --repo [--background]`、`llm test`、`config set llm.*`。
-# 只有二进制名和安装提示不同，所以切换就是改一行配置：
-# `~/.devloop/config.json` 里 `{"review": {"tool": "ocr"}}`（默认 `ccr`）。
-# 再接一个 CLI 兼容的引擎 = 这里多一条。
-_REVIEW_TOOLS = {
-    "ccr": {"bin": "ccr", "install": "见 github.com/qiankunli/case-code-review"},
-    "ocr": {"bin": "ocr", "install": "npm i -g @alibaba-group/open-code-review"},
-}
-_DEFAULT_TOOL = "ccr"
-
-
-def _review_tool(repo: str) -> dict:
-    """解析配置的 review 引擎（默认 ccr）；未知名字回落到默认。"""
-    name = (config.load(repo).get("review") or {}).get("tool") or _DEFAULT_TOOL
-    return _REVIEW_TOOLS.get(name, _REVIEW_TOOLS[_DEFAULT_TOOL])
 
 
 def _head_sha(repo: str) -> str:
@@ -171,42 +153,37 @@ def main(argv: list[str]) -> int:
         print(f"run_review: {msg} — skipped")
         return 0
 
-    tool = _review_tool(repo)
-    bin_ = tool["bin"]
-    if not shutil.which(bin_):
-        return skip(f"{bin_} CLI not installed ({tool['install']})")
-    if subprocess.run([bin_, "llm", "test"], cwd=repo, capture_output=True).returncode != 0:
-        return skip(f"{bin_} LLM not configured — run `{bin_} config set llm.*`")
+    # devloop 只依赖 review_engine 协议——具体引擎（ccr / ocr / 别的）由配置选、adapter 实现。
+    # `review` 误配成非 dict（如 "review": "ccr"）也不能崩——advisory 进程从不报错。
+    review_cfg = config.load(repo).get("review")
+    tool_name = review_cfg.get("tool") if isinstance(review_cfg, dict) else None
+    engine = review_engine.resolve(tool_name)
+    if not engine.available():
+        return skip(f"{engine.name} CLI not installed ({engine.install_hint()})")
+    if not engine.configured(repo):
+        return skip(f"{engine.name} LLM not configured — run `{engine.name} config set llm.*`")
 
     target = git_state.local_default_target(repo)
     range_label = f"origin/{target}..HEAD"
     forge, pr = _open_mr(repo, _branch(repo))                       # 找一次，下面 background + 发评论都复用
     background = _build_background(repo, target, forge, pr, ns.background)
-    cmd = [bin_, "review", "--from", f"origin/{target}", "--to", "HEAD", "--format", "json", "--repo", repo]
-    if background:
-        cmd += ["--background", background]
 
-    r = subprocess.run(cmd, cwd=repo, capture_output=True, text=True)
-    try:
-        out = json.loads(r.stdout)
-    except json.JSONDecodeError:
+    result = engine.review(repo, f"origin/{target}", "HEAD", background)
+    if not result.ok:
         _write(repo, status="error", reviewed_sha=sha, comments=[], count=0, failed=0,
-               message=(r.stderr or r.stdout or f"{bin_} produced no JSON")[-2000:], generated_at=base.now())
+               message=result.error, generated_at=base.now())
         _append_history(repo, started, status="error", sha=sha, count=0, failed=0, range=range_label)
-        print(f"run_review: {bin_} output not parseable (rc={r.returncode}) — see .devloop/review.json")
+        print(f"run_review: {engine.name} output not parseable — see .devloop/review.json")
         return 0
 
-    comments = out.get("comments") or []
-    warnings = out.get("warnings") or []
-    failed = sum(1 for w in warnings if isinstance(w, dict) and w.get("type") == "subtask_error")
-    posted = _post(forge, pr, _format_comment(comments, failed, range_label, sha))
-    status = out.get("status", "success")
-    _write(repo, status=status, reviewed_sha=sha, comments=comments,
-           count=len(comments), failed=failed, warnings=warnings, message=out.get("message", ""),
+    comments = result.comments
+    posted = _post(forge, pr, _format_comment(comments, result.failed, range_label, sha))
+    _write(repo, status=result.status, reviewed_sha=sha, comments=comments,
+           count=len(comments), failed=result.failed, warnings=result.warnings, message=result.message,
            reviewed_range=range_label, mr_comment=posted, generated_at=base.now())
-    _append_history(repo, started, status=status, sha=sha, count=len(comments), failed=failed,
+    _append_history(repo, started, status=result.status, sha=sha, count=len(comments), failed=result.failed,
                     range=range_label, posted=posted)
-    print(f"run_review: {len(comments)} comment(s), {failed} file(s) failed on {range_label}"
+    print(f"run_review: {len(comments)} comment(s), {result.failed} file(s) failed on {range_label}"
           + (f" · {posted}" if posted else "") + " → .devloop/review.json")
     return 0
 

@@ -1857,15 +1857,25 @@ def test_run_review_skips_without_engine():
     G = "/tmp/dlut_rr"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
     Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
-    orig = rr.shutil.which
-    rr.shutil.which = lambda name: None          # 假装引擎不在 PATH
+    orig = rr.review_engine.shutil.which
+    rr.review_engine.shutil.which = lambda name: None   # 假装引擎不在 PATH（which 在协议 adapter 里）
     try:
         rc = rr.main(["--repo", G])
     finally:
-        rr.shutil.which = orig
+        rr.review_engine.shutil.which = orig
     assert rc == 0
     seg = base.load_segment(G, "review")
     assert seg and seg["status"] == "skipped" and "not installed" in seg["message"] and seg["count"] == 0
+
+
+def test_review_engine_resolve():
+    """review tool 协议：按名解析引擎，未知 / 空回落默认 ccr；ReviewResult 归一化形状。"""
+    re = _load_script("run_review").review_engine
+    assert re.resolve(None).name == "ccr"      # 未配 → 默认
+    assert re.resolve("ocr").name == "ocr"
+    assert re.resolve("nope").name == "ccr"    # 未知 → 回落默认（不报错）
+    r = re.ReviewResult(ok=True, comments=[1], failed=2)
+    assert r.ok and r.comments == [1] and r.failed == 2 and r.warnings == [] and r.status == "success"
 
 
 def test_review_injection_line():
