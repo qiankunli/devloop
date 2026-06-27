@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""code-review hook 的后台执行体：跑 `ocr` 审整条 MR 的全量改动，结果写 `.devloop/review.json`
+"""code-review hook 的后台执行体：跑配置的 review 引擎（默认 `ccr`，可切 `ocr`）审整条 MR 的全量改动，结果写 `.devloop/review.json`
 并作为一条评论**发到该分支的 MR 上**——让 review 历史挂在 MR 上、可跟踪对比。
 
 由 lifecycle 的 `review` signal hook（挂 `post_mr`）经 detach 起（见 docs/code-review.md）。审
 `origin/<target>..HEAD`（整条分支 vs target）；查到分支的开放 MR 就发评论，没有就只落 review.json。
 
-为提准，自动给 ocr 拼 `--background`（业务上下文）：本次提交说明 + MR 标题/描述（detach 进程
+为提准，自动给引擎拼 `--background`（业务上下文）：本次提交说明 + MR 标题/描述（detach 进程
 自己经 git log / forge 取，不依赖会话）。
 
 每次运行终态还追加一行到 `.devloop/review-history.jsonl`（append-only）——review.json 只留最新一次，
 这条历史用于统计运行次数 / 跟踪。
 
-advisory：从不挡 commit。ocr 没装 / LLM 没配好 → 写 `status=skipped` 退出 0，不报错。
+advisory：从不挡 commit。引擎没装 / LLM 没配好 → 写 `status=skipped` 退出 0，不报错。
 """
 from __future__ import annotations
 
@@ -24,11 +24,28 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
-from lib import cli, git_state  # noqa: E402
+from lib import cli, config, git_state  # noqa: E402
 from lib.context import base, record_active_repo  # noqa: E402
 from lib.forge import ForgeError, forge_for_repo, pr_label  # noqa: E402
 
 _MAX_COMMENT_FINDINGS = 30   # 评论里最多列几条，避免超长 MR 评论
+
+# Review 引擎抽象：ccr 是 ocr 的 fork，二者共用一套 CLI——都讲
+# `review --from --to --format json --repo [--background]`、`llm test`、`config set llm.*`。
+# 只有二进制名和安装提示不同，所以切换就是改一行配置：
+# `~/.devloop/config.json` 里 `{"review": {"tool": "ocr"}}`（默认 `ccr`）。
+# 再接一个 CLI 兼容的引擎 = 这里多一条。
+_REVIEW_TOOLS = {
+    "ccr": {"bin": "ccr", "install": "见 github.com/qiankunli/case-code-review"},
+    "ocr": {"bin": "ocr", "install": "npm i -g @alibaba-group/open-code-review"},
+}
+_DEFAULT_TOOL = "ccr"
+
+
+def _review_tool(repo: str) -> dict:
+    """解析配置的 review 引擎（默认 ccr）；未知名字回落到默认。"""
+    name = (config.load(repo).get("review") or {}).get("tool") or _DEFAULT_TOOL
+    return _REVIEW_TOOLS.get(name, _REVIEW_TOOLS[_DEFAULT_TOOL])
 
 
 def _head_sha(repo: str) -> str:
@@ -60,8 +77,8 @@ def _append_history(repo: str, started: float, **fields) -> None:
 
 
 def _format_comment(comments: list, failed: int, range_label: str, sha: str) -> str:
-    """把 ocr 结果格式化成一条 MR 评论(markdown)。run_review 自主发,无 agent 参与,故在此成文;
-    优先级分级是 agent 在会话里做的事,这条历史评论只如实列出 ocr 的原始 findings。"""
+    """把引擎结果格式化成一条 MR 评论(markdown)。run_review 自主发,无 agent 参与,故在此成文;
+    优先级分级是 agent 在会话里做的事,这条历史评论只如实列出引擎的原始 findings。"""
     head = f"🤖 **devloop code-review** · `{range_label}` · `{sha[:9]}`"
     if not comments and not failed:
         return f"{head}\n\n✅ 无 findings(clean)。"
@@ -76,7 +93,7 @@ def _format_comment(comments: list, failed: int, range_label: str, sha: str) -> 
         s, e = c.get("start_line", 0), c.get("end_line", 0)
         if s or e:
             loc += f":{s}-{e}"
-        alias = (c.get("alias") or "").strip()   # 多 model 池里哪个 model 出的（ocr routing alias），便于对比
+        alias = (c.get("alias") or "").strip()   # 多 model 池里哪个 model 出的（引擎 routing alias），便于对比
         tag = f" ({alias})" if alias else ""
         body = (c.get("content") or "").strip().replace("\n", " ")
         lines.append(f"- `{loc}`{tag} — {body[:300]}" if body else f"- `{loc}`{tag}")   # 空 content 不留悬空破折号
@@ -102,7 +119,7 @@ def _open_mr(repo: str, branch: str):
 
 
 def _build_background(repo: str, target: str, forge, pr, extra: str | None) -> str:
-    """拼 ocr 的 `--background`（业务上下文，喂进每个文件的 review prompt 以提准）：
+    """拼引擎的 `--background`（业务上下文，喂进每个文件的 review prompt 以提准）：
     本次提交说明（git log）+ MR 标题/描述（forge）+ 显式 `-b`。全是 detach 进程自己能拿到的，
     不依赖会话。每段 `_BG_CAP` 截断——它每文件都注，务必控长。"""
     parts = []
@@ -137,9 +154,9 @@ def _post(forge, pr, body: str) -> str:
 
 
 def main(argv: list[str]) -> int:
-    ap = cli.ArgParser(prog="run_review.py", description="ocr review the MR diff → .devloop/review.json + MR comment")
+    ap = cli.ArgParser(prog="run_review.py", description="review the MR diff (ccr/ocr) → .devloop/review.json + MR comment")
     cli.add_repo_arg(ap)
-    ap.add_argument("--background", "-b", default=None, help="optional business/requirement context for ocr")
+    ap.add_argument("--background", "-b", default=None, help="optional business/requirement context for the review engine")
     ns = ap.parse_args(argv)
     resolved, _ = cli.resolve_repo_or_exit(ns, "run_review")
     repo = resolved.git_root
@@ -154,16 +171,18 @@ def main(argv: list[str]) -> int:
         print(f"run_review: {msg} — skipped")
         return 0
 
-    if not shutil.which("ocr"):
-        return skip("ocr CLI not installed (npm i -g @alibaba-group/open-code-review)")
-    if subprocess.run(["ocr", "llm", "test"], cwd=repo, capture_output=True).returncode != 0:
-        return skip("ocr LLM not configured (ocr config set llm.* or OCR_LLM_*)")
+    tool = _review_tool(repo)
+    bin_ = tool["bin"]
+    if not shutil.which(bin_):
+        return skip(f"{bin_} CLI not installed ({tool['install']})")
+    if subprocess.run([bin_, "llm", "test"], cwd=repo, capture_output=True).returncode != 0:
+        return skip(f"{bin_} LLM not configured — run `{bin_} config set llm.*`")
 
     target = git_state.local_default_target(repo)
     range_label = f"origin/{target}..HEAD"
     forge, pr = _open_mr(repo, _branch(repo))                       # 找一次，下面 background + 发评论都复用
     background = _build_background(repo, target, forge, pr, ns.background)
-    cmd = ["ocr", "review", "--from", f"origin/{target}", "--to", "HEAD", "--format", "json", "--repo", repo]
+    cmd = [bin_, "review", "--from", f"origin/{target}", "--to", "HEAD", "--format", "json", "--repo", repo]
     if background:
         cmd += ["--background", background]
 
@@ -172,9 +191,9 @@ def main(argv: list[str]) -> int:
         out = json.loads(r.stdout)
     except json.JSONDecodeError:
         _write(repo, status="error", reviewed_sha=sha, comments=[], count=0, failed=0,
-               message=(r.stderr or r.stdout or "ocr produced no JSON")[-2000:], generated_at=base.now())
+               message=(r.stderr or r.stdout or f"{bin_} produced no JSON")[-2000:], generated_at=base.now())
         _append_history(repo, started, status="error", sha=sha, count=0, failed=0, range=range_label)
-        print(f"run_review: ocr output not parseable (rc={r.returncode}) — see .devloop/review.json")
+        print(f"run_review: {bin_} output not parseable (rc={r.returncode}) — see .devloop/review.json")
         return 0
 
     comments = out.get("comments") or []

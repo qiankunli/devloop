@@ -6,6 +6,8 @@
     "gitlab.example.com": { "type": "gitlab", "token": "", "api_host": "" }
   },
 
+  "review": { "tool": "ccr" },
+
   "lifecycle": {
     "default": { "pre_commit": [], "post_commit": [], "pre_mr": [], "post_mr": [] },
     "repos": {
