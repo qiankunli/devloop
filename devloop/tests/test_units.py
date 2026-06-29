@@ -2068,6 +2068,55 @@ def test_run_review_append_history():
         assert _json.loads(lines[1])["status"] == "skipped"
 
 
+def test_findings_for_history_status_from_warnings():
+    """history findings 带 unit_id + 状态：成功文件 ok、失败(超时)文件 failed+reason。"""
+    rr = _load_script("run_review")
+    comments = [
+        {"path": "a.go", "unit_id": "a.go::F", "content": "missing nil check"},
+        {"path": "b.go", "unit_id": "b.go::G", "content": "garbage from timeout"},
+    ]
+    warnings = [{"type": "subtask_error", "file": "b.go", "message": "context deadline exceeded"}]
+    out = rr._findings_for_history(comments, warnings)
+    assert out[0]["unit_id"] == "a.go::F" and out[0]["status"] == "ok"
+    assert out[1]["status"] == "failed" and "deadline" in out[1]["reason"]
+
+
+def test_build_history_feed_filters_ok_and_keys_by_unit():
+    """回喂只取本 PR 上一轮的 ok findings、按 unit-id keyed；failed / 无 unit_id / 别的 PR 都跳过。"""
+    import json as _json
+    import tempfile
+    from pathlib import Path as _Path
+    rr = _load_script("run_review")
+    with tempfile.TemporaryDirectory() as d:
+        sd = _Path(d) / ".devloop"
+        sd.mkdir()
+        rows = [
+            {"sha": "otherpr", "pr_number": 9, "findings": [{"unit_id": "z.go::Z", "msg": "other", "status": "ok"}]},
+            {"sha": "priorsha", "pr_number": 7, "findings": [
+                {"unit_id": "a.go::F", "msg": "missing nil check", "status": "ok"},
+                {"unit_id": "b.go::G", "msg": "garbage", "status": "failed", "reason": "timeout"},
+                {"unit_id": "", "msg": "no unit", "status": "ok"},
+            ]},
+        ]
+        (sd / "review-history.jsonl").write_text("\n".join(_json.dumps(r) for r in rows) + "\n")
+        path = rr._build_history_feed(d, 7, "currentsha")
+        assert path is not None
+        data = _json.loads(_Path(path).read_text())
+        assert list(data.keys()) == ["a.go::F"]            # only ok + has unit_id, only this PR
+        assert data["a.go::F"][0]["msg"] == "missing nil check"
+        assert data["a.go::F"][0]["sha"] == "priorsha"     # the prior row's sha
+
+
+def test_build_history_feed_none_when_no_pr_or_history():
+    import tempfile
+    from pathlib import Path as _Path
+    rr = _load_script("run_review")
+    with tempfile.TemporaryDirectory() as d:
+        assert rr._build_history_feed(d, None, "sha") is None   # no PR -> no feed
+        (_Path(d) / ".devloop").mkdir()
+        assert rr._build_history_feed(d, 7, "sha") is None      # no history file -> None
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = []
