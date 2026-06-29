@@ -146,7 +146,7 @@ def _findings_for_history(comments: list, warnings: list) -> list:
     out = []
     for c in comments:
         path = c.get("path", "")
-        rec = {"unit_id": c.get("unit_id") or "", "path": path, "msg": (c.get("content") or "").strip()}
+        rec = {"symbol_id": c.get("symbol_id") or "", "path": path, "msg": (c.get("content") or "").strip()}
         if path in failed:
             rec["status"], rec["reason"] = "failed", (failed[path][:120] or "review_error")
         else:
@@ -156,9 +156,9 @@ def _findings_for_history(comments: list, warnings: list) -> list:
 
 
 def _build_history_feed(repo: str, pr_number, current_sha: str) -> str | None:
-    """Write `.devloop/history.json` (unit-id -> prior findings) from the most
+    """Write `.devloop/history.json` (symbol-id -> prior findings) from the most
     recent prior review of THIS pr, for `ccr review --history`. Only `ok` findings
-    with a unit-id are carried (a failed/timed-out file's findings are skipped — we
+    with a symbol-id are carried (a failed/timed-out file's findings are skipped — we
     can't trust them). Returns the path, or None when there's no prior round or
     nothing to feed."""
     if not pr_number:
@@ -184,7 +184,7 @@ def _build_history_feed(repo: str, pr_number, current_sha: str) -> str | None:
         return None
     by_unit: dict = {}
     for f in prior.get("findings") or []:
-        uid = f.get("unit_id") or ""
+        uid = f.get("symbol_id") or ""
         if f.get("status") != "ok" or not uid:
             continue
         by_unit.setdefault(uid, []).append({"msg": f.get("msg", ""), "sha": (prior.get("sha") or "")[:9]})
