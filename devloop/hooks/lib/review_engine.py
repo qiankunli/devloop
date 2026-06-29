@@ -38,6 +38,7 @@ class ReviewResult:
     comments: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     failed: int = 0                            # review 失败的文件数
+    models: dict = field(default_factory=dict)  # routing alias -> #responses（去重）；review 级 model 身份，clean 也有
     message: str = ""
     error: str = ""                            # ok=False 时的诊断（写进 review.json）
 
@@ -107,7 +108,8 @@ class CcrEngine:
         failed = sum(1 for w in warnings if isinstance(w, dict) and w.get("type") == "subtask_error")
         return ReviewResult(ok=True, status=out.get("status", "success"),
                             comments=out.get("comments") or [], warnings=warnings,
-                            failed=failed, message=out.get("message", ""))
+                            failed=failed, models=(out.get("summary") or {}).get("models") or {},
+                            message=out.get("message", ""))
 
 
 class OcrEngine:
@@ -151,7 +153,8 @@ class OcrEngine:
         failed = sum(1 for w in warnings if isinstance(w, dict) and w.get("type") == "subtask_error")
         return ReviewResult(ok=True, status=out.get("status", "success"),
                             comments=out.get("comments") or [], warnings=warnings,
-                            failed=failed, message=out.get("message", ""))
+                            failed=failed, models=(out.get("summary") or {}).get("models") or {},
+                            message=out.get("message", ""))
 
 
 # 注册表：name → 引擎实例。默认 ccr；切换是一行配置 `{"review": {"tool": "ocr"}}`。

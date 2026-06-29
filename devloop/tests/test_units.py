@@ -2117,6 +2117,16 @@ def test_build_history_feed_none_when_no_pr_or_history():
         assert rr._build_history_feed(d, 7, "sha") is None      # no history file -> None
 
 
+def test_format_comment_shows_models():
+    """review 级 model 身份打进 header（alias×次数、按 alias 排序去重），clean review 也打。"""
+    rr = _load_script("run_review")
+    head = rr._format_comment([], 0, "origin/main..HEAD", "abc1234567",
+                              {"seed-2.1-turbo": 1, "deepseek-v4-pro": 2})
+    assert "models: deepseek-v4-pro×2, seed-2.1-turbo×1" in head  # sorted by alias, with counts
+    assert "clean" in head                                        # still the clean line
+    assert "models:" not in rr._format_comment([], 0, "r", "s", {})  # no models -> no segment
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = []
