@@ -532,6 +532,40 @@ def test_wait_for_pr_change():
     assert reason2 == "timeout"
 
 
+def test_wait_for_review_change():
+    """One-shot Wake for the review path: snapshots the review's wake_key — the SAME actionable-
+    review key `review_channel` pushes on (reused, NOT re-derived, so the no-channel waiter and the
+    channel never diverge) — exits 'changed' when an actionable terminal review with a different key
+    lands, else 'timeout'. A clean review (key stays None) is deliberately NOT a wake — it's left to
+    the next-prompt pull. sleep/clock injected so the test never actually waits."""
+    from lib.context import base
+    waiter = _load_script("wait_for_review_change")
+    R = "/tmp/dlut_rwaiter"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    # arm while the review is still running → baseline key None
+    base.save_segment(R, "review", {"status": "running", "reviewed_sha": "a", "count": 0})
+
+    # fake sleep flips the review to an ACTIONABLE terminal state (2 findings) on its 2nd tick
+    st = {"t": 0.0, "n": 0}
+    def land(dt):
+        st["t"] += dt; st["n"] += 1
+        if st["n"] == 2:
+            base.save_segment(R, "review", {"status": "success", "count": 2,
+                                            "reviewed_sha": "a", "generated_at": 100.0})
+    reason, key = waiter.wait_for_change(R, interval=1, timeout=100, sleep=land, clock=lambda: st["t"])
+    assert reason == "changed" and key == ("a", "success", 100.0)
+
+    # a review that finishes CLEAN (no findings/failures) is not wake-worthy → key stays None → timeout
+    base.save_segment(R, "review", {"status": "running", "reviewed_sha": "b", "count": 0})
+    ct = {"t": 0.0, "n": 0}
+    def clean(dt):
+        ct["t"] += dt; ct["n"] += 1
+        if ct["n"] == 2:
+            base.save_segment(R, "review", {"status": "success", "count": 0, "failed": 0,
+                                            "reviewed_sha": "b", "generated_at": 200.0})
+    reason2, _ = waiter.wait_for_change(R, interval=1, timeout=5, sleep=clean, clock=lambda: ct["t"])
+    assert reason2 == "timeout"          # clean review never wakes — same gate as the channel
+
+
 def test_notify_port_and_forge_producer():
     """notify port: ChannelNotifier satisfies the Notifier protocol (channel is one delivery
     impl, mcp imported lazily so this loads without it). forge producer: seg_key mirrors the
