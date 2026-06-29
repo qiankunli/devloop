@@ -135,6 +135,67 @@ def _post(forge, pr, body: str) -> str:
         return f"MR comment failed (non-fatal): {e}"
 
 
+def _findings_for_history(comments: list, warnings: list) -> list:
+    """Per-finding record for review-history.jsonl, tagged with its file's review
+    status: a finding from a file that failed (timeout / token limit) is marked
+    `failed` so the next round won't feed an unverified finding back as context."""
+    failed = {w.get("file"): (w.get("message") or "")
+              for w in (warnings or []) if isinstance(w, dict) and w.get("type") == "subtask_error"}
+    out = []
+    for c in comments:
+        path = c.get("path", "")
+        rec = {"unit_id": c.get("unit_id") or "", "path": path, "msg": (c.get("content") or "").strip()}
+        if path in failed:
+            rec["status"], rec["reason"] = "failed", (failed[path][:120] or "review_error")
+        else:
+            rec["status"] = "ok"
+        out.append(rec)
+    return out
+
+
+def _build_history_feed(repo: str, pr_number, current_sha: str) -> str | None:
+    """Write `.devloop/history.json` (unit-id -> prior findings) from the most
+    recent prior review of THIS pr, for `ccr review --history`. Only `ok` findings
+    with a unit-id are carried (a failed/timed-out file's findings are skipped — we
+    can't trust them). Returns the path, or None when there's no prior round or
+    nothing to feed."""
+    if not pr_number:
+        return None
+    hist = base.state_dir(repo) / "review-history.jsonl"
+    if not hist.exists():
+        return None
+    prior = None
+    try:
+        for line in hist.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            # last row matching this PR (and not the current sha) = its prior review
+            if row.get("pr_number") == pr_number and row.get("sha") != current_sha:
+                prior = row
+    except OSError:
+        return None
+    if not prior:
+        return None
+    by_unit: dict = {}
+    for f in prior.get("findings") or []:
+        uid = f.get("unit_id") or ""
+        if f.get("status") != "ok" or not uid:
+            continue
+        by_unit.setdefault(uid, []).append({"msg": f.get("msg", ""), "sha": (prior.get("sha") or "")[:9]})
+    if not by_unit:
+        return None
+    out = base.state_dir(repo) / "history.json"
+    try:
+        out.write_text(json.dumps(by_unit, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        return None
+    return str(out)
+
+
 def main(argv: list[str]) -> int:
     ap = cli.ArgParser(prog="run_review.py", description="review the MR diff (ccr/ocr) → .devloop/review.json + MR comment")
     cli.add_repo_arg(ap)
@@ -167,8 +228,10 @@ def main(argv: list[str]) -> int:
     range_label = f"origin/{target}..HEAD"
     forge, pr = _open_mr(repo, _branch(repo))                       # 找一次，下面 background + 发评论都复用
     background = _build_background(repo, target, forge, pr, ns.background)
+    pr_number = pr.number if pr else None
+    history_path = _build_history_feed(repo, pr_number, sha)   # this PR's prior findings → ccr --history
 
-    result = engine.review(repo, f"origin/{target}", "HEAD", background)
+    result = engine.review(repo, f"origin/{target}", "HEAD", background, history_path)
     if not result.ok:
         _write(repo, status="error", reviewed_sha=sha, comments=[], count=0, failed=0,
                message=result.error, generated_at=base.now())
@@ -181,7 +244,9 @@ def main(argv: list[str]) -> int:
     _write(repo, status=result.status, reviewed_sha=sha, comments=comments,
            count=len(comments), failed=result.failed, warnings=result.warnings, message=result.message,
            reviewed_range=range_label, mr_comment=posted, generated_at=base.now())
-    _append_history(repo, started, status=result.status, sha=sha, count=len(comments), failed=result.failed,
+    _append_history(repo, started, status=result.status, sha=sha, pr_number=pr_number,
+                    count=len(comments), failed=result.failed,
+                    findings=_findings_for_history(comments, result.warnings),
                     range=range_label, posted=posted)
     print(f"run_review: {len(comments)} comment(s), {result.failed} file(s) failed on {range_label}"
           + (f" · {posted}" if posted else "") + " → .devloop/review.json")

@@ -59,7 +59,8 @@ class ReviewEngine(Protocol):
     def rule_path(self) -> str:                # 项目级 rule.json 位置（给文档 / 提示）
         ...
 
-    def review(self, repo: str, from_ref: str, to_ref: str, background: str | None) -> ReviewResult:
+    def review(self, repo: str, from_ref: str, to_ref: str, background: str | None,
+               history_path: str | None = None) -> ReviewResult:
         ...
 
 
@@ -85,10 +86,13 @@ class CcrEngine:
     def rule_path(self) -> str:
         return "<repo>/.casecodereview/rule.json"
 
-    def review(self, repo: str, from_ref: str, to_ref: str, background: str | None) -> ReviewResult:
+    def review(self, repo: str, from_ref: str, to_ref: str, background: str | None,
+               history_path: str | None = None) -> ReviewResult:
         cmd = ["ccr", "review", "--from", from_ref, "--to", to_ref, "--format", "json", "--repo", repo]
         if background:
             cmd += ["--background", background]
+        if history_path:  # prior-review findings, injected per unit so the reviewer reconciles them
+            cmd += ["--history", history_path]
         try:
             r = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=_REVIEW_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -127,7 +131,9 @@ class OcrEngine:
     def rule_path(self) -> str:
         return "<repo>/.opencodereview/rule.json"
 
-    def review(self, repo: str, from_ref: str, to_ref: str, background: str | None) -> ReviewResult:
+    def review(self, repo: str, from_ref: str, to_ref: str, background: str | None,
+               history_path: str | None = None) -> ReviewResult:
+        # history_path ignored: per-unit review history is a ccr-only concept (ocr has no unit).
         cmd = ["ocr", "review", "--from", from_ref, "--to", to_ref, "--format", "json", "--repo", repo]
         if background:
             cmd += ["--background", background]
