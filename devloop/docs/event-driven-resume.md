@@ -83,20 +83,21 @@ Claude Code 的 **channels**（research preview，v2.1.80+；[channels-reference
 - **`hooks/lib/notify/base.py`** —— 三个端口：`Notification`（content/kind/meta，只说"surface 什么"）、`Notifier` 协议（`deliver`）、`Source` 协议（`name`/`instructions` + `seed(repo)`/`step(repo,carry)→(carry, [Notification])`，纯函数式触发判定，可脱离 runner 单测）。
 - **`hooks/lib/notify/channel.py`** —— channel transport。`ChannelNotifier`（push 成 `notifications/claude/channel`）+ `run_channel(source, repos)`（MCP server 壳，长驻 pump 一个 Source、多次唤醒、set-and-forget）。`mcp` lazy import，无依赖也能导入 / 测。
 - **`hooks/lib/notify/waiter.py`** —— waiter transport。`StdoutNotifier`（print content 到一次性任务的 stdout）+ `run_waiter(source, repo)`（步进 Source 到首次触发即 deliver + 返回、进程退出 = 唤醒；单次唤醒、stdlib only，不碰 `mcp`/`anyio`）。
-- **`hooks/lib/notify/sources/`** —— 各 Source（触发判定收在这里，不在 runner）：`review.py`（`ReviewSource`/`wake_key`，盯 `.devloop/review.json`，终态且有可动作内容才 fire `review_done`、带 findings inline；`generated_at` 入 key 故同 sha 重跑唤一次；clean/running/skipped 不唤，留给 next-prompt pull——见 `context/repo.py`）；`forge.py`（`ForgeSource`，盯 `.devloop/pr.json`，两独立信号：`pr_change` 走 lifecycle level-key、`merge_blocked` 走边沿+迟滞）。`SOURCES` 是 name→Source 注册表。
-- **`scripts/notify.py`** —— 统一 dispatcher：`notify.py {channel|waiter} {forge|review} <target>`。加一个 deploy / verdict 源 = 写个 `Source` 模块 + `SOURCES` 加一条，两套 transport 自动都有，不碰 runner。
+- **`hooks/lib/notify/sources/`** —— 各 Source（触发判定收在这里，不在 runner）：`review.py`（`ReviewSource`/`wake_key`，盯 `.devloop/review.json`，终态且有可动作内容才 fire `review_done`、带 findings inline；`generated_at` 入 key 故同 sha 重跑唤一次；clean/running/skipped 不唤，留给 next-prompt pull——见 `context/repo.py`）；`forge.py`（`ForgeSource`，盯 `.devloop/pr.json`，两独立信号：`pr_change` 走 lifecycle level-key、`merge_blocked` 走边沿+迟滞）。`SOURCES` 是 name→Source 注册表；`composite.py`（`CompositeSource`，token `all`）扇出所有叶子 Source、合并 fire，让一条 transport 盯**整条总线**、与"哪个源 fire"无关——聚合在代码层(读各权威段)，**不落 notify 文件**(无重复状态可漂)。
+- **`scripts/notify.py`** —— 统一 dispatcher：`notify.py {channel|waiter|should-arm} {forge|review|all} <target>`。`should-arm` 是**前台、不唤醒**的能力决议,调用方**先**跑它:exit 0(无常驻 channel)→ `run_in_background` 起 `waiter`;exit 1(`channel all` 已覆盖,按 `config.notify().channels` / env `DEVLOOP_NOTIFY_CHANNELS`)→ 跳过。决议留在后台进程**之外**,常驻 channel 才能零 arm(否则后台决议进程自身退出也会多唤醒一次)。加一个 deploy / verdict 源 = 写个 `Source` 模块 + `_LEAVES` 加一条,`all` 与三套入口自动覆盖,不碰 runner。
 
 **实验启用**（channel 是 preview，**不自动挂载**——以免给非 channel 用户起 MCP server / 强加 `mcp` 依赖）：需 `mcp` 包，并以 dev flag 起会话（forge / review 可同挂、按需取舍）：
 
 ```json
 { "mcpServers": {
-  "forge":  { "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/notify.py", "channel", "forge",  "${CLAUDE_PROJECT_DIR}"] },
-  "review": { "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/notify.py", "channel", "review", "${CLAUDE_PROJECT_DIR}"] }
+  "notify": { "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/notify.py", "channel", "all", "${CLAUDE_PROJECT_DIR}"] }
 }}
 ```
 ```bash
-claude --dangerously-load-development-channels server:forge server:review
+claude --dangerously-load-development-channels server:notify
 ```
+
+一条 `channel all` 盯整条总线、set-and-forget。开了它就在 `~/.devloop/config.json` 设 `{"notify": {"channels": true}}`——`notify should-arm` 据此报 skip,调用方便不再 arm 多余 waiter。
 
 ### 唤醒机制（fallback）：一次性后台任务"退出"
 
@@ -106,7 +107,8 @@ claude --dangerously-load-development-channels server:forge server:review
 - **waiter = 同一端口的第二套 transport**（`run_waiter` + `StdoutNotifier`），不是另一套机制：它和 channel **共享 Source**（同一 `seed/step`），所以触发判定**逐字一致**，唯一区别是出口。`notify.py waiter <source> <repo>` 步进 Source 到首次触发 → `StdoutNotifier` print 内容 → **进程退出 = 唤醒恰好一次**（一次性任务终态，不被重投）。
 - **waiter 也带内容**：`StdoutNotifier` 把 `Notification.content`（findings / PR 迁移摘要）print 到任务 stdout，醒来那轮直接看见——和 channel 的 inline 对齐，不再是"裸 wake 后回读"。完整状态仍在 `.devloop/<seg>.json`。
 - **两套的真实不对称**（抽象不掩盖）：channel = 多次唤醒、set-and-forget（配一次 mcpServers 跑整个 session）；waiter = 单次唤醒、每个 follow-up 重 arm（命中即退出，想继续盯得醒来再 arm）。共享的是 **Source**，不是 deliver 的调用节奏。
-- **谁来 arm waiter**：只能由 **agent 用 run_in_background 工具**起（harness 只重唤它跟踪的后台任务；hook 里 detach 的进程退出不重唤）。所以"自动 arm"做不进 hook——agent 触发耗时动作后自己 arm。channel 无此约束（MCP server 由 CC 起）。
+- **谁来 arm waiter**：只能由 **agent 用 run_in_background 工具**起（harness 只重唤它跟踪的后台任务；hook 里 detach 的进程退出不重唤）。所以"自动 arm"做不进 hook——agent 触发耗时动作后自己 arm，且要 arm 进**动作流程的固定步骤**(如 gcampr 建完 MR 后)，不靠 hook 吐提示等 agent 自觉(实测不可靠、已弃)。channel 无此约束（MCP server 由 CC 起）。
+- **怎么 arm：先 `should-arm` 决议、再 arm**：agent 先前台跑 `notify.py should-arm all <repo>`(同步、不唤醒)——exit 0 才 `run_in_background` 起 `notify.py waiter all <repo>`;exit 1 表示 `channel all` 已覆盖、跳过。决议放在后台进程**之外**,channel 在场就零 arm(否则后台决议进程退出本身又多唤醒一次)。触发方对走哪条 transport 无感,决议只在 `should-arm` 一处。**单个 `waiter all` vs 每源一个 `waiter <source>`**:前者占一个后台槽、但首个事件会抢掉这次单发唤醒;后者(如 `waiter review` + `waiter forge` 各一)两类**互不抢占**——按要不要"互不抢占"取舍(gcampr 流程默认走后者)。
 - 角色：**Perceive** = `poll_pr_status.py` / `run_review.py` 写状态总线；**Wake** = `notify.py`（channel 长驻 / waiter 一次性）。
 
 ### mode gate：自动续跑 vs 等确认

@@ -515,14 +515,15 @@ def test_notify_port():
     from lib.notify.waiter import StdoutNotifier
     assert Notification(content="x").kind == "info" and Notification(content="x").meta == {}
     assert isinstance(ChannelNotifier(None), Notifier)      # push backend
-    assert isinstance(StdoutNotifier(), Notifier)           # one-shot-stdout backend
+    assert isinstance(StdoutNotifier(), Notifier)       # one-shot-stdout backend
 
 
 def test_sources_registry():
     """SOURCES maps a name to a Source with the (name, instructions, seed, step) shape both runners
-    drive. forge + review are wired today; a deploy/verdict source is one more entry + one module."""
+    drive. forge + review are leaves; `all` (CompositeSource) fans over them; a deploy/verdict
+    source is one more leaf entry + one module, auto-covered by `all`."""
     from lib.notify.sources import SOURCES
-    assert set(SOURCES) == {"forge", "review"}
+    assert set(SOURCES) == {"forge", "review", "all"}
     for name, src in SOURCES.items():
         assert src.name == name and isinstance(src.instructions, str)
         assert callable(src.seed) and callable(src.step)
@@ -624,6 +625,53 @@ def test_run_waiter():
     reason2, note2 = asyncio.run(run_waiter(NeverFires(), "/x", interval=1, timeout=3,
                                             notifier=Capture(), sleep=adv, clock=lambda: clk["t"]))
     assert reason2 == "timeout" and note2 is None
+
+
+def test_composite_source():
+    """CompositeSource fans over the leaves and merges their fires into ONE stream; carry is a
+    per-leaf dict, seed ignores each leaf's startup edge, and a fire from ANY leaf propagates.
+    Aggregation is in code over the real segments — no separate notify file."""
+    from lib.notify.base import Notification
+    from lib.notify.sources.composite import CompositeSource
+
+    class Leaf:
+        def __init__(self, name, fire_on):
+            self.name = name; self.instructions = f"brief-{name}"; self._fire_on = fire_on; self.n = 0
+        def seed(self, repo): return None
+        def step(self, repo, carry):
+            self.n += 1
+            if self.n == self._fire_on:
+                return self.n, [Notification(content=f"{self.name}!", kind=self.name)]
+            return carry, []
+
+    src = CompositeSource({"a": Leaf("a", 1), "b": Leaf("b", 2)})
+    assert src.name == "all" and "brief-a" in src.instructions and "brief-b" in src.instructions
+    carry = src.seed("/x"); assert carry == {"a": None, "b": None}     # union seed, no startup fire
+    carry, notes = src.step("/x", carry)                              # tick 1: a fires, b silent
+    assert [n.content for n in notes] == ["a!"] and carry["a"] == 1
+    carry, notes = src.step("/x", carry)                              # tick 2: b fires
+    assert [n.content for n in notes] == ["b!"] and carry["b"] == 2
+
+
+def test_should_arm_gate():
+    """`notify should-arm` is the synchronous, non-waking decision run BEFORE arming: exit 0 → the
+    caller arms a `waiter`; exit 1 → a standing `channel all` covers the session, skip (so a channel
+    costs zero arming — a backgrounded decider would itself wake on exit). Signal is explicit: env
+    DEVLOOP_NOTIFY_CHANNELS wins, else config.notify().channels (default → arm). Unknown source → 2.
+    (Bootstrap points DEVLOOP_CONFIG_DIR at an empty dir, so the no-env case is deterministic.)"""
+    notify = _load_script("notify")
+    R = "/tmp/dlut_shouldarm"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    saved_env = os.environ.pop("DEVLOOP_NOTIFY_CHANNELS", None)
+    try:
+        assert notify.main(["should-arm", "all", R]) == 0       # no channel → arm (the floor)
+        os.environ["DEVLOOP_NOTIFY_CHANNELS"] = "1"
+        assert notify.main(["should-arm", "all", R]) == 1       # channel covers → skip
+        os.environ["DEVLOOP_NOTIFY_CHANNELS"] = "0"
+        assert notify.main(["should-arm", "all", R]) == 0       # explicit off → arm
+        assert notify.main(["should-arm", "bogus", R]) == 2     # unknown source → usage
+    finally:
+        os.environ.pop("DEVLOOP_NOTIFY_CHANNELS", None)
+        if saved_env is not None: os.environ["DEVLOOP_NOTIFY_CHANNELS"] = saved_env
 
 
 def test_pullrequest_and_cadence():

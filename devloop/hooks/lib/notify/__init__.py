@@ -10,5 +10,12 @@ source, so they never disagree on when to wake:
   `StdoutNotifier` + the `run_waiter` runner; content on the task's stdout, single-wake, re-armed.
 
 `sources/` holds the sources (forge / review today; deploy / verdict later) and the `SOURCES`
-registry the dispatcher (`scripts/notify.py`) routes on.
+registry the dispatcher (`scripts/notify.py`) routes on. `CompositeSource` (token `all`) fans over
+every leaf so one transport can watch the whole bus, agnostic to which source fired.
+
+The dispatcher's `should-arm` verb is the capability decision, run FIRST (synchronous, non-waking):
+exit 0 → the caller arms a `waiter`; exit 1 → a standing `channel all` already covers the session,
+skip. Keeping the decision OUT of the backgrounded process is what lets a standing channel cost zero
+arming (a backgrounded decider would itself wake on exit). So producers and the woken turn never
+name a transport.
 """
