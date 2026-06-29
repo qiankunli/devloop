@@ -78,19 +78,20 @@ Claude Code 的 **channels**（research preview，v2.1.80+；[channels-reference
 
 ### 代码落点（devloop）
 
-通知机制抽成一个**端口**，channel 只是第一种实现（deploy / verdict 以后复用同端口）：
+通知机制是一个**端口**，拆成三个互相解耦的角色——`Source` 决定「盯什么、何时触发」，`Notifier` 决定「怎么投」，runner 把二者跑起来。**同一个 Source 被两套 transport 复用**，所以 channel 推和 waiter 退出对"何时唤醒"判定**逐字一致**：
 
-- **`hooks/lib/notify/`** —— notify 端口。`base.py`：`Notification`（content/kind/meta，只说"surface 什么"）+ `Notifier` 协议（`deliver`）；`channel.py`：`ChannelNotifier`（push 成 `notifications/claude/channel`）+ `run_channel`（MCP server handshake + `claude/channel` 能力的复用壳）。`mcp` lazy import，无依赖也能导入 / 测。
-- **`scripts/forge_channel.py`** —— forge **生产者**（薄）。复用 monitor 的 `repos_to_poll` + `.devloop/pr.json` 与同一 change-key，变化时 build `Notification` 交给 `Notifier` deliver——只加通知，不二次 poll forge。
-- **`scripts/review_channel.py`** —— code-review **生产者**（薄）。复用 `repos_to_poll`，盯各 repo 的 `.devloop/review.json`：后台 `run_review.py` 写出终态、且有可动作内容（findings / 文件失败 / error）时，build 一条**带 findings 详情**的 `Notification` 交给 `Notifier`——idle 会话醒来即拿到 findings，不必回读。change-key（`wake_key`）含 `generated_at`，同 sha 重跑也唤醒一次；clean / skipped / running 不唤醒（无可动作信号，留给下一轮 prompt 的 pull——见 `context/repo.py`）。
-- 加一个 deploy / verdict channel = 写个生产者 + `run_channel(...)`，不碰 `notify/channel`。
+- **`hooks/lib/notify/base.py`** —— 三个端口：`Notification`（content/kind/meta，只说"surface 什么"）、`Notifier` 协议（`deliver`）、`Source` 协议（`name`/`instructions` + `seed(repo)`/`step(repo,carry)→(carry, [Notification])`，纯函数式触发判定，可脱离 runner 单测）。
+- **`hooks/lib/notify/channel.py`** —— channel transport。`ChannelNotifier`（push 成 `notifications/claude/channel`）+ `run_channel(source, repos)`（MCP server 壳，长驻 pump 一个 Source、多次唤醒、set-and-forget）。`mcp` lazy import，无依赖也能导入 / 测。
+- **`hooks/lib/notify/waiter.py`** —— waiter transport。`StdoutNotifier`（print content 到一次性任务的 stdout）+ `run_waiter(source, repo)`（步进 Source 到首次触发即 deliver + 返回、进程退出 = 唤醒；单次唤醒、stdlib only，不碰 `mcp`/`anyio`）。
+- **`hooks/lib/notify/sources/`** —— 各 Source（触发判定收在这里，不在 runner）：`review.py`（`ReviewSource`/`wake_key`，盯 `.devloop/review.json`，终态且有可动作内容才 fire `review_done`、带 findings inline；`generated_at` 入 key 故同 sha 重跑唤一次；clean/running/skipped 不唤，留给 next-prompt pull——见 `context/repo.py`）；`forge.py`（`ForgeSource`，盯 `.devloop/pr.json`，两独立信号：`pr_change` 走 lifecycle level-key、`merge_blocked` 走边沿+迟滞）。`SOURCES` 是 name→Source 注册表。
+- **`scripts/notify.py`** —— 统一 dispatcher：`notify.py {channel|waiter} {forge|review} <target>`。加一个 deploy / verdict 源 = 写个 `Source` 模块 + `SOURCES` 加一条，两套 transport 自动都有，不碰 runner。
 
 **实验启用**（channel 是 preview，**不自动挂载**——以免给非 channel 用户起 MCP server / 强加 `mcp` 依赖）：需 `mcp` 包，并以 dev flag 起会话（forge / review 可同挂、按需取舍）：
 
 ```json
 { "mcpServers": {
-  "forge":  { "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/forge_channel.py",  "${CLAUDE_PROJECT_DIR}"] },
-  "review": { "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/review_channel.py", "${CLAUDE_PROJECT_DIR}"] }
+  "forge":  { "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/notify.py", "channel", "forge",  "${CLAUDE_PROJECT_DIR}"] },
+  "review": { "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/notify.py", "channel", "review", "${CLAUDE_PROJECT_DIR}"] }
 }}
 ```
 ```bash
@@ -101,12 +102,12 @@ claude --dangerously-load-development-channels server:forge server:review
 
 无 channel（未开 preview / 纯 Python 环境）时退回这条：
 
-- **不能**用长驻 monitor 的 stdout 唤醒：CC 把**运行中**长驻任务的最新 stdout **每回合重投**（实测一事件 69 分钟 362 次，`#66219`）→ 故 monitor 设计成 **persist-only、不发 stdout 通知**（唤醒交给 channel，或下面的 waiter）。
-- **改用一次性进程**：盯状态总线的 delta，**变了就 print + 退出** = 一条终态通知，**重唤恰好一次**（已验证不重投）。每个 channel 生产者都配一个对偶 waiter，二者**并存、按环境择一**（channel 要 preview + `mcp`，waiter 都不要）：
-  - `scripts/wait_for_pr_change.py` ⇄ `forge_channel`：盯 `.devloop/pr.json`，键 = monitor 的 `(pr_number,[(number,state)])`。
-  - `scripts/wait_for_review_change.py` ⇄ `review_channel`：盯 `.devloop/review.json`，**直接复用 `review_channel.wake_key`**——所以 waiter 与 channel 对"什么算一次值得唤醒的 review"判定**逐字一致**（终态且有 findings / 文件失败 / error 才唤；clean / running / skipped 不唤，留给 next-prompt pull）。两条路唯一区别是 transport，不是触发条件。
-- 与 channel 的差别：waiter 只 signal"变了"，Execute 得**自己回读** `pr.json` / `review.json`；channel 则 inform 即带内容（findings 随到）。这次回读是免 preview / 免 `mcp` 的代价。
-- 角色：**Perceive** = `poll_pr_status.py` / `run_review.py`；**Wake** = 对应 waiter，会话留 follow-up 时 `run_in_background` arm。
+- **不能**用长驻 monitor 的 stdout 唤醒：CC 把**运行中**长驻任务的最新 stdout **每回合重投**（实测一事件 69 分钟 362 次，`#66219`）→ 故 monitor 设计成 **persist-only、不发 stdout 通知**（唤醒交给 channel，或 waiter）。
+- **waiter = 同一端口的第二套 transport**（`run_waiter` + `StdoutNotifier`），不是另一套机制：它和 channel **共享 Source**（同一 `seed/step`），所以触发判定**逐字一致**，唯一区别是出口。`notify.py waiter <source> <repo>` 步进 Source 到首次触发 → `StdoutNotifier` print 内容 → **进程退出 = 唤醒恰好一次**（一次性任务终态，不被重投）。
+- **waiter 也带内容**：`StdoutNotifier` 把 `Notification.content`（findings / PR 迁移摘要）print 到任务 stdout，醒来那轮直接看见——和 channel 的 inline 对齐，不再是"裸 wake 后回读"。完整状态仍在 `.devloop/<seg>.json`。
+- **两套的真实不对称**（抽象不掩盖）：channel = 多次唤醒、set-and-forget（配一次 mcpServers 跑整个 session）；waiter = 单次唤醒、每个 follow-up 重 arm（命中即退出，想继续盯得醒来再 arm）。共享的是 **Source**，不是 deliver 的调用节奏。
+- **谁来 arm waiter**：只能由 **agent 用 run_in_background 工具**起（harness 只重唤它跟踪的后台任务；hook 里 detach 的进程退出不重唤）。所以"自动 arm"做不进 hook——agent 触发耗时动作后自己 arm。channel 无此约束（MCP server 由 CC 起）。
+- 角色：**Perceive** = `poll_pr_status.py` / `run_review.py` 写状态总线；**Wake** = `notify.py`（channel 长驻 / waiter 一次性）。
 
 ### mode gate：自动续跑 vs 等确认
 
@@ -116,13 +117,13 @@ claude --dangerously-load-development-channels server:forge server:review
 
 ### 如何执行
 
-1. 会话收尾、留"待续"时：follow-up 意图写进状态总线（watch 啥 + next 干啥）。channel 路径常驻 push；waiter 路径额外 arm 一个 waiter。
-2. 事件到来 → 唤醒（channel 带内容；waiter 裸 wake + Execute 回读）。
+1. 会话收尾、留"待续"时：follow-up 意图写进状态总线（watch 啥 + next 干啥）。channel 路径常驻 push；waiter 路径 agent 用 run_in_background arm 一个 `notify.py waiter`。
+2. 事件到来 → 唤醒（两套都带内容 inline；完整状态在 `.devloop/<seg>.json`）。
 3. Execute：读 follow-up（+ 必要时回读）→ 判相关性 → 按 permission mode 决定 auto 续跑 / 等确认。
 
 ### 与现有机制的接口
 
-- 推给 agent 走 **notify 端口**（`hooks/lib/notify`：`Notification` + `Notifier`）——channel 是第一种投递（`ChannelNotifier` + `run_channel`）；producer（`scripts/forge_channel.py`）盯状态总线的变化、build `Notification` 交给 `Notifier`。channel 与 waiter 是这条推路的不同**出口**（前者带内容、后者裸 wake）。
+- 推给 agent 走 **notify 端口**（`hooks/lib/notify`：`Source` 决定何时 fire、`Notifier` 决定怎么投）。`Source`（`sources/forge.py`、`sources/review.py`）盯状态总线、build `Notification`；channel（`ChannelNotifier`+`run_channel`）与 waiter（`StdoutNotifier`+`run_waiter`）是同一 Source 的两个**出口**，都带内容；`scripts/notify.py` 是统一 dispatcher。
 - 状态总线 = `.devloop/`：monitor 写 `pr.json`；follow-up 意图、（fallback 下）持久化 mode 各一个 segment。
 
 ### 已知局限 / 仍待平台

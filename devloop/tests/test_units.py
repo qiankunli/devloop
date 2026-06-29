@@ -506,121 +506,124 @@ def test_poll_persist():
     assert base.load_segment(R, "pr")["pr_number"] == 7
 
 
-def test_wait_for_pr_change():
-    """One-shot Wake: snapshots the `pr` segment key, exits 'changed' when it differs (same
-    (pr_number,[(number,state)]) the monitor uses for `changed`), else 'timeout'. sleep/clock
-    are injected so the test never actually waits."""
-    from lib.context import base
-    waiter = _load_script("wait_for_pr_change")
-    R = "/tmp/dlut_waiter"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
-    base.save_segment(R, "pr", {"pr_number": 12, "prs": [{"number": 12, "state": "open"}]})
-
-    # fake sleep advances a shared clock and flips PR 12 → merged on its 2nd tick
-    st = {"t": 0.0, "n": 0}
-    def flip(dt):
-        st["t"] += dt; st["n"] += 1
-        if st["n"] == 2:
-            base.save_segment(R, "pr", {"pr_number": 12, "prs": [{"number": 12, "state": "merged"}]})
-    reason, key = waiter.wait_for_change(R, interval=1, timeout=100, sleep=flip, clock=lambda: st["t"])
-    assert reason == "changed" and key == (12, ((12, "merged"),))
-
-    # no further change within the window → timeout
-    tt = {"t": 0.0}
-    reason2, _ = waiter.wait_for_change(R, interval=1, timeout=3,
-                                        sleep=lambda dt: tt.__setitem__("t", tt["t"] + dt),
-                                        clock=lambda: tt["t"])
-    assert reason2 == "timeout"
-
-
-def test_wait_for_review_change():
-    """One-shot Wake for the review path: snapshots the review's wake_key — the SAME actionable-
-    review key `review_channel` pushes on (reused, NOT re-derived, so the no-channel waiter and the
-    channel never diverge) — exits 'changed' when an actionable terminal review with a different key
-    lands, else 'timeout'. A clean review (key stays None) is deliberately NOT a wake — it's left to
-    the next-prompt pull. sleep/clock injected so the test never actually waits."""
-    from lib.context import base
-    waiter = _load_script("wait_for_review_change")
-    R = "/tmp/dlut_rwaiter"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
-    # arm while the review is still running → baseline key None
-    base.save_segment(R, "review", {"status": "running", "reviewed_sha": "a", "count": 0})
-
-    # fake sleep flips the review to an ACTIONABLE terminal state (2 findings) on its 2nd tick
-    st = {"t": 0.0, "n": 0}
-    def land(dt):
-        st["t"] += dt; st["n"] += 1
-        if st["n"] == 2:
-            base.save_segment(R, "review", {"status": "success", "count": 2,
-                                            "reviewed_sha": "a", "generated_at": 100.0})
-    reason, key = waiter.wait_for_change(R, interval=1, timeout=100, sleep=land, clock=lambda: st["t"])
-    assert reason == "changed" and key == ("a", "success", 100.0)
-
-    # a review that finishes CLEAN (no findings/failures) is not wake-worthy → key stays None → timeout
-    base.save_segment(R, "review", {"status": "running", "reviewed_sha": "b", "count": 0})
-    ct = {"t": 0.0, "n": 0}
-    def clean(dt):
-        ct["t"] += dt; ct["n"] += 1
-        if ct["n"] == 2:
-            base.save_segment(R, "review", {"status": "success", "count": 0, "failed": 0,
-                                            "reviewed_sha": "b", "generated_at": 200.0})
-    reason2, _ = waiter.wait_for_change(R, interval=1, timeout=5, sleep=clean, clock=lambda: ct["t"])
-    assert reason2 == "timeout"          # clean review never wakes — same gate as the channel
-
-
-def test_notify_port_and_forge_producer():
-    """notify port: ChannelNotifier satisfies the Notifier protocol (channel is one delivery
-    impl, mcp imported lazily so this loads without it). forge producer: seg_key mirrors the
-    monitor's lifecycle change-key; summarize names each transitioned PR. (Merge-block wakes are a
-    separate edge-detected signal — see test_forge_channel_merge_block_edge_detection.)"""
+def test_notify_port():
+    """The port shape: a Notification says only WHAT to surface (kind/meta default); both delivery
+    backends — ChannelNotifier (channel push) and StdoutNotifier (one-shot stdout) — satisfy the
+    Notifier protocol. mcp is imported lazily so this loads without it."""
     from lib.notify.base import Notification, Notifier
     from lib.notify.channel import ChannelNotifier
-    assert isinstance(ChannelNotifier(None), Notifier)          # channel implements the port
+    from lib.notify.waiter import StdoutNotifier
     assert Notification(content="x").kind == "info" and Notification(content="x").meta == {}
-    fc = _load_script("forge_channel")
-    assert fc.seg_key(None) is None
-    # lifecycle key: pr_number + (number,state) tuples — readiness deliberately NOT folded in
-    assert fc.seg_key({"pr_number": 12, "prs": [{"number": 12, "state": "open"}]}) == (12, ((12, "open"),))
-    s = fc.summarize({"prs": [{"number": 12, "state": "open"}]},
-                     {"prs": [{"number": 12, "state": "merged", "title": "docs"}], "branch": "b"},
-                     "/x/devloop")
-    assert s == "forge[devloop]: PR #12 open→merged (docs) [branch=b]"
+    assert isinstance(ChannelNotifier(None), Notifier)      # push backend
+    assert isinstance(StdoutNotifier(), Notifier)           # one-shot-stdout backend
 
 
-def test_forge_channel_merge_block_edge_detection():
-    """Merge-block wakes are edge-triggered with hysteresis: wake on ENTERING a blocker, HOLD through
-    the async 'checking' (UNKNOWN) window so a conflict→checking→conflict flicker fires ONCE not twice
-    (the bug the first cut had), don't wake on leaving, do wake when the blocker TYPE changes."""
-    ev = _load_script("forge_channel").merge_block_event
-    last, wake = ev(None, "ready");                   assert last is None and wake is None
-    last, wake = ev(last, "conflict");                assert last == "conflict" and wake == "conflict"   # enter → wake
-    last, wake = ev(last, "unknown");                 assert last == "conflict" and wake is None          # checking → HOLD
-    last, wake = ev(last, "conflict");                assert last == "conflict" and wake is None          # same blocker, no re-wake
-    last, wake = ev(last, "discussions_unresolved");  assert wake == "discussions_unresolved"             # type change → wake
-    last, wake = ev(last, "ready");                   assert last is None and wake is None                # leaving → clear, no wake
-    assert ev(None, None) == (None, None)                                                                 # no MR → hold-clear
+def test_sources_registry():
+    """SOURCES maps a name to a Source with the (name, instructions, seed, step) shape both runners
+    drive. forge + review are wired today; a deploy/verdict source is one more entry + one module."""
+    from lib.notify.sources import SOURCES
+    assert set(SOURCES) == {"forge", "review"}
+    for name, src in SOURCES.items():
+        assert src.name == name and isinstance(src.instructions, str)
+        assert callable(src.seed) and callable(src.step)
 
 
-def test_review_channel_wake_key_and_summary():
-    """review producer: wake_key fires only for an ACTIONABLE terminal review (findings / failures /
-    error) and stays None for running / skipped / clean — so an idle session is woken only when
-    there's something to act on (a clean review is left to the next-prompt pull). generated_at is in
-    the key so a re-run on the same sha wakes again. summarize carries the findings inline."""
-    rc = _load_script("review_channel")
-    assert rc.wake_key(None) is None
-    assert rc.wake_key({"status": "running", "reviewed_sha": "a"}) is None
-    assert rc.wake_key({"status": "skipped", "reviewed_sha": "a"}) is None
-    assert rc.wake_key({"status": "success", "count": 0, "failed": 0, "reviewed_sha": "a"}) is None  # clean → no push
-    k1 = rc.wake_key({"status": "success", "count": 2, "reviewed_sha": "a", "generated_at": 100.0})
-    assert k1 == ("a", "success", 100.0)
-    # same sha re-reviewed later → different generated_at → new key → wakes again
-    assert rc.wake_key({"status": "success", "count": 2, "reviewed_sha": "a", "generated_at": 200.0}) != k1
-    assert rc.wake_key({"status": "completed_with_errors", "count": 0, "failed": 1, "reviewed_sha": "b"}) is not None  # failures wake
-    assert rc.wake_key({"status": "error", "count": 0, "failed": 0, "reviewed_sha": "c"}) is not None  # error wakes
-    s = rc.summarize({"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
-                      "reviewed_range": "origin/main..HEAD",
-                      "comments": [{"path": "a.py", "start_line": 3, "end_line": 5,
-                                    "alias": "ds-v4", "content": "bug here"}]}, "/x/devloop")
-    assert s.splitlines()[0] == "review[devloop]: 1 finding(s) on abcdef123 [origin/main..HEAD]"
-    assert s.splitlines()[1] == "  - a.py:3-5 (ds-v4) — bug here"
+def test_review_source():
+    """ReviewSource fires `review_done` only for an ACTIONABLE terminal review (findings / failures /
+    error), stays silent for running / skipped / clean, and carries the findings inline. wake_key is
+    the single 'wake-worthy' definition both transports share; seed() ignores the startup edge;
+    generated_at in the key makes a same-sha re-review wake again."""
+    from lib.context import base
+    from lib.notify.sources.review import ReviewSource, wake_key
+    assert wake_key(None) is None
+    assert wake_key({"status": "running", "reviewed_sha": "a"}) is None
+    assert wake_key({"status": "skipped", "reviewed_sha": "a"}) is None
+    assert wake_key({"status": "success", "count": 0, "failed": 0, "reviewed_sha": "a"}) is None  # clean
+    assert wake_key({"status": "completed_with_errors", "count": 0, "failed": 1, "reviewed_sha": "b"}) is not None
+    assert wake_key({"status": "error", "count": 0, "failed": 0, "reviewed_sha": "c"}) is not None
+    src = ReviewSource(); assert src.name == "review"
+    R = "/tmp/dlut_rsrc"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    base.save_segment(R, "review", {"status": "running", "reviewed_sha": "a", "count": 0})
+    carry = src.seed(R); assert carry is None               # armed mid-run → no startup fire
+    base.save_segment(R, "review", {"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
+                                    "reviewed_range": "origin/main..HEAD", "generated_at": 100.0,
+                                    "comments": [{"path": "a.py", "start_line": 3, "end_line": 5,
+                                                  "alias": "ds-v4", "content": "bug here"}]})
+    carry, notes = src.step(R, carry)
+    assert carry == ("abcdef123456", "success", 100.0) and len(notes) == 1
+    assert notes[0].kind == "review_done"
+    assert notes[0].content.splitlines()[0] == "review[dlut_rsrc]: 1 finding(s) on abcdef123 [origin/main..HEAD]"
+    assert notes[0].content.splitlines()[1] == "  - a.py:3-5 (ds-v4) — bug here"
+    # same sha re-reviewed → new generated_at → new key → fires again; then a clean review → silent
+    base.save_segment(R, "review", {"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
+                                    "generated_at": 200.0, "comments": [{"path": "a.py", "content": "x"}]})
+    carry, notes = src.step(R, carry); assert len(notes) == 1
+    base.save_segment(R, "review", {"status": "success", "count": 0, "failed": 0, "reviewed_sha": "z"})
+    _, notes = src.step(R, carry); assert notes == []       # clean terminal review → no wake
+
+
+def test_forge_source():
+    """ForgeSource fires two INDEPENDENT signals over pr.json: `pr_change` on a lifecycle delta
+    (level key, names each transitioned PR) and `merge_blocked` on ENTERING a blocker (edge +
+    hysteresis so the async 'checking'/unknown window can't double-fire). seg_key is lifecycle-only."""
+    from lib.context import base
+    from lib.notify.sources.forge import ForgeSource, merge_block_event, seg_key
+    assert seg_key(None) is None
+    assert seg_key({"pr_number": 12, "prs": [{"number": 12, "state": "open"}]}) == (12, ((12, "open"),))
+    src = ForgeSource(); assert src.name == "forge"
+    R = "/tmp/dlut_fsrc"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    base.save_segment(R, "pr", {"branch": "b", "pr_number": 12, "prs": [{"number": 12, "state": "open"}]})
+    carry = src.seed(R)
+    base.save_segment(R, "pr", {"branch": "b", "pr_number": 12,
+                                "prs": [{"number": 12, "state": "merged", "title": "docs"}]})
+    carry, notes = src.step(R, carry)
+    assert len(notes) == 1 and notes[0].kind == "pr_change"
+    assert notes[0].content == "forge[dlut_fsrc]: PR #12 open→merged (docs) [branch=b]"
+    # merge-block edge+hysteresis (pure): enter wakes; checking HOLDs; same holds; type-change wakes; leave clears
+    last, wake = merge_block_event(None, "ready");                  assert last is None and wake is None
+    last, wake = merge_block_event(last, "conflict");               assert last == "conflict" and wake == "conflict"
+    last, wake = merge_block_event(last, "unknown");                assert last == "conflict" and wake is None
+    last, wake = merge_block_event(last, "conflict");               assert wake is None
+    last, wake = merge_block_event(last, "discussions_unresolved"); assert wake == "discussions_unresolved"
+    last, wake = merge_block_event(last, "ready");                  assert last is None and wake is None
+    assert merge_block_event(None, None) == (None, None)
+
+
+def test_run_waiter():
+    """run_waiter steps ANY Source until the first fire — deliver via the notifier, return
+    ('changed', note) — or times out → ('timeout', None). Source-agnostic: the wake condition lives
+    in the Source, the runner just stops on the first fire (its process exit IS the wake). asyncio
+    loop; sleep/clock injected so the test never really waits."""
+    import asyncio
+    from lib.notify.base import Notification
+    from lib.notify.waiter import run_waiter
+
+    class FireOnSecond:
+        name = "fake"; instructions = ""
+        def __init__(self): self.n = 0
+        def seed(self, repo): return None
+        def step(self, repo, carry):
+            self.n += 1
+            return ("k", [Notification(content="fired", kind="fake")]) if self.n == 2 else (carry, [])
+
+    class Capture:
+        def __init__(self): self.got = []
+        async def deliver(self, n): self.got.append(n)
+
+    clk = {"t": 0.0}
+    async def adv(dt): clk["t"] += dt
+
+    cap = Capture()
+    reason, note = asyncio.run(run_waiter(FireOnSecond(), "/x", interval=1, timeout=100,
+                                          notifier=cap, sleep=adv, clock=lambda: clk["t"]))
+    assert reason == "changed" and note.content == "fired" and [n.content for n in cap.got] == ["fired"]
+
+    clk["t"] = 0.0
+    class NeverFires(FireOnSecond):
+        def step(self, repo, carry): return carry, []
+    reason2, note2 = asyncio.run(run_waiter(NeverFires(), "/x", interval=1, timeout=3,
+                                            notifier=Capture(), sleep=adv, clock=lambda: clk["t"]))
+    assert reason2 == "timeout" and note2 is None
 
 
 def test_pullrequest_and_cadence():

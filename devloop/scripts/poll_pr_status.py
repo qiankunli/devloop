@@ -13,8 +13,8 @@ It is the *sole* writer of those files (disjoint from every other writer-role), 
 needed. No daemon, no heartbeat hooks, no scheduler.
 
 Persist-only by design: it does NOT notify / wake the session. Waking on a PR change is the
-forge channel's job (`scripts/forge_channel.py`, which watches pr.json) — see
-docs/event-driven-resume.md.
+notify port's job — the forge `Source` (`lib/notify/sources/forge.py`, watches pr.json) driven by
+either transport via `scripts/notify.py` — see docs/event-driven-resume.md.
 
 The poll/selection logic lives in `lib.context.prstate` so gcampr and the gate can trigger the
 same authoritative refresh without importing this script.
