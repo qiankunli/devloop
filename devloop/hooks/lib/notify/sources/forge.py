@@ -1,37 +1,16 @@
-#!/usr/bin/env python3
-"""Forge **producer** for the notify port — the primary Wake path of event-driven resume
-(docs/event-driven-resume.md). Opt-in / experimental: NOT auto-loaded by the plugin (needs the
-`mcp` package + the channels dev flag); enable per session — see docs/event-driven-resume.md.
-
-Composition (greenfield, channel-first):
-  - Perceive : the PR-sweep monitor (`poll_pr_status.py`) polls the forge → `.devloop/pr.json`.
-  - Wake+Inform : THIS producer watches those pr.json files and, on a state change, builds a
-    `notify.Notification` and hands it to a `Notifier` (here a channel) — an idle session wakes
-    WITH the diff inline. Delivery is pluggable via `lib/notify`; this file is forge-only.
-  - Execute : the woken turn judges relevance + acts per permission mode (see `INSTRUCTIONS`).
-
-It reuses the monitor's repo set (`repos_to_poll`) and change-key, so it tracks exactly what
-the monitor tracks — adding only the notification, no second forge poll.
-
-Usage (spawned by a channel/MCP config):
-  forge_channel.py <project_dir>     # watches every workspace subproject's pr.json
+"""Forge wake source — fires on two INDEPENDENT signals over `.devloop/pr.json`:
+  kind="pr_change"     a watched PR/MR's lifecycle state changed (open→merged/closed) — level key;
+  kind="merge_blocked" the current MR ENTERED an actionable blocker — edge-detected w/ hysteresis.
+Both transports consume this source; the trigger logic (lifecycle key + readiness edge-detection)
+lives here, not in a runner. It reads only the monitor's `pr.json` — no second forge poll.
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "hooks"))
-sys.path.insert(0, str(HERE))  # reuse the monitor's repo resolution
-
-from lib.context import base  # noqa: E402
-from lib.forge import MergeReadiness, pr_label  # noqa: E402
-from lib.notify.base import Notification  # noqa: E402
-from lib.notify.channel import run_channel  # noqa: E402
-from poll_pr_status import repos_to_poll  # noqa: E402  (reuse, no second forge poll)
-
-POLL_INTERVAL_SEC = 5  # watch the local pr.json files this often (monitor refreshes ~every 90s)
+from lib.context import base
+from lib.forge import MergeReadiness, pr_label
+from lib.notify.base import Notification
 
 INSTRUCTIONS = (
     'Events from the forge channel arrive as <channel source="forge" kind="...">. kind="pr_change" '
@@ -88,12 +67,12 @@ def seg_key(seg: dict | None):
     """The LIFECYCLE change-key for a `pr` segment: pr_number + each PR's (number, state). None when
     missing — mirrors `prstate.poll_pr`. Deliberately excludes merge_readiness: lifecycle is a clean
     monotonic signal (open→merged/closed), so level-equality is the right wake trigger; readiness is
-    async-noisy and is handled by edge-detection in `produce` (merge_block_event), not here.
+    async-noisy and is handled by edge-detection in `step` (merge_block_event), not here.
 
     Adding a NEW wake signal? Check its shape before touching this key. A MONOTONIC signal (never
     flips back) can join this level-equality key. A signal that can FLICKER — asynchronously
     recomputed, with a transient "checking"/unknown window — must instead be edge-detected with
-    hysteresis in `produce` (hold through the unknown window; wake only on entering), like
+    hysteresis in `step` (hold through the unknown window; wake only on entering), like
     merge_block_event. Folding a flickering signal into a level key fires spurious wakes — that was
     merge_readiness's first cut, and the reason this key stays lifecycle-only."""
     if not seg:
@@ -117,43 +96,27 @@ def summarize(prev: dict | None, cur: dict, repo: str) -> str:
     return f"forge[{Path(repo).name}]: {body}" + (f" [branch={branch}]" if branch else "")
 
 
-async def produce(notifier, target: str) -> None:
-    """Watch every workspace repo's pr.json and wake on two INDEPENDENT signals:
-      - lifecycle: the seg_key changed (open→merged/closed) → kind="pr_change";
-      - merge-blocked: the current MR ENTERED an actionable blocker → kind="merge_blocked".
-    Tracked separately on purpose — lifecycle is clean/monotonic (level-equality suffices), readiness
-    is async-noisy and needs edge-detection with hysteresis (merge_block_event) so the 'checking'
-    window can't churn two wakes per recompute."""
-    import anyio
+class ForgeSource:
+    """Watches `.devloop/pr.json` for one repo. carry = (lifecycle_key, prev_seg, last_blocker);
+    fires `pr_change` on a lifecycle delta and `merge_blocked` on entering a blocker — two
+    independent signals tracked separately (level-equality vs edge+hysteresis)."""
 
-    seen: dict[str, tuple] = {}   # repo -> (lifecycle_key, seg, last_blocker)
-    for r in repos_to_poll(target):
-        seg = base.load_segment(r, "pr")
-        blk, _ = merge_block_event(None, (seg or {}).get("merge_readiness"))   # seed; ignore startup edge
-        seen[r] = (seg_key(seg), seg, blk)
-    while True:
-        await anyio.sleep(POLL_INTERVAL_SEC)
-        for r in repos_to_poll(target):  # re-resolve each tick to pick up new subprojects
-            seg = base.load_segment(r, "pr")
-            key = seg_key(seg)
-            prev_key, prev_seg, prev_blk = seen.get(r, (None, None, None))
-            if seg and key != prev_key:
-                await notifier.deliver(Notification(content=summarize(prev_seg, seg, r), kind="pr_change"))
-            cur_blk, wake = merge_block_event(prev_blk, (seg or {}).get("merge_readiness"))
-            if seg and wake:
-                await notifier.deliver(Notification(content=_merge_block_msg(seg, wake, r), kind="merge_blocked"))
-            seen[r] = (key, seg, cur_blk)
+    name = "forge"
+    instructions = INSTRUCTIONS
 
+    def seed(self, repo: str):
+        seg = base.load_segment(repo, "pr")
+        blk, _ = merge_block_event(None, (seg or {}).get("merge_readiness"))  # seed; ignore startup edge
+        return (seg_key(seg), seg, blk)
 
-def main(argv: list[str]) -> int:
-    import functools
-
-    import anyio
-
-    target = argv[0] if argv else "."
-    anyio.run(run_channel, "forge", INSTRUCTIONS, functools.partial(produce, target=target))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    def step(self, repo: str, carry):
+        prev_key, prev_seg, prev_blk = carry
+        seg = base.load_segment(repo, "pr")
+        key = seg_key(seg)
+        notes = []
+        if seg and key != prev_key:
+            notes.append(Notification(content=summarize(prev_seg, seg, repo), kind="pr_change"))
+        cur_blk, wake = merge_block_event(prev_blk, (seg or {}).get("merge_readiness"))
+        if seg and wake:
+            notes.append(Notification(content=_merge_block_msg(seg, wake, repo), kind="merge_blocked"))
+        return (key, seg, cur_blk), notes
