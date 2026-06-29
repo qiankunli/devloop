@@ -189,6 +189,13 @@ def arch(repo_dir: str | Path | None = None) -> dict:
     return merged
 
 
+def notify(repo_dir: str | Path | None = None) -> dict:
+    """已解析的 `notify` section。`notify should-arm` 决议器读 `channels`(bool):本会话是否已有
+    常驻 `channel all` 覆盖——true → should-arm 报 skip(交给 channel、不 arm waiter),默认 false
+    → arm waiter(永远可用、无 preview/账号 gate 的地板)。全局/仓库两层 config 已在 load() 合并。"""
+    return load(repo_dir).get("notify") or {}
+
+
 # ── internals ────────────────────────────────────────────────────────────────
 def _read_global() -> dict:
     """Global layer: `~/.devloop/config.json` (or `$DEVLOOP_CONFIG_DIR`). `{}` if absent."""

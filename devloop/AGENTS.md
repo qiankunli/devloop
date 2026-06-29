@@ -40,7 +40,7 @@ devloop/
 │   ├── hooks.json                 # 事件注册
 │   ├── lib/                        # CLI-agnostic 纯逻辑（无协议依赖，sys.path 自定位）
 │   │   ├── hook_io.py             #   ★hook harness：guard / inject / observe / run 四个 runner（CC 原生 event 侧）
-│   │   ├── notify/                 #   ★notify 端口：Notification + Notifier（base）；channel（ChannelNotifier + run_channel）是第一种投递
+│   │   ├── notify/                 #   ★notify 端口：Notification/Notifier/Source（base）；channel + waiter 两投递；sources/（forge/review + CompositeSource `all`）；should-arm 按能力决定是否 arm
 │   │   ├── gitcmd.py              #   ★统一 git runner（超时 + failure-safe，唯一 git 入口）
 │   │   ├── forge/                 #   ★统一 forge facade（GitHub/GitLab，按 repo 分发）
 │   │   │   ├── base.py            #     中立领域：PullRequest / Comment / Forge port（仅原语）/ build_window 策略 / pr_label / parse_pr_number
@@ -78,7 +78,7 @@ devloop/
 
 ### 1. hook harness + notify 端口（两个 producer 侧）
 - **hook 侧（CC 原生 event）→ `hooks/lib/hook_io.py`**：每个 hook = 一个函数 + 一个 runner：`guard(decide)`（PreToolUse，返回 deny 理由或 None，异常→放行 fail-open）、`inject(produce, event)`（返回注入文本）、`observe(handle)`（副作用，恒输出 `{}`）、`run(build, event)`（富 payload，如 SessionStart 的 additionalContext+watchPaths）。runner 保证 hook 永不打断用户工具调用。
-- **非 hook 侧（外部系统）→ monitor（拉）+ `hooks/lib/notify`（推）**：forge / deploy / verdict 这类外部状态没有 CC 原生 event。**拉**：monitor 轮询写状态总线（`poll_pr_status.py` 写 `.devloop/pr.json`，**persist-only**，喂 guard / inject）。**推**：走 notify 端口（三角色：`Source` 决定何时 fire、`Notifier` 决定怎么投、runner 跑二者）——`sources/`（`forge` 盯 pr.json、`review` 盯 review.json 带 findings）是触发判定真源，被两套 transport 复用：`channel`（push 成 Claude Code channel 事件、唤醒会话、多次）与 `waiter`（一次性进程退出唤醒、stdlib only），二者共享 Source 故判定一致、都带内容 inline；`scripts/notify.py` 是统一 dispatcher。deploy/verdict 源 = 加个 `Source` 模块 + `SOURCES` 一条。channel 是 research preview / opt-in（见 References）。
+- **非 hook 侧（外部系统）→ monitor（拉）+ `hooks/lib/notify`（推）**：forge / deploy / verdict 这类外部状态没有 CC 原生 event。**拉**：monitor 轮询写状态总线（`poll_pr_status.py` 写 `.devloop/pr.json`，**persist-only**，喂 guard / inject）。**推**：走 notify 端口（三角色：`Source` 决定何时 fire、`Notifier` 决定怎么投、runner 跑二者）——`sources/`（`forge` 盯 pr.json、`review` 盯 review.json 带 findings）是触发判定真源，被两套 transport 复用：`channel`（push 成 Claude Code channel 事件、唤醒会话、多次）与 `waiter`（一次性进程退出唤醒、stdlib only），二者共享 Source 故判定一致、都带内容 inline。`CompositeSource`(token `all`)扇出所有叶子 Source 让一条 transport 盯整条总线、与"哪个源 fire"无关(聚合在代码层、不落 notify 文件)；`scripts/notify.py` 是统一 dispatcher，其 `should-arm` 动词是前台、不唤醒的能力决议(按 `config.notify().channels`)——调用方先跑它,exit 0 才 `run_in_background` 起 `waiter`、exit 1 表示 `channel all` 已覆盖则跳过,触发方对走 channel 还是 waiter 无感。deploy/verdict 源 = 加个 `Source` 模块 + `_LEAVES` 一条,`all` 自动覆盖。channel 是 research preview / opt-in（见 References）。
 
 一个变化同时走"喂状态总线（拉）"与"推给 agent"两条路：
 
