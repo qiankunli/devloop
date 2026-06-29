@@ -58,10 +58,12 @@ def _append_history(repo: str, started: float, **fields) -> None:
         pass
 
 
-def _format_comment(comments: list, failed: int, range_label: str, sha: str) -> str:
+def _format_comment(comments: list, failed: int, range_label: str, sha: str, models: dict | None = None) -> str:
     """把引擎结果格式化成一条 MR 评论(markdown)。run_review 自主发,无 agent 参与,故在此成文;
     优先级分级是 agent 在会话里做的事,这条历史评论只如实列出引擎的原始 findings。"""
     head = f"🤖 **devloop code-review** · `{range_label}` · `{sha[:9]}`"
+    if models:  # 这次 review 实际跑过的 model（routing alias×次数，去重）——review 级身份，clean 也打
+        head += " · models: " + ", ".join(f"{a}×{n}" for a, n in sorted(models.items()))
     if not comments and not failed:
         return f"{head}\n\n✅ 无 findings(clean)。"
     bits = []
@@ -240,7 +242,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     comments = result.comments
-    posted = _post(forge, pr, _format_comment(comments, result.failed, range_label, sha))
+    posted = _post(forge, pr, _format_comment(comments, result.failed, range_label, sha, result.models))
     _write(repo, status=result.status, reviewed_sha=sha, comments=comments,
            count=len(comments), failed=result.failed, warnings=result.warnings, message=result.message,
            reviewed_range=range_label, mr_comment=posted, generated_at=base.now())
