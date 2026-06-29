@@ -102,9 +102,11 @@ claude --dangerously-load-development-channels server:forge server:review
 无 channel（未开 preview / 纯 Python 环境）时退回这条：
 
 - **不能**用长驻 monitor 的 stdout 唤醒：CC 把**运行中**长驻任务的最新 stdout **每回合重投**（实测一事件 69 分钟 362 次，`#66219`）→ 故 monitor 设计成 **persist-only、不发 stdout 通知**（唤醒交给 channel，或下面的 waiter）。
-- **改用一次性进程** `scripts/wait_for_pr_change.py`：盯 `.devloop/pr.json` 的 delta，**变了就 print + 退出** = 一条终态通知，**重唤恰好一次**（已验证不重投）。
-- 与 channel 的差别：waiter 只 signal"变了"，Execute 得**自己回读 `pr.json`**；channel 则 inform 即带内容。
-- 角色：**Perceive** = `scripts/poll_pr_status.py`；**Wake** = waiter，会话留 follow-up 时 `run_in_background` arm。
+- **改用一次性进程**：盯状态总线的 delta，**变了就 print + 退出** = 一条终态通知，**重唤恰好一次**（已验证不重投）。每个 channel 生产者都配一个对偶 waiter，二者**并存、按环境择一**（channel 要 preview + `mcp`，waiter 都不要）：
+  - `scripts/wait_for_pr_change.py` ⇄ `forge_channel`：盯 `.devloop/pr.json`，键 = monitor 的 `(pr_number,[(number,state)])`。
+  - `scripts/wait_for_review_change.py` ⇄ `review_channel`：盯 `.devloop/review.json`，**直接复用 `review_channel.wake_key`**——所以 waiter 与 channel 对"什么算一次值得唤醒的 review"判定**逐字一致**（终态且有 findings / 文件失败 / error 才唤；clean / running / skipped 不唤，留给 next-prompt pull）。两条路唯一区别是 transport，不是触发条件。
+- 与 channel 的差别：waiter 只 signal"变了"，Execute 得**自己回读** `pr.json` / `review.json`；channel 则 inform 即带内容（findings 随到）。这次回读是免 preview / 免 `mcp` 的代价。
+- 角色：**Perceive** = `poll_pr_status.py` / `run_review.py`；**Wake** = 对应 waiter，会话留 follow-up 时 `run_in_background` arm。
 
 ### mode gate：自动续跑 vs 等确认
 
