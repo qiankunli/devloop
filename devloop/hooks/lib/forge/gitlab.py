@@ -147,7 +147,11 @@ class GitLabForge(Forge):
         Memoized per MR: one review round posts N findings against the same diff."""
         if number not in self._diff_refs_memo:
             refs = self.c.get(f"merge_requests/{number}").get("diff_refs") or {}
-            if not refs.get("head_sha"):
-                raise ForgeError(f"MR !{number} has no diff_refs — cannot anchor a diff comment")
+            # A text position needs ALL THREE shas — a partial diff_refs would leak None
+            # into the position and come back as an opaque HTTP 400. Fail early instead.
+            missing = [k for k in ("base_sha", "start_sha", "head_sha") if not refs.get(k)]
+            if missing:
+                raise ForgeError(f"MR !{number} diff_refs missing {'/'.join(missing)} — "
+                                 "cannot anchor a diff comment")
             self._diff_refs_memo[number] = refs
         return self._diff_refs_memo[number]
