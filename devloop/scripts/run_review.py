@@ -58,10 +58,37 @@ def _append_history(repo: str, started: float, **fields) -> None:
         pass
 
 
+def _post_inline(forge, pr, comments: list) -> tuple[int, list]:
+    """把 findings 逐条发成 diff 行锚点评论（GitLab positioned discussion / GitHub review
+    comment）——锚点让 forge 原生管理生命周期:后续 push 改了对应行,评论自动折叠成 outdated,
+    不像普通 note 永远悬着。返回 (inline 成功数, 回落列表);锚不上的(无行号 / 行不在当前
+    diff / forge 不支持)回落到汇总评论里列出,单条失败不影响其余。"""
+    if forge is None or pr is None:
+        return 0, comments
+    posted, fallback = 0, []
+    for c in comments[:_MAX_COMMENT_FINDINGS]:
+        path = c.get("path") or ""
+        line = c.get("end_line") or c.get("start_line") or 0   # 多行 finding 锚在末行
+        body = (c.get("content") or "").strip()
+        alias = (c.get("alias") or "").strip()
+        if not (path and line and body):
+            fallback.append(c)
+            continue
+        head = "🤖 **devloop code-review**" + (f" · {alias}" if alias else "")
+        try:
+            forge.diff_comment(pr.number, f"{head}\n\n{body}", path, int(line))
+            posted += 1
+        except ForgeError:
+            fallback.append(c)   # 常见:行不在 diff 里(context 行 finding)→ 留在汇总
+    fallback += comments[_MAX_COMMENT_FINDINGS:]
+    return posted, fallback
+
+
 def _format_comment(comments: list, failed: int, range_label: str, sha: str, models: dict | None = None,
-                    cost_sec: int = 0, tool_label: str = "") -> str:
+                    cost_sec: int = 0, tool_label: str = "", inline_posted: int = 0) -> str:
     """把引擎结果格式化成一条 MR 评论(markdown)。run_review 自主发,无 agent 参与,故在此成文;
-    优先级分级是 agent 在会话里做的事,这条历史评论只如实列出引擎的原始 findings。"""
+    优先级分级是 agent 在会话里做的事,这条历史评论只如实列出引擎的原始 findings。
+    `comments` 是没能 inline 的回落部分;inline 成功的只计数(`inline_posted`),内容在 diff 行上。"""
     head = f"🤖 **devloop code-review** · `{range_label}` · `{sha[:9]}`"
     if models:  # 这次 review 实际跑过的 model（routing alias×次数，去重）——review 级身份，clean 也打
         head += " · models: " + ", ".join(f"{a}×{n}" for a, n in sorted(models.items()))
@@ -69,11 +96,15 @@ def _format_comment(comments: list, failed: int, range_label: str, sha: str, mod
         head += f" · cost: {cost_sec}s"
     if tool_label:  # 引擎身份,如 `ccr v0.1.0`——引擎没报 version 就不打
         head += f" · {tool_label}"
-    if not comments and not failed:
+    total = len(comments) + inline_posted
+    if not total and not failed:
         return f"{head}\n\n✅ 无 findings(clean)。"
     bits = []
-    if comments:
-        bits.append(f"**{len(comments)} finding(s)**")
+    if total:
+        seg = f"**{total} finding(s)**"
+        if inline_posted:
+            seg += f"（{inline_posted} 条已内联到 diff 行）"
+        bits.append(seg)
     if failed:
         bits.append(f"⚠️ {failed} 个文件未能 review(LLM 超时 / token 超限等)")
     lines = [head, "", " · ".join(bits), ""]
@@ -248,11 +279,12 @@ def main(argv: list[str]) -> int:
 
     comments = result.comments
     tool_label = f"{engine.name} {result.tool_version}" if result.tool_version else ""
-    posted = _post(forge, pr, _format_comment(comments, result.failed, range_label, sha, result.models,
-                                              result.cost_sec, tool_label))
+    inline_posted, fallback = _post_inline(forge, pr, comments)   # inline 优先,锚不上的进汇总
+    posted = _post(forge, pr, _format_comment(fallback, result.failed, range_label, sha, result.models,
+                                              result.cost_sec, tool_label, inline_posted))
     _write(repo, status=result.status, reviewed_sha=sha, comments=comments,
            count=len(comments), failed=result.failed, warnings=result.warnings, message=result.message,
-           cost_sec=result.cost_sec, tool_version=result.tool_version,
+           cost_sec=result.cost_sec, tool_version=result.tool_version, inline_posted=inline_posted,
            reviewed_range=range_label, mr_comment=posted, generated_at=base.now())
     _append_history(repo, started, status=result.status, sha=sha, pr_number=pr_number,
                     count=len(comments), failed=result.failed,

@@ -14,8 +14,14 @@ smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https:/
 - **通用交付 = surface 给 session**:无论哪个相位,都写 review.json → 下一轮经状态总线注入
   浮现 `Review:` 行（pull）。
 - **post_mr 的额外能力 = MR 评论**:relay 在 git 动作后跑时,查分支是否有开放 MR;有就
-  `forge.comment` 发一条（典型是 `post_mr`——MR 刚建好;或往在途 MR 追加提交时也会命中）。
+  发评论（典型是 `post_mr`——MR 刚建好;或往在途 MR 追加提交时也会命中）。
   没有 MR 就只落 review.json。所以 **MR 评论是机会性的,不是 phase 硬绑**。
+- **findings 优先 inline（行锚点）,汇总 note 兜底**:每条 finding 先尝试发成 diff 行锚点评论
+  （`forge.diff_comment`,GitLab positioned discussion / GitHub review comment）——锚点换来
+  forge **原生的 outdated 生命周期**:下一轮 AI 修完再 push,改到的行上的旧 finding 被 forge
+  自动折叠成 outdated,不像普通 note 永远悬着（GitLab 项目开 `resolve_outdated_diff_discussions`
+  还能 push 时自动 resolve）。锚不上的（无行号 / 行不在当前 diff / forge 不支持）回落到那条
+  汇总评论里列出;汇总评论始终有,承载 review 级身份（models / cost / 引擎版本）与历史对比。
 - **signal hook,不挡 commit**:review 跑得久,且写码 AI 与 review AI 同源——结论仅供参考、
   **merge 必须人拍**。故不像 lint/test 那样 inline 挡。
 - **detach、不靠 agent 起后台**:dispatch(subprocess)不能起「跑完唤醒 session」的 harness 后台
@@ -31,7 +37,8 @@ gcampr → … → commit → publish（建/复用 MR）→ post_mr relay
 run_review（后台、独立进程）：先写 status=running
    → 自动拼 --background（业务上下文）：本次提交说明（git log）+ MR 标题/描述（forge）
    → <engine> review --from origin/<target> --to HEAD --background <ctx> --format json   # engine=ccr(默认)/ocr
-   → 写 .devloop/review.json（通用）+ 若分支有开放 MR：forge.comment(MR, 格式化结果)
+   → 写 .devloop/review.json（通用）+ 若分支有开放 MR：逐条 findings 尝试 inline（diff_comment）
+     → 锚不上的回落进汇总评论（forge.comment）
 下一轮：userprompt 注入读 review.json → 上下文出现 `Review: …`（含 mr_comment 状态）
 ```
 

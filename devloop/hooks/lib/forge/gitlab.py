@@ -10,7 +10,7 @@ from __future__ import annotations
 import urllib.parse
 
 from ._rest import RestClient
-from .base import Comment, Forge, MergeReadiness, PullRequest
+from .base import Comment, Forge, ForgeError, MergeReadiness, PullRequest
 
 # GitLab persisted state → neutral.
 _STATE_IN = {"opened": "open", "merged": "merged", "closed": "closed", "locked": "closed"}
@@ -39,6 +39,7 @@ class GitLabForge(Forge):
             {"PRIVATE-TOKEN": token},
             timeout=timeout,
         )
+        self._diff_refs_memo: dict[int, dict] = {}  # MR iid → diff_refs（同一轮 N 条 inline 共用）
 
     def _to_pr(self, d: dict) -> PullRequest:
         return PullRequest(
@@ -123,3 +124,30 @@ class GitLabForge(Forge):
 
     def comment(self, number: int, body: str) -> None:
         self.c.post(f"merge_requests/{number}/notes", {"body": body})
+
+    def diff_comment(self, number: int, body: str, path: str, line: int) -> None:
+        # Positioned discussion — GitLab re-anchors it on every push and folds it as
+        # "outdated" once the lines change; with the project setting
+        # `resolve_outdated_diff_discussions` it even auto-resolves then.
+        refs = self._diff_refs(number)
+        self.c.post(f"merge_requests/{number}/discussions", {
+            "body": body,
+            "position": {
+                "position_type": "text",
+                "base_sha": refs.get("base_sha"),
+                "start_sha": refs.get("start_sha"),
+                "head_sha": refs.get("head_sha"),
+                "new_path": path,
+                "new_line": line,
+            },
+        })
+
+    def _diff_refs(self, number: int) -> dict:
+        """The MR's current diff version (base/start/head sha) a position anchors against.
+        Memoized per MR: one review round posts N findings against the same diff."""
+        if number not in self._diff_refs_memo:
+            refs = self.c.get(f"merge_requests/{number}").get("diff_refs") or {}
+            if not refs.get("head_sha"):
+                raise ForgeError(f"MR !{number} has no diff_refs — cannot anchor a diff comment")
+            self._diff_refs_memo[number] = refs
+        return self._diff_refs_memo[number]

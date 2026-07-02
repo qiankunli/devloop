@@ -84,6 +84,10 @@ class _FakeForge(Forge):
         self.posted = getattr(self, "posted", [])
         self.posted.append((number, body))
 
+    def diff_comment(self, number, body, path, line):
+        self.diff_posted = getattr(self, "diff_posted", [])
+        self.diff_posted.append((number, path, line, body))
+
     def default_branch(self):
         return "main"
 

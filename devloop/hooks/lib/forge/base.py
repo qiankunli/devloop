@@ -211,6 +211,16 @@ class Forge(abc.ABC):
         """Post a new comment on PR/MR `number` (GitHub issue comment / GitLab MR note).
         Write primitive — used to attach code-review history to the MR."""
 
+    def diff_comment(self, number: int, body: str, path: str, line: int) -> None:
+        """Post a comment anchored to `path:line` on the NEW side of PR/MR `number`'s diff.
+        The anchor is what buys the forge's native comment lifecycle: when a later push
+        changes those lines, the forge marks the comment outdated and folds it — so each
+        review round's findings age out with the code instead of piling up as plain notes.
+        Raises ForgeError when the anchor can't land (e.g. the line isn't part of the
+        current diff). Concrete-with-default (peer of merge_readiness): an adapter without
+        a line-anchored surface raises too, and callers degrade to the plain summary note."""
+        raise ForgeError(f"{self.provider or 'forge'}: diff comments not supported")
+
     def merge_readiness(self, number: int) -> MergeReadiness:
         """Why MR/PR `number` can't merge yet (CONFLICT / DISCUSSIONS_UNRESOLVED / …), or READY.
         A fetch primitive (peer of `description`), NOT a `PullRequest` field — see `MergeReadiness`.
