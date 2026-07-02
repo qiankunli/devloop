@@ -24,7 +24,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-_REVIEW_TIMEOUT = 600   # review 自身要跑 LLM、审全量 diff，给足
+_REVIEW_TIMEOUT = 800   # review 自身要跑 LLM、审全量 diff，给足
 _PROBE_TIMEOUT = 30     # llm test 健康探针，短
 
 
@@ -39,6 +39,8 @@ class ReviewResult:
     warnings: list = field(default_factory=list)
     failed: int = 0                            # review 失败的文件数
     models: dict = field(default_factory=dict)  # routing alias -> #responses（去重）；review 级 model 身份，clean 也有
+    cost_sec: int = 0                          # 引擎自报的 review 耗时（整秒）；0 = 引擎没报
+    tool_version: str = ""                     # 引擎自报的版本；"" = 引擎没报
     message: str = ""
     error: str = ""                            # ok=False 时的诊断（写进 review.json）
 
@@ -106,9 +108,12 @@ class CcrEngine:
             return ReviewResult(ok=False, error=(r.stderr or r.stdout or "ccr produced no JSON")[-2000:])
         warnings = out.get("warnings") or []
         failed = sum(1 for w in warnings if isinstance(w, dict) and w.get("type") == "subtask_error")
+        summary = out.get("summary") or {}
         return ReviewResult(ok=True, status=out.get("status", "success"),
                             comments=out.get("comments") or [], warnings=warnings,
-                            failed=failed, models=(out.get("summary") or {}).get("models") or {},
+                            failed=failed, models=summary.get("models") or {},
+                            cost_sec=int(summary.get("elapsed_sec") or 0),
+                            tool_version=out.get("version") or "",
                             message=out.get("message", ""))
 
 

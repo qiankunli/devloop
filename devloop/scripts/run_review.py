@@ -58,12 +58,17 @@ def _append_history(repo: str, started: float, **fields) -> None:
         pass
 
 
-def _format_comment(comments: list, failed: int, range_label: str, sha: str, models: dict | None = None) -> str:
+def _format_comment(comments: list, failed: int, range_label: str, sha: str, models: dict | None = None,
+                    cost_sec: int = 0, tool_label: str = "") -> str:
     """把引擎结果格式化成一条 MR 评论(markdown)。run_review 自主发,无 agent 参与,故在此成文;
     优先级分级是 agent 在会话里做的事,这条历史评论只如实列出引擎的原始 findings。"""
     head = f"🤖 **devloop code-review** · `{range_label}` · `{sha[:9]}`"
     if models:  # 这次 review 实际跑过的 model（routing alias×次数，去重）——review 级身份，clean 也打
         head += " · models: " + ", ".join(f"{a}×{n}" for a, n in sorted(models.items()))
+    if cost_sec:  # 引擎自报的 review 耗时（整秒）——历史评论间可比,没报(0)不打
+        head += f" · cost: {cost_sec}s"
+    if tool_label:  # 引擎身份,如 `ccr v0.1.0`——引擎没报 version 就不打
+        head += f" · {tool_label}"
     if not comments and not failed:
         return f"{head}\n\n✅ 无 findings(clean)。"
     bits = []
@@ -242,9 +247,12 @@ def main(argv: list[str]) -> int:
         return 0
 
     comments = result.comments
-    posted = _post(forge, pr, _format_comment(comments, result.failed, range_label, sha, result.models))
+    tool_label = f"{engine.name} {result.tool_version}" if result.tool_version else ""
+    posted = _post(forge, pr, _format_comment(comments, result.failed, range_label, sha, result.models,
+                                              result.cost_sec, tool_label))
     _write(repo, status=result.status, reviewed_sha=sha, comments=comments,
            count=len(comments), failed=result.failed, warnings=result.warnings, message=result.message,
+           cost_sec=result.cost_sec, tool_version=result.tool_version,
            reviewed_range=range_label, mr_comment=posted, generated_at=base.now())
     _append_history(repo, started, status=result.status, sha=sha, pr_number=pr_number,
                     count=len(comments), failed=result.failed,

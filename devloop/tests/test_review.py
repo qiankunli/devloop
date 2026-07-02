@@ -173,5 +173,16 @@ def test_format_comment_shows_models():
     assert "models:" not in rr._format_comment([], 0, "r", "s", {})  # no models -> no segment
 
 
+def test_format_comment_shows_cost_and_tool():
+    """引擎自报的 cost（整秒）与身份（`<engine> <version>`）打进 header；引擎没报（0 / 空）不打——
+    ocr 不吐这两个字段时 header 自动退回旧形态。"""
+    rr = _load_script("run_review")
+    head = rr._format_comment([], 0, "origin/main..HEAD", "abc1234567",
+                              {"seed-2.1-turbo": 1}, 200, "ccr v0.1.0")
+    assert "cost: 200s" in head and "ccr v0.1.0" in head
+    bare = rr._format_comment([], 0, "r", "s", {}, 0, "")
+    assert "cost:" not in bare and "ccr" not in bare
+
+
 if __name__ == "__main__":
     run_main(globals())
