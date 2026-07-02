@@ -73,8 +73,8 @@ def seg_key(seg: dict | None):
     flips back) can join this level-equality key. A signal that can FLICKER — asynchronously
     recomputed, with a transient "checking"/unknown window — must instead be edge-detected with
     hysteresis in `step` (hold through the unknown window; wake only on entering), like
-    merge_block_event. Folding a flickering signal into a level key fires spurious wakes — that was
-    merge_readiness's first cut, and the reason this key stays lifecycle-only."""
+    merge_block_event. Folding a flickering signal into a level key fires two spurious wakes per
+    recompute — which is why this key stays lifecycle-only."""
     if not seg:
         return None
     return (seg.get("pr_number"),

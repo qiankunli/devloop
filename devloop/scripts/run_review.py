@@ -182,17 +182,17 @@ def _build_history_feed(repo: str, pr_number, current_sha: str) -> str | None:
         return None
     if not prior:
         return None
-    by_unit: dict = {}
+    by_symbol: dict = {}
     for f in prior.get("findings") or []:
-        uid = f.get("symbol_id") or ""
-        if f.get("status") != "ok" or not uid:
+        sid = f.get("symbol_id") or ""
+        if f.get("status") != "ok" or not sid:
             continue
-        by_unit.setdefault(uid, []).append({"msg": f.get("msg", ""), "sha": (prior.get("sha") or "")[:9]})
-    if not by_unit:
+        by_symbol.setdefault(sid, []).append({"msg": f.get("msg", ""), "sha": (prior.get("sha") or "")[:9]})
+    if not by_symbol:
         return None
     out = base.state_dir(repo) / "history.json"
     try:
-        out.write_text(json.dumps(by_unit, ensure_ascii=False, indent=2), encoding="utf-8")
+        out.write_text(json.dumps(by_symbol, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:
         return None
     return str(out)

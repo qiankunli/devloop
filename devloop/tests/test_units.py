@@ -2129,7 +2129,7 @@ def test_findings_for_history_status_from_warnings():
     assert out[1]["status"] == "failed" and "deadline" in out[1]["reason"]
 
 
-def test_build_history_feed_filters_ok_and_keys_by_unit():
+def test_build_history_feed_filters_ok_and_keys_by_symbol():
     """回喂只取本 PR 上一轮的 ok findings、按 symbol-id keyed；failed / 无 symbol_id / 别的 PR 都跳过。"""
     import json as _json
     import tempfile
