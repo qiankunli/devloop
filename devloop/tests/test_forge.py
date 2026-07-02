@@ -257,6 +257,14 @@ def test_forge_diff_comment_endpoint():
     except ForgeError:
         pass
 
+    gl2 = GitLabForge("h", "o/r", "t")                           # 缺 sha 的 diff_refs → 提前明确报错,
+    gl2.c = _Cap({"diff_refs": {"head_sha": "h"}})               # 不让 None 漏进 position 变成盲 400
+    try:
+        gl2.diff_comment(7, "hi", "a.py", 5)
+        raise AssertionError("partial diff_refs should raise")
+    except ForgeError as e:
+        assert "base_sha" in str(e) and "start_sha" in str(e)
+
 def test_forge_default_branch():
     """default_branch() 读 repo 根对象的 default_branch（gitlab GET /projects/{id}、
     github GET /repos/{o}/{n}，路径为 ""）；缺字段 → ""。"""
