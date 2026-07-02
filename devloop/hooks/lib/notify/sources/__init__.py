@@ -15,6 +15,6 @@ _LEAVES = {
     "review": ReviewSource(),
 }
 
-# `all` composes the leaves so one transport can watch the whole bus (see composite.py). Listed
-# last so its token never shadows a leaf name.
+# `all` composes the leaves so one transport can watch the whole bus (see composite.py). The token
+# is reserved: this entry overrides any leaf that tried to use it, so never name a leaf "all".
 SOURCES = {**_LEAVES, "all": CompositeSource(_LEAVES)}
