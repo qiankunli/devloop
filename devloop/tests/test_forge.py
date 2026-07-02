@@ -221,6 +221,42 @@ def test_forge_comment_endpoint():
     gh = GitHubForge("api.github.com", "o", "r", "t"); gh.c = _Cap(); gh.comment(7, "hi")
     assert gh.c.calls == [("issues/7/comments", {"body": "hi"})]
 
+
+def test_forge_diff_comment_endpoint():
+    """diff_comment() 发行锚点评论（原生 outdated 生命周期）：gitlab → positioned discussion
+    （diff_refs memo，一轮 N 条只 GET 一次）；github → pulls/{n}/comments 带 head-sha commit_id
+    （同样 memo）。端口默认实现 raise ForgeError——不支持的 adapter 让调用方回落汇总 note。"""
+    from lib.forge.base import Forge, ForgeError
+    from lib.forge.github import GitHubForge
+    from lib.forge.gitlab import GitLabForge
+
+    class _Cap:
+        def __init__(self, get_resp): self.calls = []; self._get = get_resp; self.gets = 0
+        def get(self, path, **kw): self.gets += 1; return self._get
+        def post(self, path, body): self.calls.append((path, body)); return {"id": 1}
+
+    gl = GitLabForge("h", "o/r", "t")
+    gl.c = _Cap({"diff_refs": {"base_sha": "b", "start_sha": "s", "head_sha": "h"}})
+    gl.diff_comment(7, "hi", "a.py", 5); gl.diff_comment(7, "yo", "b.py", 9)
+    assert gl.c.gets == 1                                        # diff_refs memoized
+    path, body = gl.c.calls[0]
+    assert path == "merge_requests/7/discussions" and body["body"] == "hi"
+    assert body["position"]["new_path"] == "a.py" and body["position"]["new_line"] == 5
+    assert body["position"]["head_sha"] == "h"
+
+    gh = GitHubForge("api.github.com", "o", "r", "t")
+    gh.c = _Cap({"head": {"sha": "abc"}})
+    gh.diff_comment(7, "hi", "a.py", 5); gh.diff_comment(7, "yo", "b.py", 9)
+    assert gh.c.gets == 1                                        # head sha memoized
+    assert gh.c.calls[0] == ("pulls/7/comments",
+                             {"body": "hi", "commit_id": "abc", "path": "a.py", "line": 5, "side": "RIGHT"})
+
+    try:                                                         # 端口默认：不支持 → raise
+        Forge.diff_comment(gl, 7, "x", "a.py", 1)
+        raise AssertionError("default diff_comment should raise")
+    except ForgeError:
+        pass
+
 def test_forge_default_branch():
     """default_branch() 读 repo 根对象的 default_branch（gitlab GET /projects/{id}、
     github GET /repos/{o}/{n}，路径为 ""）；缺字段 → ""。"""

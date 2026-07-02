@@ -10,7 +10,9 @@ import shutil
 import sys
 from pathlib import Path
 
-from _testkit import _git, _load_script, run_main  # noqa: E402  (bootstrap first)
+from _testkit import _FakeForge, _git, _load_script, run_main  # noqa: E402  (bootstrap first)
+from lib.context import PullRequest  # noqa: E402
+from lib.forge.base import ForgeError  # noqa: E402
 
 
 def test_run_review_skips_without_engine():
@@ -182,6 +184,39 @@ def test_format_comment_shows_cost_and_tool():
     assert "cost: 200s" in head and "ccr v0.1.0" in head
     bare = rr._format_comment([], 0, "r", "s", {}, 0, "")
     assert "cost:" not in bare and "ccr" not in bare
+
+
+def test_post_inline_findings():
+    """findings 优先发成 diff 行锚点评论（换取 forge 原生 outdated 生命周期）：锚得上的逐条
+    inline、锚在末行；无行号的、forge 拒绝的（行不在 diff / 不支持）回落汇总；无 MR 原样回落。"""
+    rr = _load_script("run_review")
+    fake = _FakeForge([PullRequest(number=7, state="open")])
+    pr = fake.get(7)
+    comments = [
+        {"path": "a.py", "start_line": 3, "end_line": 5, "alias": "m1", "content": "bug"},
+        {"path": "b.py", "content": "no line info"},
+    ]
+    n, fb = rr._post_inline(fake, pr, comments)
+    assert n == 1 and [c.get("path") for c in fb] == ["b.py"]
+    assert fake.diff_posted[0][:3] == (7, "a.py", 5)            # 锚在 end_line
+    assert "m1" in fake.diff_posted[0][3] and "bug" in fake.diff_posted[0][3]
+
+    class Refusing(_FakeForge):
+        def diff_comment(self, *a):
+            raise ForgeError("no anchor")
+    rf = Refusing([PullRequest(number=7, state="open")])
+    n2, fb2 = rr._post_inline(rf, rf.get(7), comments)
+    assert n2 == 0 and len(fb2) == 2                            # 全部回落，单条失败不致命
+    assert rr._post_inline(None, None, comments) == (0, comments)   # 无 MR → 原样回落
+
+
+def test_format_comment_counts_inline():
+    """汇总评论只列回落的 findings；总数 = 回落 + inline，并标注 inline 条数。"""
+    rr = _load_script("run_review")
+    body = rr._format_comment([{"path": "b.py", "content": "left"}], 0, "r", "s", {}, 0, "",
+                              inline_posted=2)
+    assert "**3 finding(s)**" in body and "2 条已内联" in body and "b.py" in body
+    assert "clean" in rr._format_comment([], 0, "r", "s", {}, 0, "", inline_posted=0)
 
 
 if __name__ == "__main__":

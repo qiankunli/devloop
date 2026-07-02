@@ -9,7 +9,7 @@ here — it's `base.build_window`, composed over `recent` + `get`.
 from __future__ import annotations
 
 from ._rest import RestClient
-from .base import Comment, Forge, PullRequest
+from .base import Comment, Forge, ForgeError, PullRequest
 
 
 class GitHubForge(Forge):
@@ -28,6 +28,7 @@ class GitHubForge(Forge):
             },
             timeout=timeout,
         )
+        self._head_sha_memo: dict[int, str] = {}  # PR number → head sha（同一轮 N 条 inline 共用）
 
     def _to_pr(self, d: dict) -> PullRequest:
         # `merged` is only on the single-PR response; list items carry `merged_at`.
@@ -103,3 +104,20 @@ class GitHubForge(Forge):
     def comment(self, number: int, body: str) -> None:
         # Conversation comment on the PR (= issue comment), same surface `comments()` reads.
         self.c.post(f"issues/{number}/comments", {"body": body})
+
+    def diff_comment(self, number: int, body: str, path: str, line: int) -> None:
+        # Line-anchored review comment — GitHub collapses it as outdated once a later
+        # push changes the anchored lines. Needs the PR's current head sha as commit_id;
+        # memoized per PR (one review round posts N findings against the same head).
+        if number not in self._head_sha_memo:
+            sha = (self.c.get(f"pulls/{number}").get("head") or {}).get("sha") or ""
+            if not sha:
+                raise ForgeError(f"PR #{number} has no head sha — cannot anchor a diff comment")
+            self._head_sha_memo[number] = sha
+        self.c.post(f"pulls/{number}/comments", {
+            "body": body,
+            "commit_id": self._head_sha_memo[number],
+            "path": path,
+            "line": line,
+            "side": "RIGHT",
+        })
