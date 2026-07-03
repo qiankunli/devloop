@@ -8,6 +8,7 @@ from pathlib import Path
 HOOKS = Path(__file__).resolve().parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS))
 
+from _testkit import _git, _load_hook  # noqa: E402
 from lib.context import session as session_lock  # noqa: E402
 
 
@@ -57,3 +58,24 @@ def test_blank_session_never_gates_or_writes(tmp_path):
     # a CLI without a session id is never blocked and never overwrites the lock
     assert session_lock.acquire(repo, "", "feat/y") is True
     assert session_lock.read(repo)["session_id"] == "sess-A"
+
+
+def test_fetch_does_not_claim_ownership(tmp_path):
+    """只读参考别的仓（fetch + log + read）不得抢占它的 checkout ownership——曾有
+    session 为看代码跑了一条 `git fetch` 就拿走 owner.lock，把真正要改代码的
+    session 挤去 worktree。fetch 不动 working tree，只该刷新 branch.json。"""
+    pgr = _load_hook("posttool_git_refresh")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(str(repo), "init", "-q")
+    expected = {str(repo.resolve())}
+
+    def roots(cmd, subcommands):
+        return {str(Path(r).resolve()) for r in pgr.affected_roots(cmd, str(tmp_path), subcommands)}
+
+    # 状态刷新面：fetch 仍触发（remote refs 变了，ahead/behind 要跟着刷）
+    assert roots(f"cd {repo} && git fetch origin", pgr._STATE_SUBCOMMANDS) == expected
+    # ownership 面：fetch 不触发；真正动 working tree / 分支的子命令才触发
+    assert roots(f"cd {repo} && git fetch origin", pgr._OWNERSHIP_SUBCOMMANDS) == set()
+    assert roots(f"cd {repo} && git checkout -b feat/x", pgr._OWNERSHIP_SUBCOMMANDS) == expected
+    assert roots(f"cd {repo} && git pull", pgr._OWNERSHIP_SUBCOMMANDS) == expected
