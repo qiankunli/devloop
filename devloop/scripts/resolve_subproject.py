@@ -19,8 +19,8 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_ROOT / "hooks"))
 
-from lib import git_state, gitcmd, workspace  # noqa: E402
-from lib.context import WorkspaceContext  # noqa: E402
+from lib import config, git_state, gitcmd, workspace  # noqa: E402
+from lib.context import WorkspaceContext, session  # noqa: E402
 from lib.repo_resolve import best_score, looks_like_path  # noqa: E402  (shared fuzzy scoring)
 
 MAX_CANDIDATES = 4
@@ -35,13 +35,16 @@ def make_worktree(repo_dir: str, tag: str) -> tuple[str | None, str]:
     """Create/reuse a worktree at `.worktrees/<tag>` (branch `worktree-<tag>`) off origin/<target>.
     Worktrees live INSIDE the repo, never as siblings of it. New ones go under `.worktrees/`;
     reuse also accepts the legacy `worktrees/` layout so older checkouts keep resolving.
-    Returns (path, message). Idempotent: an existing worktree dir is reused."""
+    Returns (path, message). Idempotent: an existing worktree dir is reused. Each call also
+    prunes the repo's oldest surplus worktrees (see `_prune_old_worktrees`)."""
     base = Path(repo_dir)
     rel = Path(".worktrees") / tag
     # reuse: prefer .worktrees/, fall back to the legacy worktrees/ dir
     for legacy in (rel, Path("worktrees") / tag):
         if (base / legacy).is_dir():
-            return str((base / legacy).resolve()), "reused existing worktree"
+            path = str((base / legacy).resolve())
+            _prune_old_worktrees(repo_dir, keep_path=path)
+            return path, "reused existing worktree"
     target = git_state.local_default_target(repo_dir)
     branch = f"worktree-{tag}"
     r = gitcmd.git(repo_dir, "worktree", "add", "-b", branch,
@@ -51,7 +54,75 @@ def make_worktree(repo_dir: str, tag: str) -> tuple[str | None, str]:
         r2 = gitcmd.git(repo_dir, "worktree", "add", str(rel), branch, timeout=30)
         if not r2.ok:
             return None, f"worktree add failed: {r.err or r2.err}"
-    return str((base / rel).resolve()), "created worktree"
+    path = str((base / rel).resolve())
+    _prune_old_worktrees(repo_dir, keep_path=path)
+    return path, "created worktree"
+
+
+def _worktree_activity(path: str) -> float:
+    """'Recency' of a worktree = the later of its working-dir mtime and its git *index* mtime.
+    The index is rewritten by add / commit / checkout / switch — real work in THIS worktree —
+    and is per-worktree, so it ranks each independently. HEAD commit time is deliberately NOT
+    used: worktrees branched off the same trunk share a baseline commit, which would flatten
+    the ranking into a tie. 0.0 when nothing is stat-able → sorts as oldest."""
+    times = []
+    try:
+        times.append(os.stat(path).st_mtime)
+    except OSError:
+        pass
+    r = gitcmd.git(path, "rev-parse", "--git-path", "index")
+    if r.ok and r.out:
+        try:
+            times.append(os.stat(Path(path) / r.out).st_mtime)
+        except OSError:
+            pass
+    return max(times) if times else 0.0
+
+
+def _managed_worktrees(repo_dir: str) -> list[str]:
+    """Linked worktrees devloop manages: those directly under `<main>/.worktrees/` (or the
+    legacy `<main>/worktrees/`). Excludes the primary checkout and any external/sibling
+    worktree a user made by hand — those are never touched by pruning."""
+    wts = git_state.list_worktrees(repo_dir)
+    if not wts:
+        return []
+    main = Path(wts[0][0]).resolve()          # first entry is always the primary checkout
+    homes = {main / ".worktrees", main / "worktrees"}
+    return [str(Path(p).resolve()) for p, _sha, _branch in wts[1:] if Path(p).resolve().parent in homes]
+
+
+def _prune_old_worktrees(repo_dir: str, keep_path: str | None = None) -> None:
+    """Keep the `keep_recent` most-recently-active managed worktrees of `repo_dir`; remove the
+    rest. Config-driven (`config.worktree(repo_dir)['keep_recent']`) so a repo's `.devloop/
+    config.json` overrides the global default. Semantics: N>0 keep the N newest, 0 keep none
+    (remove every surplus), N<0 disable pruning entirely. Non-destructive by design: a non-force
+    `git worktree remove` refuses a dirty worktree, the just-made `keep_path` is never a target
+    (so 0 still spares the worktree you just entered), and a worktree held by another live
+    session is skipped. Branches are kept — a removed worktree's `worktree-<tag>` survives and
+    re-enter rebuilds the checkout. Best-effort: any git failure leaves that worktree in place."""
+    keep = config.worktree(repo_dir).get("keep_recent", 5)
+    try:
+        keep = int(keep)
+    except (TypeError, ValueError):
+        keep = 5
+    if keep < 0:
+        return
+    managed = _managed_worktrees(repo_dir)
+    if len(managed) <= keep:
+        return
+    keepp = str(Path(keep_path).resolve()) if keep_path else None
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    doomed = sorted(managed, key=_worktree_activity, reverse=True)[keep:]
+    pruned = False
+    for path in doomed:
+        if path == keepp:
+            continue
+        if sid and session.foreign_owner(path, sid):     # another live session is working on it
+            continue
+        if gitcmd.git(repo_dir, "worktree", "remove", path, timeout=30).ok:
+            pruned = True
+    if pruned:
+        gitcmd.git(repo_dir, "worktree", "prune", timeout=15)
 
 
 def parse_args(argv: list[str]) -> tuple[str | None, str | None]:

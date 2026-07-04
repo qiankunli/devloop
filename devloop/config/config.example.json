@@ -8,6 +8,8 @@
 
   "review": { "tool": "ccr" },
 
+  "worktree": { "keep_recent": 5 },
+
   "lifecycle": {
     "default": { "pre_commit": [], "post_commit": [], "pre_mr": [], "post_mr": [] },
     "repos": {
