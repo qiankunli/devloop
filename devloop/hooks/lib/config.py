@@ -62,6 +62,11 @@ _DEFAULTS: dict = {
         },
         "repos": {},
     },
+    # worktree 清理保留策略。keep_recent = 每仓保留的近期 worktree 数（按最近活动排序，其余删）：
+    # N>0 留最近 N 个，0 一个旧的都不留（删全部富余），N<0 关闭清理。扁平结构、无 repos map：靠
+    # load() 的距离分层覆盖——repo 的 .devloop/config.json 写一份 worktree.keep_recent 即覆盖全局。
+    # 任何路径建 worktree 时都消费它（resolve_subproject.make_worktree）。
+    "worktree": {"keep_recent": 5},
 }
 
 _LOCAL_NAME = ".devloop"
@@ -187,6 +192,13 @@ def arch(repo_dir: str | Path | None = None) -> dict:
         if isinstance(repo_over, dict):
             merged = _deep_merge(merged, repo_over)
     return merged
+
+
+def worktree(repo_dir: str | Path | None = None) -> dict:
+    """已解析的 worktree 清理策略。`keep_recent` = 每仓保留的近期 worktree 数：N>0 留最近 N 个，
+    0 一个旧的都不留，N<0 关闭清理。无 repos map：`load(repo_dir)` 已按距离深合并，repo 的
+    `.devloop/config.json` 里的 `worktree.keep_recent` 直接覆盖全局。`make_worktree` 读它。"""
+    return load(repo_dir).get("worktree") or {}
 
 
 def notify(repo_dir: str | Path | None = None) -> dict:
