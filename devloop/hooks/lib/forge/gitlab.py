@@ -10,7 +10,7 @@ from __future__ import annotations
 import urllib.parse
 
 from ._rest import RestClient
-from .base import Comment, Forge, ForgeError, MergeReadiness, PullRequest
+from .base import Comment, Forge, ForgeError, MergeReadiness, PullRequest, Release
 
 # GitLab persisted state → neutral.
 _STATE_IN = {"opened": "open", "merged": "merged", "closed": "closed", "locked": "closed"}
@@ -112,6 +112,32 @@ class GitLabForge(Forge):
 
     def close(self, number: int) -> PullRequest:
         return self._to_pr(self.c.put(f"merge_requests/{number}", {"state_event": "close"}))
+
+    def _to_release(self, d: dict) -> Release:
+        links = d.get("_links") or {}
+        commit = d.get("commit") or {}
+        return Release(
+            tag=d.get("tag_name", ""),
+            name=d.get("name") or d.get("tag_name", "") or "",
+            target=commit.get("id", "") or "",   # GitLab resolves ref → the tagged commit sha
+            web_url=links.get("self", "") or "",
+            created_at=d.get("released_at") or d.get("created_at"),
+        )
+
+    def create_release(self, *, tag: str, target: str, name: str = "", notes: str = "") -> Release:
+        # `ref` creates the tag server-side when it doesn't exist yet (branch name or sha).
+        return self._to_release(self.c.post("releases", {
+            "tag_name": tag,
+            "ref": target,
+            "name": name or tag,
+            "description": notes,
+        }))
+
+    def latest_release(self) -> Release | None:
+        # GitLab lists releases released_at-desc by default → first entry is the latest.
+        out = self.c.get("releases", per_page=1)
+        rels = out if isinstance(out, list) else []
+        return self._to_release(rels[0]) if rels else None
 
     def comments(self, number: int) -> list[Comment]:
         out = self.c.get(f"merge_requests/{number}/discussions", per_page=50)

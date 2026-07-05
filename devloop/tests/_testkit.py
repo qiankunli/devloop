@@ -30,7 +30,7 @@ os.makedirs(_GCFG, exist_ok=True)
 os.environ["DEVLOOP_CONFIG_DIR"] = _GCFG
 
 from lib.context import PullRequest  # noqa: E402
-from lib.forge.base import Comment, Forge, ForgeNotFound  # noqa: E402
+from lib.forge.base import Comment, Forge, ForgeNotFound, Release  # noqa: E402
 
 
 class _FakeForge(Forge):
@@ -90,6 +90,19 @@ class _FakeForge(Forge):
 
     def default_branch(self):
         return "main"
+
+    def create_release(self, *, tag, target, name="", notes=""):
+        r = Release(tag=tag, name=name or tag, target=target, web_url=f"rel/{tag}",
+                    created_at=f"t{tag}")
+        self._releases = getattr(self, "_releases", [])
+        self._releases.append(r)
+        self.released = r
+        self.released_notes = notes   # Release carries no body; capture it for assertions
+        return r
+
+    def latest_release(self):
+        rels = getattr(self, "_releases", [])
+        return rels[-1] if rels else None
 
 def _load_from(base, name):
     spec = importlib.util.spec_from_file_location(name, str(base / f"{name}.py"))

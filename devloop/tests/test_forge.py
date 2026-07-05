@@ -138,6 +138,94 @@ def test_pr_cli_dispatch():
         prcli.forge_for_repo = orig_forge
         prcli.cli.resolve_repo_or_exit = orig_resolve
 
+def test_forge_release_endpoints():
+    """create_release / latest_release hit the right endpoint with the provider's field names
+    and map back to the neutral Release: github POST/GET releases (`target_commitish`/`body`,
+    `/releases/latest` with 404→None), gitlab POST/GET releases (`ref`/`description`, list→first)."""
+    from lib.forge.base import ForgeNotFound
+    from lib.forge.github import GitHubForge
+    from lib.forge.gitlab import GitLabForge
+
+    class _Cap:
+        def __init__(self, get_resp=None, get_exc=None):
+            self.calls = []
+            self._get, self._get_exc = get_resp, get_exc
+            self.gets = []
+        def get(self, path, **kw):
+            self.gets.append((path, kw))
+            if self._get_exc:
+                raise self._get_exc
+            return self._get
+        def post(self, path, body):
+            self.calls.append((path, body))
+            return {"tag_name": body.get("tag_name"), "name": body.get("name"),
+                    "html_url": f"gh/{body.get('tag_name')}", "target_commitish": body.get("target_commitish"),
+                    "_links": {"self": f"gl/{body.get('tag_name')}"},
+                    "commit": {"id": "deadbeef"}, "published_at": "2026-07-05"}
+
+    gh = GitHubForge("api.github.com", "o", "r", "t"); gh.c = _Cap()
+    rel = gh.create_release(tag="v1.8.0", target="main", notes="hi")
+    assert gh.c.calls[0] == ("releases", {"tag_name": "v1.8.0", "target_commitish": "main",
+                                          "name": "v1.8.0", "body": "hi"})
+    assert (rel.tag, rel.target, rel.web_url) == ("v1.8.0", "main", "gh/v1.8.0")
+
+    gl = GitLabForge("h", "o/r", "t"); gl.c = _Cap()
+    rel = gl.create_release(tag="v1.8.0", target="release", name="R", notes="hi")
+    assert gl.c.calls[0] == ("releases", {"tag_name": "v1.8.0", "ref": "release",
+                                          "name": "R", "description": "hi"})
+    assert (rel.tag, rel.name, rel.target, rel.web_url) == ("v1.8.0", "R", "deadbeef", "gl/v1.8.0")
+
+    # latest: github 404 → None (first release); a hit → mapped
+    gh2 = GitHubForge("api.github.com", "o", "r", "t")
+    gh2.c = _Cap(get_exc=ForgeNotFound("404"))
+    assert gh2.latest_release() is None and gh2.c.gets[0][0] == "releases/latest"
+    gh3 = GitHubForge("api.github.com", "o", "r", "t")
+    gh3.c = _Cap(get_resp={"tag_name": "v1.7.2", "html_url": "u"})
+    assert gh3.latest_release().tag == "v1.7.2"
+    # gitlab: list newest-first → first; empty list → None
+    gl2 = GitLabForge("h", "o/r", "t"); gl2.c = _Cap(get_resp=[{"tag_name": "v1.7.2"}])
+    assert gl2.latest_release().tag == "v1.7.2" and gl2.c.gets[0] == ("releases", {"per_page": 1})
+    gl3 = GitLabForge("h", "o/r", "t"); gl3.c = _Cap(get_resp=[])
+    assert gl3.latest_release() is None
+
+def test_release_cli_dispatch():
+    """`release` CLI over the facade: create validates semver + strict increment, defaults the
+    target to the repo trunk, auto-drafts notes from merged PRs when none given; latest reads."""
+    from lib import git_state
+    rel = _load_script("release")
+    fake = _FakeForge([PullRequest(number=7, state="merged", source_branch="feat/x",
+                                   title="did a thing", web_url="u/7", updated_at="2026-07-05")])
+
+    class _R:
+        git_root = "/x"
+
+    orig_forge, orig_resolve = rel.forge_for_repo, rel.cli.resolve_repo_or_exit
+    orig_trunk = git_state.local_default_target
+    try:
+        rel.forge_for_repo = lambda repo: fake
+        rel.cli.resolve_repo_or_exit = lambda ns, prog: (_R(), "test")
+        git_state.local_default_target = lambda repo: "main"
+
+        # first release: no prior → allowed; target defaults to trunk; notes auto-drafted from merged PR
+        assert rel.main(["create", "v1.8.0"]) == 0
+        assert fake.released.tag == "v1.8.0" and fake.released.target == "main"
+        assert "## Changes" in fake.released_notes and "did a thing" in fake.released_notes
+        # non-semver rejected before any call
+        fake.released = None
+        assert rel.main(["create", "1.8"]) == 1 and fake.released is None
+        # not-greater-than-last rejected (last is now v1.8.0)
+        assert rel.main(["create", "v1.8.0"]) == 1 and fake.released is None
+        assert rel.main(["create", "v1.7.0"]) == 1 and fake.released is None
+        # higher version accepted; explicit --target and --notes honored (no draft)
+        assert rel.main(["create", "v1.9.0", "--target", "abc123", "--notes", "manual"]) == 0
+        assert fake.released.tag == "v1.9.0" and fake.released.target == "abc123"
+        assert fake.released_notes == "manual"
+        # latest reads the newest
+        assert rel.main(["latest"]) == 0
+    finally:
+        rel.forge_for_repo, rel.cli.resolve_repo_or_exit = orig_forge, orig_resolve
+        git_state.local_default_target = orig_trunk
+
 def test_reuse_or_create_pr_over_narrowed_port():
     """reuse_or_create_pr: reuse the branch's OPEN pr if present (via prs_for_branch),
     else create. Over the narrowed port + a fake forge — no HTTP; label is repo-level."""
