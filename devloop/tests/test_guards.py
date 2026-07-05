@@ -222,6 +222,44 @@ def test_gate_protect_uses_live_branch():
     reason = guard.decide(inp)
     assert reason and "protected branch 'release'" in reason            # gate read LIVE → blocked
 
+def test_protect_branch_push_exemptions():
+    """保护分支 push 的两类豁免：tag-only push（发版打 tag）与空仓首推（远端零分支，
+    无历史可保护）放行；分支 push、证明不了是 tag 的 bare name、远端删除仍拦（fail-closed）。"""
+    from lib.context import RepoContext
+    guard = _load_hook("pretool_policy_bash")
+    R = "/tmp/dlut_tagpush"; B = "/tmp/dlut_tagpush_remote"
+    for d in (R, B):
+        shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(R)
+    _git("/tmp", "init", "-q", "--bare", B)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "main")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    _git(R, "remote", "add", "origin", B)
+    _git(R, "tag", "v0.1.0")
+    RepoContext.refresh_all(R)
+
+    def decide(cmd):
+        return guard.decide(_hook_input("Bash", {"cwd": R, "tool_input": {"command": cmd}}))
+
+    # 空仓首推：远端一个分支都没有 → 放行
+    assert decide("git push -u origin main") is None
+    # tag-only push 各形态放行（bare tag name / 显式 refs/tags / --tags）
+    assert decide("git push origin v0.1.0") is None
+    assert decide("git push origin refs/tags/v0.1.0") is None
+    assert decide("git push --tags") is None
+    # 远端有分支后：分支 push 恢复拦截，tag push 仍放行
+    _git(R, "push", "-qu", "origin", "main")
+    assert "protected branch 'main'" in (decide("git push origin main") or "")
+    assert decide("git push") is not None
+    assert decide("git push origin v0.1.0") is None
+    # fail-closed：bare name 本地证明不了是 tag / 远端删除 / --delete
+    assert decide("git push origin nosuchref") is not None
+    assert decide("git push origin :refs/tags/v0.1.0") is not None
+    assert decide("git push --delete origin v0.1.0") is not None
+    # commit 无豁免
+    assert "protected branch 'main'" in (decide("git commit -m x") or "")
+
 def test_gate_branch_name_reuse_not_falsely_inactive():
     """finding-3 defense: a rebuilt branch reusing an OLD name whose merged PR points at an
     unreachable sha must NOT be marked inactive — the merged PR is not this HEAD's PR. A
