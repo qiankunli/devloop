@@ -117,6 +117,21 @@ class Comment:
     body: str = ""
 
 
+@dataclass
+class Release:
+    """A published release as devloop tracks it — neutral across forges.
+
+    `tag` is the git tag the release points to; `target` is the commit-ish the tag was cut
+    at (a branch name or sha). Like `PullRequest` it carries no provider — the tag is created
+    server-side by the forge, so a release never requires a local `git push --tags`.
+    """
+    tag: str
+    name: str = ""
+    target: str = ""           # target_commitish (GitHub) / commit the tag resolved to (GitLab)
+    web_url: str = ""
+    created_at: str | None = None
+
+
 class MergeReadiness(str, Enum):
     """Why a PR/MR can't be merged yet — the neutral form of GitLab's `detailed_merge_status`
     / GitHub's `mergeable_state`. Forges surface one blocking reason at a time; plus READY and
@@ -202,6 +217,19 @@ class Forge(abc.ABC):
         the local `refs/remotes/origin/HEAD` cache (which `git fetch` never updates). It is
         NOT necessarily the branch a team merges into — a repo may default to `main` yet treat
         `release` as trunk — so callers still layer a per-repo config override on top."""
+
+    @abc.abstractmethod
+    def create_release(self, *, tag: str, target: str, name: str = "", notes: str = "") -> Release:
+        """Publish a release `name` at `tag`, creating the tag at `target` (a branch name or
+        sha) SERVER-SIDE — no local `git push --tags`, so this needs no working tree and trips
+        no push guard. GitHub POST /releases (`target_commitish`), GitLab POST /releases (`ref`).
+        A write primitive; version/increment policy lives in the release orchestrator, not here."""
+
+    @abc.abstractmethod
+    def latest_release(self) -> "Release | None":
+        """The most recent published release, or None when the repo has none yet (its first
+        release). Read primitive — the orchestrator uses it to check the new version is an
+        increment and to bound the 'changes since last release' notes draft."""
 
     @abc.abstractmethod
     def comments(self, number: int) -> list[Comment]: ...

@@ -92,6 +92,31 @@ There is no `pr create`: `pr` only ever operates on an MR that already exists an
 your working tree. Opening a new one is a commit+push transaction under the branch/staging gates
 — that's gcampr, above.
 
+## 发版 — the `release` CLI
+
+Cut a versioned release over the same forge facade (GitHub Release / GitLab Release). The tag is
+created **server-side** — no `git push --tags`, no working tree, no push guard in the way; and no
+`--target <sha>` to mistype (a mistyped sha shipped a broken release before this existed).
+
+```
+python3 <PLUGIN_ROOT>/scripts/release.py create <version> [--target <ref>] [--title "..."] [--notes "..." | --notes-file <path>]
+python3 <PLUGIN_ROOT>/scripts/release.py latest                         # the current published release
+```
+
+- `<version>` must be **semver** (`vX.Y.Z`) and strictly greater than the last release — the CLI
+  refuses a non-increment before calling the API.
+- `--target` defaults to the repo's **trunk branch name**, so the forge tags that branch's current
+  remote tip. Pass a branch/sha/tag only to release off something else.
+- **Notes**: for anything beyond a one-liner, compose them yourself and pass `--notes-file <path>`
+  (write it with the Write tool — no shell escaping; `-` reads stdin). With no `--notes`, a plain
+  changelog is auto-drafted from PRs/MRs merged since the last release — a fallback, not a substitute
+  for hand-written notes. `--title` defaults to the version.
+- Shares `--repo <name|path>` with the scripts above. Since the tag lands on the remote, `git fetch
+  --tags` locally afterward if you need it in the working copy.
+
+This is **not** part of gcampr: releasing is a low-frequency, working-tree-free action, so it's a
+peer of `pr` (forge-only), not a step in the commit→push→MR transaction.
+
 ## Branch / PR awareness
 
 The injected `.devloop` context already carries the current branch's state, whether it's

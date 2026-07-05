@@ -9,7 +9,7 @@ here — it's `base.build_window`, composed over `recent` + `get`.
 from __future__ import annotations
 
 from ._rest import RestClient
-from .base import Comment, Forge, ForgeError, PullRequest
+from .base import Comment, Forge, ForgeError, ForgeNotFound, PullRequest, Release
 
 
 class GitHubForge(Forge):
@@ -90,6 +90,31 @@ class GitHubForge(Forge):
 
     def close(self, number: int) -> PullRequest:
         return self._to_pr(self.c.patch(f"pulls/{number}", {"state": "closed"}))
+
+    def _to_release(self, d: dict) -> Release:
+        return Release(
+            tag=d.get("tag_name", ""),
+            name=d.get("name") or d.get("tag_name", "") or "",
+            target=d.get("target_commitish", "") or "",
+            web_url=d.get("html_url", ""),
+            created_at=d.get("published_at") or d.get("created_at"),
+        )
+
+    def create_release(self, *, tag: str, target: str, name: str = "", notes: str = "") -> Release:
+        return self._to_release(self.c.post("releases", {
+            "tag_name": tag,
+            "target_commitish": target,
+            "name": name or tag,
+            "body": notes,
+        }))
+
+    def latest_release(self) -> Release | None:
+        # /releases/latest is the newest full release (excludes drafts + prereleases) — the
+        # right baseline for an increment check. 404 = no releases yet → the first release.
+        try:
+            return self._to_release(self.c.get("releases/latest"))
+        except ForgeNotFound:
+            return None
 
     def comments(self, number: int) -> list[Comment]:
         # PR conversation comments live on the issue endpoint (review comments are a

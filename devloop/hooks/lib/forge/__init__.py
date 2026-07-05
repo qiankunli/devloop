@@ -25,6 +25,7 @@ from .base import (
     ForgeNotFound,
     MergeReadiness,
     PullRequest,
+    Release,
     build_window,
     parse_pr_number,
     pr_label,
