@@ -24,7 +24,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
 from lib import cli, config, git_state, review_engine  # noqa: E402
-from lib.context import base, record_active_repo  # noqa: E402
+from lib.context import base, record_active_repo, store  # noqa: E402
 from lib.forge import ForgeError, forge_for_repo, pr_label  # noqa: E402
 
 _MAX_COMMENT_FINDINGS = 30   # 评论里最多列几条，避免超长 MR 评论
@@ -41,7 +41,10 @@ def _branch(repo: str) -> str:
 
 
 def _write(repo: str, **fields) -> None:
-    base.save_segment(repo, "review", fields)
+    # review is BRANCH-domain state (it reviews one branch's diff): branches/<b>/review.json.
+    # Branch resolved per write — cheap next to the review itself, and correct even if the
+    # checkout moved between the "running" stamp and the terminal write.
+    store.save_segment(repo, store.branch_segment(git_state.get_current_branch(repo), "review"), fields)
 
 
 def _append_history(repo: str, started: float, **fields) -> None:
@@ -50,7 +53,7 @@ def _append_history(repo: str, started: float, **fields) -> None:
     best-effort：写失败不影响 review 本身。"""
     rec = {"ts": round(base.now(), 1), "secs": round(base.now() - started, 1), **fields}
     try:
-        p = base.state_dir(repo) / "review-history.jsonl"
+        p = store.state_dir(repo) / "review-history.jsonl"
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -199,7 +202,7 @@ def _build_history_feed(repo: str, pr_number, current_sha: str) -> str | None:
     nothing to feed."""
     if not pr_number:
         return None
-    hist = base.state_dir(repo) / "review-history.jsonl"
+    hist = store.state_dir(repo) / "review-history.jsonl"
     if not hist.exists():
         return None
     prior = None
@@ -226,7 +229,7 @@ def _build_history_feed(repo: str, pr_number, current_sha: str) -> str | None:
         by_symbol.setdefault(sid, []).append({"msg": f.get("msg", ""), "sha": (prior.get("sha") or "")[:9]})
     if not by_symbol:
         return None
-    out = base.state_dir(repo) / "history.json"
+    out = store.state_dir(repo) / "history.json"
     try:
         out.write_text(json.dumps(by_symbol, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:

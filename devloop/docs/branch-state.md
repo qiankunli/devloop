@@ -58,11 +58,13 @@ git 不durably记录"从哪条分支 fork"。它只在 devloop **切分支那一
 
 | 段 | owner | 内容 |
 |----|-------|------|
-| `branch.json` | refresh | `local` + `worktrees` + `target`(+ `local.fork_from` sticky) |
+| `branches/<b>/branch.json` | refresh | `local` + `worktrees` + `target`(+ `local.fork_from` sticky) |
 | `remote_branches.json` | monitor | `remotes` + `fetched_at` |
 | `pr.json` | monitor | PR 窗口 + 当前分支 number(+ `head_sha` provenance) |
 
-`remotes` 必须从 `branch.json` 拆出:owner 是 monitor(主动拉同事改动),与 `local`(refresh,本地事件触发)不同 owner。monitor own `pr.json` + `remote_branches.json` 两文件不违背铁律("没有文件有两个 owner")。
+`remotes` 必须从 branch 段拆出:owner 是 monitor(主动拉同事改动),与 `local`(refresh,本地事件触发)不同 owner。monitor own `pr.json` + `remote_branches.json` 两文件不违背铁律("没有文件有两个 owner")。
+
+branch 段(连同 validation/injection/review)是 **branch 域**——按 **live 分支**取 `branches/<b>/` 下的段(三域布局见 AGENTS.md):切分支即切换读哪个目录,"陈旧 branch 缓存愚弄展示"从"gate 侧容忍"升级为"结构性不存在";§3 的 gate live-read 原则不变,只是展示侧也不再会错。
 
 ## 5. 一句话
 

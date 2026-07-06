@@ -299,7 +299,7 @@ def test_ensure_requirement_wiring():
     """gcampr 侧接线（loop-state slice3 + #62 F7）：ensure_requirement 在 cut 与 continue 两路都生效——
     cut 无参 → 新开（id=该分支）；--requirement → 续接，**手工切的分支（continue 路径）也不得静默丢弃**；
     continue 无参 → 不动；重复调用幂等。"""
-    from lib.context import requirement
+    from lib.context.loopstate import requirement
     sgo = _load_script("smart_git_ops")
     R = "/tmp/dlut_req_wire"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)

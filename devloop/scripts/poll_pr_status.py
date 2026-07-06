@@ -33,7 +33,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
 from lib import repo_layout, workspace  # noqa: E402
-from lib.context import WorkspaceContext, prstate, requirement  # noqa: E402
+from lib.context import WorkspaceContext, prstate  # noqa: E402
+from lib.context.loopstate import requirement  # noqa: E402
 from lib.context.base import PR_POLL_INTERVAL_SEC  # noqa: E402
 
 

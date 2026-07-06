@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lib.context import base
+from lib.context import store
 from lib.forge import MergeReadiness, pr_label
 from lib.notify.base import Notification
 
@@ -105,13 +105,13 @@ class ForgeSource:
     instructions = INSTRUCTIONS
 
     def seed(self, repo: str):
-        seg = base.load_segment(repo, "pr")
+        seg = store.load_segment(repo, "pr")
         blk, _ = merge_block_event(None, (seg or {}).get("merge_readiness"))  # seed; ignore startup edge
         return (seg_key(seg), seg, blk)
 
     def step(self, repo: str, carry):
         prev_key, prev_seg, prev_blk = carry
-        seg = base.load_segment(repo, "pr")
+        seg = store.load_segment(repo, "pr")
         key = seg_key(seg)
         notes = []
         if seg and key != prev_key:

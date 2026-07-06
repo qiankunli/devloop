@@ -17,7 +17,7 @@ from lib.forge.base import ForgeError  # noqa: E402
 
 def test_run_review_skips_without_engine():
     """引擎没装（默认 ccr）→ run_review 写 status=skipped、退出 0（advisory，从不报错/挡事）。"""
-    from lib.context import base
+    from lib.context import base, store
     rr = _load_script("run_review")
     G = "/tmp/dlut_rr"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
@@ -29,7 +29,8 @@ def test_run_review_skips_without_engine():
     finally:
         rr.review_engine.shutil.which = orig
     assert rc == 0
-    seg = base.load_segment(G, "review")
+    from lib import git_state
+    seg = store.load_segment(G, store.branch_segment(git_state.get_current_branch(G), "review"))
     assert seg and seg["status"] == "skipped" and "not installed" in seg["message"] and seg["count"] == 0
 
 def test_review_engine_resolve():
@@ -43,14 +44,15 @@ def test_review_engine_resolve():
 
 def test_review_injection_line():
     """review.json 经 _format_turn 在下一轮注入浮现（pull）：running / N findings / clean；skipped 不出。"""
-    from lib.context import RepoContext, base
+    from lib.context import RepoContext, base, store
     G = "/tmp/dlut_revinj"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
     Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
     ctx = RepoContext.refresh_all(G)
     R = ctx.repo.repo_dir   # save 用与注入侧 load 相同的路径，避开 /tmp→/private/tmp 软链不一致
 
-    def seg(**kw): base.save_segment(R, "review", {"reviewed_sha": "abcdef1234567", "comments": [], "generated_at": 1.0, **kw})
+    _rseg = store.branch_segment(ctx.branch.local.name, "review")   # review 是 branch 域段
+    def seg(**kw): store.save_segment(R, _rseg, {"reviewed_sha": "abcdef1234567", "comments": [], "generated_at": 1.0, **kw})
     seg(status="success", count=2); assert "Review: 2 finding(s) on abcdef123" in ctx.turn_text()
     seg(status="success", count=0); assert "Review: clean (no findings) on abcdef123" in ctx.turn_text()
     seg(status="running", count=0, generated_at=base.now()); assert "Review: running on abcdef123" in ctx.turn_text()

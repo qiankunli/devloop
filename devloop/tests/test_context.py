@@ -42,24 +42,26 @@ def test_turn_text_merge_blocked_hint():
 def test_context_segments():
     """Per-owner segment files: each writer touches a disjoint file (no lost update),
     and pr.json is branch-keyed so a branch switch self-invalidates pr_number with no writer."""
-    from lib.context import PullRequest, RepoContext, base
+    from lib.context import PullRequest, RepoContext, base, store
     R = "/tmp/dlut_seg"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
     _git(R, "checkout", "-q", "-b", "feat/a")
     Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
 
-    # refresh_all writes ONLY the refresher-owned segments
+    # refresh_all writes ONLY the refresher-owned segments; branch-domain ones land under
+    # branches/<branch>/ (三域布局), repo-domain ones at the .devloop root
     RepoContext.refresh_all(R)
-    seg = set(os.listdir(f"{R}/.devloop"))
-    assert {"meta.json", "branch.json"} <= seg and "validation.json" not in seg and "pr.json" not in seg
+    D = Path(R) / ".devloop"
+    assert (D / "meta.json").exists() and (D / "branches/feat/a/branch.json").exists()
+    assert not (D / "branches/feat/a/validation.json").exists() and not (D / "pr.json").exists()
 
     ctx = RepoContext.load(R)
     assert ctx.branch.local.name == "feat/a" and ctx.branch.pr_number is None and ctx.prs == []
 
-    # a validation mark writes only validation.json
+    # a validation mark writes only its branch's validation.json
     ctx.mark_lint_passed()
-    assert (Path(R) / ".devloop" / "validation.json").exists()
+    assert (D / "branches/feat/a/validation.json").exists()
     assert RepoContext.load(R).validation.edits_since_lint == 0
 
     # monitor-owned pr write, branch-keyed; provider is repo-level (header, not per-PR)
@@ -68,8 +70,8 @@ def test_context_segments():
     ctx.branch.pr_number = 51
     ctx.provider = "github"
     ctx._save_pr()
-    assert base.load_segment(R, "pr")["branch"] == "feat/a"
-    assert base.load_segment(R, "pr")["provider"] == "github"
+    assert store.load_segment(R, "pr")["branch"] == "feat/a"
+    assert store.load_segment(R, "pr")["provider"] == "github"
     loaded = RepoContext.load(R)
     assert loaded.branch.pr_number == 51 and loaded.provider == "github"
 
@@ -77,7 +79,7 @@ def test_context_segments():
     _git(R, "checkout", "-q", "-b", "feat/b")
     RepoContext.refresh_branch(R)
     assert RepoContext.load(R).branch.pr_number is None
-    assert base.load_segment(R, "pr")["branch"] == "feat/a"   # monitor file untouched by refresh
+    assert store.load_segment(R, "pr")["branch"] == "feat/a"   # monitor file untouched by refresh
 
     # disjoint writers (refresh ↔ monitor) don't clobber each other
     RepoContext.refresh_branch(R)
@@ -144,17 +146,17 @@ def test_in_flight_turn_hint():
 def test_atomic_segment_write():
     """save_segment is atomic: a reader never sees a torn write, and a corrupt segment
     degrades to its default rather than nuking the whole context."""
-    from lib.context import base
+    from lib.context import base, store
     R = "/tmp/dlut_atomic"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
-    base.save_segment(R, "meta", {"repo": {"repo_dir": R}, "updated_at": 1.0})
-    base.save_segment(R, "branch", {"current": "x"})
+    store.save_segment(R, "meta", {"repo": {"repo_dir": R}, "updated_at": 1.0})
+    store.save_segment(R, "branch", {"current": "x"})
     # no .tmp residue left behind after an atomic replace
     assert not any(n.endswith(".tmp") for n in os.listdir(f"{R}/.devloop"))
     # a corrupt segment reads as None (caller falls back to default), siblings still load
     (Path(R) / ".devloop" / "branch.json").write_text("{ not json")
-    assert base.load_segment(R, "branch") is None
-    assert base.load_segment(R, "meta")["updated_at"] == 1.0
+    assert store.load_segment(R, "branch") is None
+    assert store.load_segment(R, "meta")["updated_at"] == 1.0
 
 def test_subproject_canonical():
     """symlink 农场:子项目条目本身是 symlink → 注入文本携带 canonical 映射,
@@ -453,25 +455,26 @@ def test_inject_at_workspace_root_uses_active_repo():
 
 
 def test_append_jsonl_ledger():
-    """base.append_jsonl 是 ledger 原语：多次追加成多行、每行独立 json、不覆写（对照 save_segment
+    """store.append_jsonl 是 ledger 原语：多次追加成多行、每行独立 json、不覆写（对照 save_segment
     的整体覆写）；写失败 best-effort 不抛。"""
     import json
 
-    from lib.context import base
+    from lib.context import base, store
     R = "/tmp/dlut_ledger"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
-    base.append_jsonl(R, "friction", {"a": 1})
-    base.append_jsonl(R, "friction", {"a": 2})
+    store.append_jsonl(R, "friction", {"a": 1})
+    store.append_jsonl(R, "friction", {"a": 2})
     lines = (Path(R) / ".devloop" / "friction.jsonl").read_text().splitlines()
     assert [json.loads(x)["a"] for x in lines] == [1, 2]          # append-only，两行不覆写
-    base.append_jsonl("/dev/null/nope", "x", {"a": 1})           # 不可写路径 → 吞掉，不抛
+    store.append_jsonl("/dev/null/nope", "x", {"a": 1})           # 不可写路径 → 吞掉，不抛
 
 def test_friction_records_deny():
     """blocked Decision → 追加一条 friction 记录（kind/source/tool + 逐 finding 的 rule/locator +
     live branch）；allow → 不写文件。best-effort：append 抛错也不影响 guard（record_deny 不抛）。"""
     import json
 
-    from lib.context import base, friction
+    from lib.context import store
+    from lib.context.loopstate import friction
     from lib.core.domain import Decision, Finding, Severity
     R = "/tmp/dlut_friction"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
@@ -494,12 +497,12 @@ def test_friction_records_deny():
     assert not (Path(R2) / ".devloop" / "friction.jsonl").exists()
 
     # best-effort：底层 append 抛错，record_deny 仍不抛（guard 判决不受影响）
-    orig = base.append_jsonl
-    base.append_jsonl = lambda *a, **k: (_ for _ in ()).throw(OSError("boom"))
+    orig = store.append_jsonl
+    store.append_jsonl = lambda *a, **k: (_ for _ in ()).throw(OSError("boom"))
     try:
         friction.record_deny(deny, tool="Bash", cwd=R)            # 不得抛
     finally:
-        base.append_jsonl = orig
+        store.append_jsonl = orig
 
 def test_friction_sink_wired_into_bash_guard():
     """集成：真被 protect-branch 拦下的 Bash push，除了返回 deny 文案，还落一条 friction 记录——
@@ -528,14 +531,15 @@ def test_requirement_open_attach_resolve():
     resolve 反查；open 幂等（不重复 session_start）；note 对未索引分支惰性 open。"""
     import json
 
-    from lib.context import base, requirement
+    from lib.context import store
+    from lib.context.loopstate import requirement
     R = "/tmp/dlut_req"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
 
     # open：id = 首个分支名；索引段 + session_start
     rid = requirement.open_requirement(R, "feat/x", fork_from="main", fork_sha="abc")
     assert rid == "feat/x"
-    idx = base.load_segment(R, "requirements")
+    idx = store.load_segment(R, "requirements")
     assert idx["branches"] == {"feat/x": "feat/x"} and idx["requirements"]["feat/x"]["status"] == "open"
     sess = (Path(R) / ".devloop" / "requirements" / "feat/x" / "session.jsonl").read_text().splitlines()
     e0 = json.loads(sess[0])
@@ -566,7 +570,8 @@ def test_requirement_reconcile_closures():
     staleness backstop → assumed_done。"""
     import json
 
-    from lib.context import base, requirement
+    from lib.context import store
+    from lib.context.loopstate import requirement
     R = "/tmp/dlut_req_close"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
 
@@ -575,13 +580,13 @@ def test_requirement_reconcile_closures():
 
     # feat/x：PR merged → pr_merged + session_end done
     requirement.open_requirement(R, "feat/x")
-    base.save_segment(R, "pr", {"prs": [{"number": 100, "state": "merged", "source_branch": "feat/x"}]})
-    idx_before = base.load_segment(R, "requirements")
+    store.save_segment(R, "pr", {"prs": [{"number": 100, "state": "merged", "source_branch": "feat/x"}]})
+    idx_before = store.load_segment(R, "requirements")
     requirement.reconcile_closures(R)
     assert kinds("feat/x") == ["session_start", "pr_merged", "session_end"]
     end = requirement.session_events(R, "feat/x")[-1]
     assert end["result"] == "done"
-    assert base.load_segment(R, "requirements") == idx_before   # 不写索引（单写者不变）
+    assert store.load_segment(R, "requirements") == idx_before   # 不写索引（单写者不变）
 
     # 幂等：再跑一遍不追加
     requirement.reconcile_closures(R)
@@ -589,7 +594,7 @@ def test_requirement_reconcile_closures():
 
     # feat/open：PR 仍 open → 不 end
     requirement.open_requirement(R, "feat/open")
-    base.save_segment(R, "pr", {"prs": [
+    store.save_segment(R, "pr", {"prs": [
         {"number": 100, "state": "merged", "source_branch": "feat/x"},
         {"number": 101, "state": "open", "source_branch": "feat/open"}]})
     requirement.reconcile_closures(R)
@@ -597,14 +602,14 @@ def test_requirement_reconcile_closures():
 
     # feat/dead：PR closed（非 merged）→ pr_closed + session_end abandoned
     requirement.open_requirement(R, "feat/dead")
-    base.save_segment(R, "pr", {"prs": [{"number": 102, "state": "closed", "source_branch": "feat/dead"}]})
+    store.save_segment(R, "pr", {"prs": [{"number": 102, "state": "closed", "source_branch": "feat/dead"}]})
     requirement.reconcile_closures(R)
     ev = requirement.session_events(R, "feat/dead")
     assert ev[-2]["kind"] == "pr_closed" and ev[-1]["result"] == "abandoned"
 
     # feat/stale：无 PR，idle 超阈值 → assumed_done（backstop）
     requirement.open_requirement(R, "feat/stale")
-    base.save_segment(R, "pr", {"prs": []})
+    store.save_segment(R, "pr", {"prs": []})
     requirement.reconcile_closures(R, stale_after_sec=0)   # 立即判定过期
     assert requirement.session_events(R, "feat/stale")[-1]["result"] == "assumed_done"
 
@@ -615,7 +620,8 @@ def test_requirement_arcs_and_offwindow_closure():
     PR 掉出 5 条窗口时用 forge.get(number) 兜底，从不为未建 PR 的分支查 forge。"""
     import json
 
-    from lib.context import base, requirement
+    from lib.context import store
+    from lib.context.loopstate import requirement
     R = "/tmp/dlut_req_arcs"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
 
@@ -625,7 +631,7 @@ def test_requirement_arcs_and_offwindow_closure():
     # arc1：open + pr_created(100)，窗口里 100 merged → pr_merged + session_end done
     requirement.open_requirement(R, "feat/x")
     requirement.note(R, "feat/x", {"kind": "pr_created", "branch": "feat/x", "number": 100})
-    base.save_segment(R, "pr", {"prs": [{"number": 100, "state": "merged", "source_branch": "feat/x"}]})
+    store.save_segment(R, "pr", {"prs": [{"number": 100, "state": "merged", "source_branch": "feat/x"}]})
     requirement.reconcile_closures(R)
     assert [e["kind"] for e in events()][-2:] == ["pr_merged", "session_end"]
 
@@ -663,9 +669,62 @@ def test_requirement_arcs_and_offwindow_closure():
     # 无 forge（返回 None）+ 窗口空 + 未过期 → pending 保持 open，不误关
     requirement.open_requirement(R, "feat/y")
     requirement.note(R, "feat/y", {"kind": "pr_created", "branch": "feat/y", "number": 200})
-    base.save_segment(R, "pr", {"prs": []})
+    store.save_segment(R, "pr", {"prs": []})
     requirement.reconcile_closures(R)               # 该仓无 origin → forge None → unknown
     assert not any(e["kind"] == "session_end" for e in requirement.session_events(R, "feat/y"))
+
+
+def test_state_domains_worktree():
+    """三域布局的核心承诺：linked worktree 里产生的 repo 域（friction/requirements）与 branch 域
+    （branch/validation）状态全部落**主仓** .devloop（worktree 清理不再丢数据）；owner 锁留在
+    worktree 自己的 .devloop（并行 worktree 不被误串行化）；submodule 形态的 .git 文件回落本地
+    （绝不往宿主 .git/modules 里写）。"""
+    from lib.context import RepoContext, store
+    from lib.context.loopstate import friction, requirement
+    from lib.context import session as session_lock
+    from lib.core.domain import Decision, Finding, Severity
+    M = "/tmp/dlut_domains_main"
+    shutil.rmtree(M, ignore_errors=True); os.makedirs(M)
+    _git(M, "init", "-q", "-b", "main"); _git(M, "config", "user.email", "t@t.t"); _git(M, "config", "user.name", "t")
+    Path(f"{M}/f").write_text("x"); _git(M, "add", "f"); _git(M, "commit", "-qm", "i")
+    W = f"{M}/.worktrees/wt"
+    _git(M, "worktree", "add", "-q", "-b", "feat/wt", W)
+
+    # 解析原语：主 checkout → 自身；worktree → 主仓（.git 文件里是 canonical 路径，
+    # 故与 /tmp→/private/tmp 软链无关地按 resolve 比较）；无 .git → 自身
+    assert store._main_repo_root(M) == Path(M)
+    assert store._main_repo_root(W).resolve() == Path(M).resolve()
+    assert store.state_dir(W).resolve() == (Path(M) / ".devloop").resolve()   # repo 域统一落主仓
+    assert store.worktree_state_dir(W) == Path(W) / ".devloop"                # working-tree 域留本地
+
+    # repo 域：worktree 里的 friction / requirement 落主仓
+    deny = Decision.of([Finding(rule="protect-branch", severity=Severity.DENY, message="n", locator="x")])
+    friction.record_deny(deny, tool="Bash", cwd=W)
+    assert (Path(M) / ".devloop/friction.jsonl").exists()
+    assert not (Path(W) / ".devloop/friction.jsonl").exists()
+    requirement.open_requirement(W, "feat/wt")
+    assert (Path(M) / ".devloop/requirements/feat/wt/session.jsonl").exists()
+
+    # branch 域：worktree 的 refresh/validation 落主仓 branches/feat/wt/，与主 checkout 的
+    # branches/main/ 并存互不干扰（git 禁止同分支双检出 → 每文件单写者天然成立）
+    RepoContext.refresh_all(W).mark_lint_passed()
+    RepoContext.refresh_all(M)
+    assert (Path(M) / ".devloop/branches/feat/wt/validation.json").exists()
+    assert (Path(M) / ".devloop/branches/feat/wt/branch.json").exists()
+    assert (Path(M) / ".devloop/branches/main/branch.json").exists()
+    assert RepoContext.load(W).branch.local.name == "feat/wt"   # load 按 live 分支取段
+    assert RepoContext.load(M).branch.local.name == "main"
+
+    # working-tree 域：owner 锁各归各的工作树
+    assert session_lock.acquire(W, "sess-wt", "feat/wt", pid=os.getpid())
+    assert (Path(W) / ".devloop/owner.lock").exists()
+    assert not (Path(M) / ".devloop/owner.lock").exists()
+
+    # submodule 形态：.git 文件指向宿主 .git/modules/... → 回落本地，绝不写进宿主 git dir
+    S = "/tmp/dlut_domains_sub"
+    shutil.rmtree(S, ignore_errors=True); os.makedirs(S)
+    Path(f"{S}/.git").write_text(f"gitdir: {M}/.git/modules/sub\n")
+    assert store._main_repo_root(S) == Path(S)
 
 
 if __name__ == "__main__":

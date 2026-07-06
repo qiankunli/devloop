@@ -35,7 +35,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
 from lib import cli, git_state, gitcmd, lifecycle, repo_resolve  # noqa: E402
-from lib.context import RepoContext, gate, prstate, record_active_repo, requirement  # noqa: E402
+from lib.context import RepoContext, gate, prstate, record_active_repo
+from lib.context.loopstate import requirement  # noqa: E402
 from lib.forge import Forge, ForgeError, PullRequest, forge_for_repo, pr_label  # noqa: E402
 
 
@@ -589,7 +590,8 @@ def launch_background_relays(specs: list[lifecycle.BackgroundSpec], repo: str, p
     """
     if not specs:
         return
-    logp = Path(repo) / ".devloop" / "review.log"
+    from lib.context import store
+    logp = store.tmp_dir(repo) / "review.log"
     logp.parent.mkdir(parents=True, exist_ok=True)
     for spec in specs:
         try:

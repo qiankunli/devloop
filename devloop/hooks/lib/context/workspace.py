@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import parsers
-from . import base
+from . import base, store
 from .base import (
     SESSION_TTL_SEC,
     WORKSPACE_STALE_SEC,
@@ -67,7 +67,7 @@ class WorkspaceContext:
 
     @classmethod
     def load(cls, workspace_root: str | Path) -> "WorkspaceContext | None":
-        raw = base.load_raw(workspace_root)
+        raw = store.load_raw(workspace_root)
         if raw is None:
             return None
         ctx = cls.from_dict(raw)
@@ -80,7 +80,7 @@ class WorkspaceContext:
         if not root:
             return
         self.parsed_at = base.now()
-        base.save_raw(root, base.to_dict(self))
+        store.save_raw(root, store.to_dict(self))
         # A workspace root is usually not a git repo; exclude only if it is one.
         if (Path(root) / ".git").exists():
             from .. import git_state

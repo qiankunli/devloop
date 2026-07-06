@@ -16,12 +16,12 @@ def test_poll_persist():
     """The monitor is persist-only: prstate writes the `pr` segment (sole writer of
     .devloop/pr.json, for the PR guard / injection). Waking on a change is the forge
     channel's job, not the monitor's."""
-    from lib.context import base, prstate
+    from lib.context import base, store, prstate
     R = "/tmp/dlut_pollh"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
     prstate.persist_pr(R, {"branch": "f", "provider": "github", "pr_number": 7, "prs": []})
-    assert base.load_segment(R, "pr")["pr_number"] == 7
+    assert store.load_segment(R, "pr")["pr_number"] == 7
 
 def test_notify_port():
     """The port shape: a Notification says only WHAT to surface (kind/meta default); both delivery
@@ -49,7 +49,7 @@ def test_review_source():
     error), stays silent for running / skipped / clean, and carries the findings inline. wake_key is
     the single 'wake-worthy' definition both transports share; seed() ignores the startup edge;
     generated_at in the key makes a same-sha re-review wake again."""
-    from lib.context import base
+    from lib.context import base, store
     from lib.notify.sources.review import ReviewSource, wake_key
     assert wake_key(None) is None
     assert wake_key({"status": "running", "reviewed_sha": "a"}) is None
@@ -59,9 +59,10 @@ def test_review_source():
     assert wake_key({"status": "error", "count": 0, "failed": 0, "reviewed_sha": "c"}) is not None
     src = ReviewSource(); assert src.name == "review"
     R = "/tmp/dlut_rsrc"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
-    base.save_segment(R, "review", {"status": "running", "reviewed_sha": "a", "count": 0})
+    _rseg = store.branch_segment(None, "review")   # R 无 git → source 同样解析到 @detached 桶
+    store.save_segment(R, _rseg, {"status": "running", "reviewed_sha": "a", "count": 0})
     carry = src.seed(R); assert carry is None               # armed mid-run → no startup fire
-    base.save_segment(R, "review", {"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
+    store.save_segment(R, _rseg, {"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
                                     "reviewed_range": "origin/main..HEAD", "generated_at": 100.0,
                                     "comments": [{"path": "a.py", "start_line": 3, "end_line": 5,
                                                   "alias": "ds-v4", "content": "bug here"}]})
@@ -71,25 +72,25 @@ def test_review_source():
     assert notes[0].content.splitlines()[0] == "review[dlut_rsrc]: 1 finding(s) on abcdef123 [origin/main..HEAD]"
     assert notes[0].content.splitlines()[1] == "  - a.py:3-5 (ds-v4) — bug here"
     # same sha re-reviewed → new generated_at → new key → fires again; then a clean review → silent
-    base.save_segment(R, "review", {"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
+    store.save_segment(R, _rseg, {"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
                                     "generated_at": 200.0, "comments": [{"path": "a.py", "content": "x"}]})
     carry, notes = src.step(R, carry); assert len(notes) == 1
-    base.save_segment(R, "review", {"status": "success", "count": 0, "failed": 0, "reviewed_sha": "z"})
+    store.save_segment(R, _rseg, {"status": "success", "count": 0, "failed": 0, "reviewed_sha": "z"})
     _, notes = src.step(R, carry); assert notes == []       # clean terminal review → no wake
 
 def test_forge_source():
     """ForgeSource fires two INDEPENDENT signals over pr.json: `pr_change` on a lifecycle delta
     (level key, names each transitioned PR) and `merge_blocked` on ENTERING a blocker (edge +
     hysteresis so the async 'checking'/unknown window can't double-fire). seg_key is lifecycle-only."""
-    from lib.context import base
+    from lib.context import base, store
     from lib.notify.sources.forge import ForgeSource, merge_block_event, seg_key
     assert seg_key(None) is None
     assert seg_key({"pr_number": 12, "prs": [{"number": 12, "state": "open"}]}) == (12, ((12, "open"),))
     src = ForgeSource(); assert src.name == "forge"
     R = "/tmp/dlut_fsrc"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
-    base.save_segment(R, "pr", {"branch": "b", "pr_number": 12, "prs": [{"number": 12, "state": "open"}]})
+    store.save_segment(R, "pr", {"branch": "b", "pr_number": 12, "prs": [{"number": 12, "state": "open"}]})
     carry = src.seed(R)
-    base.save_segment(R, "pr", {"branch": "b", "pr_number": 12,
+    store.save_segment(R, "pr", {"branch": "b", "pr_number": 12,
                                 "prs": [{"number": 12, "state": "merged", "title": "docs"}]})
     carry, notes = src.step(R, carry)
     assert len(notes) == 1 and notes[0].kind == "pr_change"

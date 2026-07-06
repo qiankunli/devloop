@@ -17,7 +17,7 @@ from dataclasses import asdict
 
 from .. import git_state
 from ..forge import ForgeError, build_window, forge_for_repo
-from . import base
+from . import base, store
 
 # Conventional trunk names to track remote tips for. ls-remote returns only those that exist, so
 # tracking all of them (a) survives `origin/HEAD` pointing at a dead placeholder and (b) covers
@@ -32,8 +32,8 @@ def _baseline_branches(repo: str) -> tuple[str, ...]:
     repo's default branch (`meta.default_branch`) and the recorded `fork_from` (branch segment).
     Without this a non-conventional baseline would have no tracked tip and the 'trunk moved'
     signal would never fire for it."""
-    mseg = base.load_segment(repo, "meta") or {}
-    bseg = base.load_segment(repo, "branch") or {}
+    mseg = store.load_segment(repo, "meta") or {}
+    bseg = store.load_segment(repo, "branch") or {}
     extra = ((mseg.get("repo") or {}).get("default_branch"), (bseg.get("local") or {}).get("fork_from"))
     seen: set[str] = set()
     out: list[str] = []
@@ -100,7 +100,7 @@ def poll_pr(repo: str) -> dict | None:
 def persist_pr(repo: str, payload: dict) -> None:
     """Write the monitor-owned `pr` segment (sole writer; no lock, no lost update)."""
     git_state.ensure_gitignore_excluded(repo)   # keep /.devloop/ out of git if pr.json is first
-    base.save_segment(repo, "pr", payload)
+    store.save_segment(repo, "pr", payload)
 
 
 def refresh_pr(repo: str) -> bool:
@@ -132,7 +132,7 @@ def poll_remote_branches(repo: str, branches: tuple[str, ...] = TRUNK_CANDIDATES
 def persist_remote_branches(repo: str, payload: dict) -> None:
     """Write the monitor-owned `remote_branches` segment (sole writer)."""
     git_state.ensure_gitignore_excluded(repo)
-    base.save_segment(repo, "remote_branches", payload)
+    store.save_segment(repo, "remote_branches", payload)
 
 
 def refresh_remote_branches(repo: str, branches: tuple[str, ...] | None = None) -> bool:

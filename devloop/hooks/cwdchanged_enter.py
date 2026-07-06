@@ -24,6 +24,7 @@ from lib.context import (  # noqa: E402
     base,
     prstate,
     record_active_repo,
+    store,
     workspace_for_repo,
 )
 
@@ -38,7 +39,7 @@ def _refresh_remote_view_on_enter(git_root: str) -> None:
     Then ONE opportunistic object fetch, but only when the trunk mirror is actually behind the
     true tip — so a clean enter pays nothing, while an enter onto a stale baseline gets a real
     (not relative-to-a-stale-mirror) behind-count. All bounded + best-effort."""
-    seg = base.load_segment(git_root, "remote_branches")
+    seg = store.load_segment(git_root, "remote_branches")
     if seg and not base.is_stale(seg.get("fetched_at"), base.REMOTE_VIEW_STALE_SEC):
         return
     prstate.refresh_remote_branches(git_root)
