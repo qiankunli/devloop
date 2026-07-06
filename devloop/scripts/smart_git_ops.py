@@ -395,7 +395,6 @@ def prepare_branch(intent: GitIntent, gv: gate.GateView, plan: list[str]) -> Bra
         fork = intent.base.split("/", 1)[1] if intent.base.startswith("origin/") else intent.base
         RepoContext.refresh_branch(intent.repo).set_fork_from(fork)
         plan.append(f"recorded fork_from={fork}")
-        _open_or_attach_requirement(intent, plan)
         return BranchResult(branch=intent.requested_branch, cut=True)
     if gv.in_flight():
         # continuing onto a branch whose PR is still open — the loop's between-rounds state.
@@ -406,20 +405,29 @@ def prepare_branch(intent: GitIntent, gv: gate.GateView, plan: list[str]) -> Bra
     return BranchResult(branch=gv.branch or "", cut=False)
 
 
-def _open_or_attach_requirement(intent: GitIntent, plan: list[str]) -> None:
-    """Establish the requirement scope for a freshly cut branch (loop-state slice 3): start a new
-    requirement (id = this branch) or attach it to the one --requirement names. Best-effort — a
-    ledger write must never fail the git action, so any error degrades to a PLAN note."""
-    branch = intent.requested_branch or ""
-    fork = intent.base.split("/", 1)[1] if intent.base.startswith("origin/") else intent.base
-    fork_sha = gitcmd.git(intent.repo, "rev-parse", intent.base).out or None
+def ensure_requirement(intent: GitIntent, branch: BranchResult, plan: list[str]) -> None:
+    """Establish the requirement scope for the branch this run works on (loop-state slice 3).
+
+    Runs on BOTH branch paths — a fresh cut AND continuing an existing branch. The continue
+    path matters: a branch cut outside gcampr (manual checkout) then shipped with
+    `--requirement X` must still attach, otherwise the flag is silently dropped and publish's
+    lazy note() files the PR under a wrong brand-new requirement (found by dogfooding).
+      --requirement given → attach (no-op if already attached; naming the branch itself = open)
+      freshly cut, no flag → open a new requirement (id = the branch)
+      continuing, no flag  → leave as-is (publish's note() lazy-opens as the fallback)
+    Best-effort — a ledger write must never fail the git action; errors degrade to a PLAN note."""
+    b = branch.branch
     try:
-        if intent.requirement:
-            requirement.attach_branch(intent.repo, intent.requirement, branch, fork_sha=fork_sha)
-            plan.append(f"requirement: '{branch}' continues '{intent.requirement}'")
-        else:
-            requirement.open_requirement(intent.repo, branch, fork_from=fork, fork_sha=fork_sha)
-            plan.append(f"requirement: opened '{branch}'")
+        if intent.requirement and intent.requirement != b:
+            if requirement.resolve(intent.repo, b) != intent.requirement:
+                fork_sha = (gitcmd.git(intent.repo, "rev-parse", intent.base).out or None) if branch.cut else None
+                requirement.attach_branch(intent.repo, intent.requirement, b, fork_sha=fork_sha)
+                plan.append(f"requirement: '{b}' continues '{intent.requirement}'")
+        elif branch.cut or intent.requirement == b:
+            fork = intent.base.split("/", 1)[1] if intent.base.startswith("origin/") else intent.base
+            requirement.open_requirement(intent.repo, b, fork_from=fork,
+                                         fork_sha=gitcmd.git(intent.repo, "rev-parse", intent.base).out or None)
+            plan.append(f"requirement: opened '{b}'")
     except OSError as e:
         plan.append(f"requirement: scope note skipped (non-fatal): {e}")
 
@@ -617,6 +625,7 @@ def main(argv: list[str]) -> int:
         # git 动作完成后 detach 起：pre/post_commit 在 commit 后、pre/post_mr 在 publish 后。
         # review 的 MR 评论是机会性的——relay 跑时查到分支有开放 MR 就发，没有就只落 review.json。
         branch = prepare_branch(intent, gv, plan)
+        ensure_requirement(intent, branch, plan)   # cut 与 continue 都要（--requirement 不得被静默丢弃）
         pre_c = run_lifecycle_gate(intent.repo, "pre_commit", plan)   # 必在 commit 前（lint/test 阻塞门禁）
         staged = stage_and_commit(intent, plan)
         if staged.committed:

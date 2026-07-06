@@ -52,6 +52,9 @@ quotes the MR's number / state / sha — so it's ground truth even right after y
 新开；拿不准就默认新开（误归档比误新开难修）。它只影响 loop-state 的经验沉淀记账，**不影响 git/PR
 本身**，写失败降级为一条 PLAN note、绝不挡 commit/push。
 
+**跨 repo 需求用同名分支**：一次需求横跨多个 subproject 时，各仓的分支用**同一个名字**——
+requirement id = 首分支名，同名即天然的 workspace 级 join 键（挖掘/分析按名归并，无需跨仓索引）。
+
 ## 后台 code-review（自动，无需你操作）
 
 启用了 `review` 的仓,commit 后 smart_git_ops 会**自动 detach 起后台 ocr review**(PLAN 出

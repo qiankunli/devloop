@@ -22,9 +22,14 @@ from .. import git_state, repo_layout
 from . import base
 
 
-def record_deny(decision: Decision, *, tool: str, cwd: str | None) -> None:
+def record_deny(decision: Decision, *, tool: str, cwd: str | None,
+                session_id: str | None = None) -> None:
     """Append a friction event for a blocked `Decision`. No-op if not blocked. Never raises —
-    the guard's verdict has already been decided; this only records why."""
+    the guard's verdict has already been decided; this only records why.
+
+    `session_id` is captured because it's only known NOW (the hook payload carries it): it's the
+    join key from this event down to the harness transcript (Claude's session.jsonl) when the
+    miner wants turn-level context — unreconstructable after the fact."""
     if not decision.blocked:
         return
     try:
@@ -36,10 +41,11 @@ def record_deny(decision: Decision, *, tool: str, cwd: str | None) -> None:
         ]
         base.append_jsonl(root, "friction", {
             "kind": "friction",
-            "ts": round(base.now(), 1),
+            "ts": base.now(),           # full precision — ledger ts is machine-read (see record_event)
             "source": "guard",          # policy-engine deny; gate/gitops ✗ are later sources
             "tool": tool,
             "branch": git_state.get_current_branch(root),
+            "session_id": session_id,
             "cwd": cwd,
             "findings": findings,
         })

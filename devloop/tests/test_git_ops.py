@@ -295,9 +295,10 @@ def test_sync_pr_description_append_only():
         sgo.forge_for_repo = orig
 
 
-def test_open_or_attach_requirement_wiring():
-    """gcampr 侧接线（loop-state slice3）：切分支后 _open_or_attach_requirement 按 --requirement
-    有无二分——无 → 新开需求（id=该分支）；有 → 续接指定需求。best-effort，落 PLAN。"""
+def test_ensure_requirement_wiring():
+    """gcampr 侧接线（loop-state slice3 + #62 F7）：ensure_requirement 在 cut 与 continue 两路都生效——
+    cut 无参 → 新开（id=该分支）；--requirement → 续接，**手工切的分支（continue 路径）也不得静默丢弃**；
+    continue 无参 → 不动；重复调用幂等。"""
     from lib.context import requirement
     sgo = _load_script("smart_git_ops")
     R = "/tmp/dlut_req_wire"
@@ -310,17 +311,32 @@ def test_open_or_attach_requirement_wiring():
                              target="main", base="main", explicit_base=False, files=[],
                              repo=R, source="test", invoke_cwd=R, requirement=req)
 
-    # 无 --requirement → 新开需求（id = 该分支），fork_sha 取 base 的 sha
+    BR = sgo.BranchResult
+    # cut + 无 --requirement → 新开需求（id = 该分支）
     plan = []
-    sgo._open_or_attach_requirement(intent("feat/a", None), plan)
+    sgo.ensure_requirement(intent("feat/a", None), BR(branch="feat/a", cut=True), plan)
     assert requirement.resolve(R, "feat/a") == "feat/a"
     assert any("opened 'feat/a'" in line for line in plan)
 
-    # 有 --requirement → 续接已存在需求
+    # cut + --requirement → 续接
     plan = []
-    sgo._open_or_attach_requirement(intent("fix/a-2", "feat/a"), plan)
+    sgo.ensure_requirement(intent("fix/a-2", "feat/a"), BR(branch="fix/a-2", cut=True), plan)
     assert requirement.resolve(R, "fix/a-2") == "feat/a"
     assert any("continues 'feat/a'" in line for line in plan)
+
+    # F7（狗粮发现）：continue 路径（手工切的分支）+ --requirement → 仍要 attach
+    plan = []
+    sgo.ensure_requirement(intent(None, "feat/a"), BR(branch="fix/a-3", cut=False), plan)
+    assert requirement.resolve(R, "fix/a-3") == "feat/a"
+    assert any("continues 'feat/a'" in line for line in plan)
+    # 幂等：已 attach 再跑不重复
+    plan = []
+    sgo.ensure_requirement(intent(None, "feat/a"), BR(branch="fix/a-3", cut=False), plan)
+    assert plan == []
+
+    # continue + 无 --requirement → 不动（不新开）
+    sgo.ensure_requirement(intent(None, None), BR(branch="feat/other", cut=False), [])
+    assert requirement.resolve(R, "feat/other") is None
 
 
 if __name__ == "__main__":

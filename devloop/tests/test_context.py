@@ -479,10 +479,11 @@ def test_friction_records_deny():
 
     deny = Decision.of([Finding(rule="protect-branch", severity=Severity.DENY,
                                 message="nope", locator="git push origin main")])
-    friction.record_deny(deny, tool="Bash", cwd=R)
+    friction.record_deny(deny, tool="Bash", cwd=R, session_id="s-1")
     rec = json.loads((Path(R) / ".devloop" / "friction.jsonl").read_text().splitlines()[-1])
     assert rec["kind"] == "friction" and rec["source"] == "guard" and rec["tool"] == "Bash"
     assert rec["branch"] == "feat/x"                              # live branch，供后续归属 requirement
+    assert rec["session_id"] == "s-1"                             # 下钻 harness transcript 的 join 键
     assert rec["findings"] == [{"rule": "protect-branch", "locator": "git push origin main"}]
 
     # allow decision → no-op（不建文件）
@@ -513,10 +514,12 @@ def test_friction_sink_wired_into_bash_guard():
     _git(R, "checkout", "-q", "-b", "main")
     Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
     RepoContext.refresh_all(R)
-    inp = _hook_input("Bash", {"cwd": R, "tool_input": {"command": "git push origin main"}})
+    inp = _hook_input("Bash", {"cwd": R, "session_id": "sess-w",
+                               "tool_input": {"command": "git push origin main"}})
     assert guard.decide(inp)                                       # 被拦（返回 deny 文案）
     rec = json.loads((Path(R) / ".devloop" / "friction.jsonl").read_text().splitlines()[-1])
     assert rec["source"] == "guard" and rec["branch"] == "main"
+    assert rec["session_id"] == "sess-w"                           # hook payload 的 session_id 被留住
     assert any(f["rule"] == "protect-branch" for f in rec["findings"])
 
 
@@ -604,6 +607,65 @@ def test_requirement_reconcile_closures():
     base.save_segment(R, "pr", {"prs": []})
     requirement.reconcile_closures(R, stale_after_sec=0)   # 立即判定过期
     assert requirement.session_events(R, "feat/stale")[-1]["result"] == "assumed_done"
+
+
+def test_requirement_arcs_and_offwindow_closure():
+    """review findings F1/F2：① 同名分支在需求关闭后再 open → 追加新 session_start（arc 定界），
+    且上一 arc 的 merged PR 不得立刻误关新 arc；② 闭合按 spine 的 pr_created number 事件溯源——
+    PR 掉出 5 条窗口时用 forge.get(number) 兜底，从不为未建 PR 的分支查 forge。"""
+    import json
+
+    from lib.context import base, requirement
+    R = "/tmp/dlut_req_arcs"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+
+    def events():
+        return requirement.session_events(R, "feat/x")
+
+    # arc1：open + pr_created(100)，窗口里 100 merged → pr_merged + session_end done
+    requirement.open_requirement(R, "feat/x")
+    requirement.note(R, "feat/x", {"kind": "pr_created", "branch": "feat/x", "number": 100})
+    base.save_segment(R, "pr", {"prs": [{"number": 100, "state": "merged", "source_branch": "feat/x"}]})
+    requirement.reconcile_closures(R)
+    assert [e["kind"] for e in events()][-2:] == ["pr_merged", "session_end"]
+
+    # F1：需求已关闭，同名分支再 open → 新 session_start（第二段 arc 可见）
+    requirement.open_requirement(R, "feat/x", fork_sha="new")
+    starts = [e for e in events() if e["kind"] == "session_start"]
+    assert len(starts) == 2 and starts[-1]["fork_sha"] == "new"
+    # arc 活跃期间再 open → 幂等，不重复
+    requirement.open_requirement(R, "feat/x")
+    assert len([e for e in events() if e["kind"] == "session_start"]) == 2
+
+    # 旧 arc 的 merged PR(100) 仍在窗口 → 不得误关新 arc（旧实现会立刻 session_end）
+    requirement.reconcile_closures(R)
+    assert len([e for e in events() if e["kind"] == "session_end"]) == 1
+
+    # F2：arc2 建了 PR 105，窗口里没有它（掉出 PRS_CAP）→ forge.get(105) 兜底 → done
+    requirement.note(R, "feat/x", {"kind": "pr_created", "branch": "feat/x", "number": 105})
+
+    class _F:
+        def get(self, num):
+            assert num == 105                       # 只查 spine 里已知存在的 PR
+            from lib.context import PullRequest
+            return PullRequest(number=105, state="merged", source_branch="feat/x")
+    orig = requirement.forge_for_repo
+    requirement.forge_for_repo = lambda repo: _F()
+    try:
+        requirement.reconcile_closures(R)
+    finally:
+        requirement.forge_for_repo = orig
+    ks = [e["kind"] for e in events()]
+    assert ks[-2:] == ["pr_merged", "session_end"] and ks.count("session_end") == 2
+    assert json.loads((Path(R) / ".devloop/requirements/feat/x/session.jsonl")
+                      .read_text().splitlines()[-1])["result"] == "done"
+
+    # 无 forge（返回 None）+ 窗口空 + 未过期 → pending 保持 open，不误关
+    requirement.open_requirement(R, "feat/y")
+    requirement.note(R, "feat/y", {"kind": "pr_created", "branch": "feat/y", "number": 200})
+    base.save_segment(R, "pr", {"prs": []})
+    requirement.reconcile_closures(R)               # 该仓无 origin → forge None → unknown
+    assert not any(e["kind"] == "session_end" for e in requirement.session_events(R, "feat/y"))
 
 
 if __name__ == "__main__":
