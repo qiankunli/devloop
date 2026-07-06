@@ -452,5 +452,73 @@ def test_inject_at_workspace_root_uses_active_repo():
     assert out and "Branch: feat/x" in out                 # active repo's turn context reached the prompt
 
 
+def test_append_jsonl_ledger():
+    """base.append_jsonl 是 ledger 原语：多次追加成多行、每行独立 json、不覆写（对照 save_segment
+    的整体覆写）；写失败 best-effort 不抛。"""
+    import json
+
+    from lib.context import base
+    R = "/tmp/dlut_ledger"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    base.append_jsonl(R, "friction", {"a": 1})
+    base.append_jsonl(R, "friction", {"a": 2})
+    lines = (Path(R) / ".devloop" / "friction.jsonl").read_text().splitlines()
+    assert [json.loads(x)["a"] for x in lines] == [1, 2]          # append-only，两行不覆写
+    base.append_jsonl("/dev/null/nope", "x", {"a": 1})           # 不可写路径 → 吞掉，不抛
+
+def test_friction_records_deny():
+    """blocked Decision → 追加一条 friction 记录（kind/source/tool + 逐 finding 的 rule/locator +
+    live branch）；allow → 不写文件。best-effort：append 抛错也不影响 guard（record_deny 不抛）。"""
+    import json
+
+    from lib.context import base, friction
+    from lib.core.domain import Decision, Finding, Severity
+    R = "/tmp/dlut_friction"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "checkout", "-q", "-b", "feat/x")
+
+    deny = Decision.of([Finding(rule="protect-branch", severity=Severity.DENY,
+                                message="nope", locator="git push origin main")])
+    friction.record_deny(deny, tool="Bash", cwd=R)
+    rec = json.loads((Path(R) / ".devloop" / "friction.jsonl").read_text().splitlines()[-1])
+    assert rec["kind"] == "friction" and rec["source"] == "guard" and rec["tool"] == "Bash"
+    assert rec["branch"] == "feat/x"                              # live branch，供后续归属 requirement
+    assert rec["findings"] == [{"rule": "protect-branch", "locator": "git push origin main"}]
+
+    # allow decision → no-op（不建文件）
+    R2 = "/tmp/dlut_friction2"
+    shutil.rmtree(R2, ignore_errors=True); os.makedirs(R2)
+    _git(R2, "init", "-q")
+    friction.record_deny(Decision.allow(), tool="Bash", cwd=R2)
+    assert not (Path(R2) / ".devloop" / "friction.jsonl").exists()
+
+    # best-effort：底层 append 抛错，record_deny 仍不抛（guard 判决不受影响）
+    orig = base.append_jsonl
+    base.append_jsonl = lambda *a, **k: (_ for _ in ()).throw(OSError("boom"))
+    try:
+        friction.record_deny(deny, tool="Bash", cwd=R)            # 不得抛
+    finally:
+        base.append_jsonl = orig
+
+def test_friction_sink_wired_into_bash_guard():
+    """集成：真被 protect-branch 拦下的 Bash push，除了返回 deny 文案，还落一条 friction 记录——
+    即"引擎已算出的 Decision 不再发射后即弃"。"""
+    import json
+
+    from lib.context import RepoContext
+    guard = _load_hook("pretool_policy_bash")
+    R = "/tmp/dlut_friction_wire"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "main")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+    inp = _hook_input("Bash", {"cwd": R, "tool_input": {"command": "git push origin main"}})
+    assert guard.decide(inp)                                       # 被拦（返回 deny 文案）
+    rec = json.loads((Path(R) / ".devloop" / "friction.jsonl").read_text().splitlines()[-1])
+    assert rec["source"] == "guard" and rec["branch"] == "main"
+    assert any(f["rule"] == "protect-branch" for f in rec["findings"])
+
+
 if __name__ == "__main__":
     run_main(globals())
