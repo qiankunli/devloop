@@ -57,7 +57,7 @@ devloop/
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
 │   │   └── context/               #   .devloop/ 状态总线，按 owner 粒度分模块：base / session / repo / workspace / friction / requirement
 │   │                              #     session.py = session 运行态（active 绑定 + checkout owner 锁）
-│   │                              #     friction.py = guard deny 落 friction.jsonl；requirement.py = 需求 scope（requirements.json 索引 + requirements/<首分支>/session.jsonl 生命周期脊柱）
+│   │                              #     friction.py = guard deny 落 friction.jsonl；requirement.py = 需求 scope（requirements.json 索引 + requirements/<首分支>/session.jsonl 脊柱；monitor reconcile_closures 补 pr_merged/session_end）
 │   │                              #     ↑ 两者是经验沉淀 ledger 半（loop-state slice1/3），见 workspace docs/loop-state.md
 │   ├── cwdchanged_enter.py        # CwdChanged：自动 enter
 │   ├── sessionstart_init.py       # SessionStart：References(additionalContext) + watchPaths + 预热

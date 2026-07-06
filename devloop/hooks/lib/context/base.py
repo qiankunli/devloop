@@ -44,6 +44,7 @@ PR_POLL_INTERVAL_SEC = 90     # monitor poll cadence for PR/MR status
 REMOTE_VIEW_STALE_SEC = 120   # remote_branches snapshot older than this → re-pull trunk tips on enter
 ACTIVE_REPO_TTL_SEC = 21600   # workspace last-active repo validity (~6 h); stale → don't guess
 REVIEW_STALE_SEC = 1800       # review.json stuck at "running" longer than this (~30 min) → run_review
+REQUIREMENT_STALE_SEC = 1209600  # requirement idle this long with no close (~14 d) → session_end assumed_done
                               # almost certainly died mid-flight (sleep/OOM/kill); surface as stale, not running
 DEFAULT_BRANCH_TTL_SEC = 86400  # repo default branch is near-immutable → only re-fetch from the forge
                                 # once a day (refresh_all runs far more often; this gates the network call)

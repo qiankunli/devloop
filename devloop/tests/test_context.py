@@ -557,5 +557,54 @@ def test_requirement_open_attach_resolve():
     assert json.loads(zsess[0])["kind"] == "session_start" and json.loads(zsess[-1])["kind"] == "pr_created"
 
 
+def test_requirement_reconcile_closures():
+    """close 半（monitor 侧，loop-state）：merged PR → pr_merged + session_end{done}，幂等不重复；
+    不写 requirements.json（保 gcampr 单写者）；open → 不 end；closed-only → abandoned；
+    staleness backstop → assumed_done。"""
+    import json
+
+    from lib.context import base, requirement
+    R = "/tmp/dlut_req_close"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+
+    def kinds(req):
+        return [e["kind"] for e in requirement.session_events(R, req)]
+
+    # feat/x：PR merged → pr_merged + session_end done
+    requirement.open_requirement(R, "feat/x")
+    base.save_segment(R, "pr", {"prs": [{"number": 100, "state": "merged", "source_branch": "feat/x"}]})
+    idx_before = base.load_segment(R, "requirements")
+    requirement.reconcile_closures(R)
+    assert kinds("feat/x") == ["session_start", "pr_merged", "session_end"]
+    end = requirement.session_events(R, "feat/x")[-1]
+    assert end["result"] == "done"
+    assert base.load_segment(R, "requirements") == idx_before   # 不写索引（单写者不变）
+
+    # 幂等：再跑一遍不追加
+    requirement.reconcile_closures(R)
+    assert kinds("feat/x") == ["session_start", "pr_merged", "session_end"]
+
+    # feat/open：PR 仍 open → 不 end
+    requirement.open_requirement(R, "feat/open")
+    base.save_segment(R, "pr", {"prs": [
+        {"number": 100, "state": "merged", "source_branch": "feat/x"},
+        {"number": 101, "state": "open", "source_branch": "feat/open"}]})
+    requirement.reconcile_closures(R)
+    assert "session_end" not in kinds("feat/open")
+
+    # feat/dead：PR closed（非 merged）→ pr_closed + session_end abandoned
+    requirement.open_requirement(R, "feat/dead")
+    base.save_segment(R, "pr", {"prs": [{"number": 102, "state": "closed", "source_branch": "feat/dead"}]})
+    requirement.reconcile_closures(R)
+    ev = requirement.session_events(R, "feat/dead")
+    assert ev[-2]["kind"] == "pr_closed" and ev[-1]["result"] == "abandoned"
+
+    # feat/stale：无 PR，idle 超阈值 → assumed_done（backstop）
+    requirement.open_requirement(R, "feat/stale")
+    base.save_segment(R, "pr", {"prs": []})
+    requirement.reconcile_closures(R, stale_after_sec=0)   # 立即判定过期
+    assert requirement.session_events(R, "feat/stale")[-1]["result"] == "assumed_done"
+
+
 if __name__ == "__main__":
     run_main(globals())

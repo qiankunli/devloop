@@ -16,6 +16,8 @@ requirement via this index at mine time — the hot deny path never reads the in
 """
 from __future__ import annotations
 
+import json
+
 from . import base
 
 _INDEX = "requirements"   # segment name → .devloop/requirements.json + session dir root
@@ -36,9 +38,10 @@ def resolve(root, branch: str) -> str | None:
 
 def record_event(root, requirement_id: str, event: dict) -> None:
     """Append one event to `requirements/<id>/session.jsonl` (nested name → append_jsonl builds
-    the path). Stamps `ts`; caller supplies `kind` + payload."""
-    base.append_jsonl(root, f"{_INDEX}/{requirement_id}/session",
-                      {"ts": round(base.now(), 1), **event})
+    the path). Stamps a FULL-precision `ts` — not rounded: the close backstop does `now - ts`
+    staleness math, and a rounded-up ts could exceed `now` and flip the age negative. Caller
+    supplies `kind` + payload."""
+    base.append_jsonl(root, f"{_INDEX}/{requirement_id}/session", {"ts": base.now(), **event})
 
 
 def open_requirement(root, branch: str, *, fork_from: str | None = None,
@@ -75,3 +78,78 @@ def note(root, branch: str, event: dict) -> None:
     created outside gcampr still lands somewhere sensible."""
     req = resolve(root, branch) or open_requirement(root, branch)
     record_event(root, req, event)
+
+
+# ── close half: monitor-side scope closing ───────────────────────────────────
+def session_events(root, requirement_id: str) -> list[dict]:
+    """Parse a requirement's session.jsonl into events. Fail-open ([]) on missing/corrupt —
+    a close reconcile must never raise inside the monitor sweep."""
+    p = base.state_dir(root) / _INDEX / requirement_id / "session.jsonl"
+    if not p.exists():
+        return []
+    out = []
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    except OSError:
+        return []
+    return out
+
+
+def reconcile_closures(root, *, stale_after_sec: float = base.REQUIREMENT_STALE_SEC) -> None:
+    """Close finished requirements from the monitor side — best-effort, idempotent,
+    LEVEL-triggered (reconciles to the desired state, so it's safe to run every tick, on
+    restart, or after a missed tick — never an edge diff that a caller could double-fire).
+
+    Reads the fresh `pr` window + the index; appends close events ONLY to session.jsonl ledgers
+    (multi-writer safe). It NEVER writes `requirements.json` — that stays gcampr's single-writer
+    segment, so done-ness lives in the ledger (a `session_end` event), not in the index.
+      1. `pr_merged` / `pr_closed`: for each of a requirement's branches whose PR is finished in
+         the window and not yet recorded, append the event once (dedup by scanning the session).
+      2. `session_end`: a requirement with no open branch PR and no session_end yet →
+         `done` (some branch merged) / `abandoned` (all finished were closed) / `assumed_done`
+         (idle past `stale_after_sec` — the backstop; records "assumed", not a human verdict)."""
+    idx = _index(root)
+    branches = idx["branches"]
+    pr_seg = base.load_segment(root, "pr") or {}
+    # branch → its latest PR in the window (highest number wins for a reused branch)
+    by_branch: dict[str, dict] = {}
+    for p in pr_seg.get("prs", []):
+        b = p.get("source_branch")
+        if b in branches and p.get("number") is not None:
+            if b not in by_branch or p["number"] > by_branch[b].get("number", -1):
+                by_branch[b] = p
+
+    for req in list(idx["requirements"]):
+        events = session_events(root, req)
+        recorded = {e.get("number") for e in events
+                    if e.get("kind") in ("pr_merged", "pr_closed")}
+        req_branches = [b for b, r in branches.items() if r == req]
+
+        for b in req_branches:
+            p = by_branch.get(b)
+            if not p or p.get("state") not in ("merged", "closed") or p.get("number") in recorded:
+                continue
+            record_event(root, req, {"kind": "pr_merged" if p["state"] == "merged" else "pr_closed",
+                                     "branch": b, "number": p["number"], "state": p["state"]})
+            recorded.add(p["number"])
+
+        if any(e.get("kind") == "session_end" for e in events):
+            continue
+        states = [by_branch[b]["state"] for b in req_branches if b in by_branch]
+        if any(s == "open" for s in states):
+            continue                                  # still active — a branch's PR is open
+        if any(s == "merged" for s in states):
+            result = "done"
+        elif states and all(s == "closed" for s in states):
+            result = "abandoned"
+        elif events and (base.now() - max(e.get("ts", 0) for e in events)) >= stale_after_sec:
+            result = "assumed_done"                   # backstop: idle too long, assume delivered
+        else:
+            continue                                  # in progress (no PR yet, or not stale)
+        record_event(root, req, {"kind": "session_end", "result": result})
