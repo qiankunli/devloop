@@ -25,7 +25,8 @@ def decide(inp: hook_io.HookInput) -> str | None:
     decision = engine.evaluate(change, ctx, rules.REGISTRY)
     if not decision.blocked:
         return None
-    friction.record_deny(decision, tool=inp.tool_name, cwd=inp.cwd)  # best-effort; never affects the verdict
+    friction.record_deny(decision, tool=inp.tool_name, cwd=inp.cwd,
+                         session_id=inp.session_id)  # best-effort; never affects the verdict
     return decision.message()
 
 
