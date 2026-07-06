@@ -33,7 +33,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
 from lib import repo_layout, workspace  # noqa: E402
-from lib.context import WorkspaceContext, prstate  # noqa: E402
+from lib.context import WorkspaceContext, prstate, requirement  # noqa: E402
 from lib.context.base import PR_POLL_INTERVAL_SEC  # noqa: E402
 
 
@@ -41,6 +41,13 @@ def sweep_repo(repo: str) -> None:
     """Refresh both monitor-owned segments for one repo (each best-effort, fail-open)."""
     prstate.refresh_pr(repo)
     prstate.refresh_remote_branches(repo)
+    # loop-state close half: with the pr window just refreshed, close finished requirements
+    # (append pr_merged / session_end to their session.jsonl). Idempotent; no-op when the repo
+    # has no requirements. Guarded so a close failure never breaks the poll sweep.
+    try:
+        requirement.reconcile_closures(repo)
+    except Exception:
+        pass
 
 
 def repos_to_poll(target: str) -> list[str]:
