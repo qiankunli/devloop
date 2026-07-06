@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lib import git_state
-from lib.context import base
+from lib.context import store
 from lib.notify.base import Notification
 
 _MAX_FINDINGS = 30        # cap findings listed inline — full set always in review.json
@@ -97,7 +97,7 @@ class ReviewSource:
     instructions = INSTRUCTIONS
 
     def _seg(self, repo: str):
-        return base.load_segment(repo, base.branch_segment(git_state.get_current_branch(repo), "review"))
+        return store.load_segment(repo, store.branch_segment(git_state.get_current_branch(repo), "review"))
 
     def seed(self, repo: str):
         return wake_key(self._seg(repo))

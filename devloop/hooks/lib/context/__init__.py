@@ -1,13 +1,13 @@
 """`.devloop/` state layer — the bus between collection and use.
 
 Modules group by WHY-THEY-CHANGE-TOGETHER (four families), NOT by storage domain — the
-repo/branch/working-tree domain split (see `base.py`) is the FILESYSTEM's axis (where bytes
+repo/branch/working-tree domain split (see `store.py`) is the FILESYSTEM's axis (where bytes
 land, which concurrency invariant holds); a code module like `RepoContext` deliberately spans
 two storage domains to present one cohesive view. Families:
-- primitives  — `base.py`: shared leaves (`Reference` / `AgentsMd` / `Cadence`) + re-exported
-  forge domain (`PullRequest` / `Comment`), constants, time + atomic persistence primitives
-  (`load/save_segment`, `append_jsonl`) and the storage-domain resolvers
-  (`state_dir` / `worktree_state_dir` / `branch_segment`).
+- primitives  — `store.py`: the shared DISK — storage-domain resolvers (`state_dir` /
+  `worktree_state_dir` / `branch_segment` / `tmp_dir`) + the two persistence disciplines
+  (`save_segment` overwrite / `append_jsonl` ledger); `base.py`: the shared VOCABULARY —
+  leaves (`Reference` / `AgentsMd` / `Cadence`), re-exported forge domain, constants, time.
 - views       — `repo.py`: `RepoContext`, segment files merged into one OBSERVED/DISPLAY view
   (display-grade PR derivation + two-cadence injection); `workspace.py`: `WorkspaceContext`
   (`context.json`, session cadence) + the `active.json` writer-role.
@@ -15,10 +15,9 @@ two storage domains to present one cohesive view. Families:
   SHA-validated PR state, never the cached view; see docs/branch-state.md);
   `prstate.py`: the monitor's & gcampr's shared writer of the monitor-owned segments.
 - session runtime — `session.py`: active-repo binding + the checkout owner lock.
-- loop-state ledgers — `friction.py` (guard-deny events) + `requirement.py` (requirement
-  Trajectory spine): the 经验沉淀 line (workspace docs/loop-state.md). They grow together;
-  when a third member lands (steering capture / resolution events), fold the family into a
-  `loopstate/` subpackage — rule of three, not before.
+- loop-state ledgers — `loopstate/` subpackage: `friction` (guard-deny events) +
+  `requirement` (requirement Trajectory spine), the 经验沉淀 line (workspace
+  docs/loop-state.md). Future members: steering capture, resolution events, the miner.
 
 Usage (DISPLAY — for injection/hints; a gate must use `gate.evaluate` instead):
     from lib.context import RepoContext, WorkspaceContext, PullRequest

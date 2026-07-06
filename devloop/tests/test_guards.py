@@ -208,7 +208,7 @@ def test_gate_protect_uses_live_branch():
     """Protect-guard fail-open regression: branch.json cached says a feature branch, but HEAD is
     LIVE on a protected branch (unobserved checkout). The guard must still refuse commit/push —
     a stale cache must never let a push to a protected branch slip through."""
-    from lib.context import RepoContext, base
+    from lib.context import RepoContext, base, store
     guard = _load_hook("pretool_policy_bash")
     R = "/tmp/dlut_protect_live"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
@@ -218,9 +218,9 @@ def test_gate_protect_uses_live_branch():
     RepoContext.refresh_all(R)
     # forge the CURRENT branch's segment to a non-protected name (a corrupt/poisoned cache —
     # live keying makes stale-by-switch impossible, but the file content itself is still a cache)
-    seg_name = base.branch_segment("release", "branch")
-    seg = base.load_segment(R, seg_name); seg["local"]["name"] = "feat/safe"
-    base.save_segment(R, seg_name, seg)
+    seg_name = store.branch_segment("release", "branch")
+    seg = store.load_segment(R, seg_name); seg["local"]["name"] = "feat/safe"
+    store.save_segment(R, seg_name, seg)
     assert RepoContext.load(R).branch.local.is_protected() is False     # cache fooled
     inp = _hook_input("Bash", {"cwd": R, "tool_input": {"command": "git commit -m x"}})
     reason = guard.decide(inp)
@@ -333,11 +333,11 @@ def test_remote_branches_segment_is_monitor_owned():
 def test_remote_baseline_includes_target_and_fork_from():
     """Remote-tip polling tracks the repo's actual baseline (target + fork_from), not just the
     conventional trunks — so a develop/staging baseline gets a 'trunk moved' signal (Codex P2)."""
-    from lib.context import base, prstate
+    from lib.context import base, store, prstate
     R = "/tmp/dlut_baseline"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/.devloop")
-    base.save_segment(R, "meta", {"repo": {"default_branch": "staging"}})   # target is now meta.default_branch
-    base.save_segment(R, "branch", {"local": {"name": "feat/x", "fork_from": "develop"}})
+    store.save_segment(R, "meta", {"repo": {"default_branch": "staging"}})   # target is now meta.default_branch
+    store.save_segment(R, "branch", {"local": {"name": "feat/x", "fork_from": "develop"}})
     bases = prstate._baseline_branches(R)
     assert "develop" in bases and "staging" in bases
     assert bases[:len(prstate.TRUNK_CANDIDATES)] == prstate.TRUNK_CANDIDATES   # conventional trunks first

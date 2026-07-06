@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from lib import hook_io, rules  # noqa: E402
-from lib.context import friction  # noqa: E402
+from lib.context.loopstate import friction  # noqa: E402
 from lib.core import engine  # noqa: E402
 from lib.core.context import PolicyContext  # noqa: E402
 

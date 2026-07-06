@@ -24,7 +24,7 @@ Paths use `<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code.
 
 **Message**: one-line / simple → inline single-quoted (`--message 'fix: …'`). Multi-line, or
 containing quotes / `$` / backticks → write it with the **Write tool** to
-`<repo>/.devloop/commit_msg` (gitignored scratch) and pass `--message-file <path>` (alias `-F`;
+`<repo>/.devloop/tmp/commit_msg` (gitignored scratch) and pass `--message-file <path>` (alias `-F`;
 `-F -` reads stdin) — no shell escaping, mirroring `git commit -F` / `gh --body-file`. `--title`
 defaults to the message's first line.
 
