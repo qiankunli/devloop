@@ -295,5 +295,33 @@ def test_sync_pr_description_append_only():
         sgo.forge_for_repo = orig
 
 
+def test_open_or_attach_requirement_wiring():
+    """gcampr 侧接线（loop-state slice3）：切分支后 _open_or_attach_requirement 按 --requirement
+    有无二分——无 → 新开需求（id=该分支）；有 → 续接指定需求。best-effort，落 PLAN。"""
+    from lib.context import requirement
+    sgo = _load_script("smart_git_ops")
+    R = "/tmp/dlut_req_wire"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q", "-b", "main"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+
+    def intent(branch, req):
+        return sgo.GitIntent(mode="mr", message="m", title="m", requested_branch=branch,
+                             target="main", base="main", explicit_base=False, files=[],
+                             repo=R, source="test", invoke_cwd=R, requirement=req)
+
+    # 无 --requirement → 新开需求（id = 该分支），fork_sha 取 base 的 sha
+    plan = []
+    sgo._open_or_attach_requirement(intent("feat/a", None), plan)
+    assert requirement.resolve(R, "feat/a") == "feat/a"
+    assert any("opened 'feat/a'" in line for line in plan)
+
+    # 有 --requirement → 续接已存在需求
+    plan = []
+    sgo._open_or_attach_requirement(intent("fix/a-2", "feat/a"), plan)
+    assert requirement.resolve(R, "fix/a-2") == "feat/a"
+    assert any("continues 'feat/a'" in line for line in plan)
+
+
 if __name__ == "__main__":
     run_main(globals())

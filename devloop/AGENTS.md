@@ -55,9 +55,10 @@ devloop/
 │   │   │   └── review.py          #     code-review signal handler（任意相位；审全量 diff，分支有开放 MR 时机会性发评论）
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
-│   │   └── context/               #   .devloop/ 状态总线，按 owner 粒度分模块：base / session / repo / workspace / friction
+│   │   └── context/               #   .devloop/ 状态总线，按 owner 粒度分模块：base / session / repo / workspace / friction / requirement
 │   │                              #     session.py = session 运行态（active 绑定 + checkout owner 锁）
-│   │                              #     friction.py = guard deny 落 friction.jsonl（ledger 半——经验沉淀 slice1，见 workspace docs/loop-state.md）
+│   │                              #     friction.py = guard deny 落 friction.jsonl；requirement.py = 需求 scope（requirements.json 索引 + requirements/<首分支>/session.jsonl 生命周期脊柱）
+│   │                              #     ↑ 两者是经验沉淀 ledger 半（loop-state slice1/3），见 workspace docs/loop-state.md
 │   ├── cwdchanged_enter.py        # CwdChanged：自动 enter
 │   ├── sessionstart_init.py       # SessionStart：References(additionalContext) + watchPaths + 预热
 │   ├── userprompt_inject.py       # UserPromptSubmit：turn + session 注入

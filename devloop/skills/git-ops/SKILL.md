@@ -39,6 +39,19 @@ staging, auto-rebased onto the repo root; else tracked modifications — never
 quotes the MR's number / state / sha — so it's ground truth even right after you created the MR
 (a colleague can merge it in seconds); add `--branch` and re-run.
 
+### `--requirement` — 需求 scope（loop-state）
+
+一次需求交付常横跨多个分支（stacked、merge 后 follow-up）。**切新分支时**（即带 `--branch`
+的那次 gcampr）用 `--requirement` 声明这条分支属于哪个需求——需求以其**首个分支名**为 ID：
+
+- **新需求**：省略 `--requirement`（默认新开，ID = 这条分支名）。
+- **续接已有需求**：`--requirement <首个分支名>`，把这条分支挂到那个需求下。
+
+**你先自判、判不出才问人**：会话上下文多数自明——「下一个 / 新需求」= 省略；「把 review 意见修了 /
+接着上一个做」= 续接上一个需求的首分支。真正模糊时才问一句。免问兜底：仓里没有进行中的需求就直接
+新开；拿不准就默认新开（误归档比误新开难修）。它只影响 loop-state 的经验沉淀记账，**不影响 git/PR
+本身**，写失败降级为一条 PLAN note、绝不挡 commit/push。
+
 ## 后台 code-review（自动，无需你操作）
 
 启用了 `review` 的仓,commit 后 smart_git_ops 会**自动 detach 起后台 ocr review**(PLAN 出

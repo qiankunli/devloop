@@ -520,5 +520,42 @@ def test_friction_sink_wired_into_bash_guard():
     assert any(f["rule"] == "protect-branch" for f in rec["findings"])
 
 
+def test_requirement_open_attach_resolve():
+    """requirement scope（loop-state slice3）：open 建索引 + session_start；attach 续接 + branch_cut；
+    resolve 反查；open 幂等（不重复 session_start）；note 对未索引分支惰性 open。"""
+    import json
+
+    from lib.context import base, requirement
+    R = "/tmp/dlut_req"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+
+    # open：id = 首个分支名；索引段 + session_start
+    rid = requirement.open_requirement(R, "feat/x", fork_from="main", fork_sha="abc")
+    assert rid == "feat/x"
+    idx = base.load_segment(R, "requirements")
+    assert idx["branches"] == {"feat/x": "feat/x"} and idx["requirements"]["feat/x"]["status"] == "open"
+    sess = (Path(R) / ".devloop" / "requirements" / "feat/x" / "session.jsonl").read_text().splitlines()
+    e0 = json.loads(sess[0])
+    assert e0["kind"] == "session_start" and e0["requirement"] == "feat/x" and e0["fork_sha"] == "abc"
+
+    # open 幂等：不追加第二条 session_start
+    requirement.open_requirement(R, "feat/x")
+    assert len((Path(R) / ".devloop" / "requirements" / "feat/x" / "session.jsonl").read_text().splitlines()) == 1
+
+    # attach：第二个分支续接同一 requirement → branch_cut{continues:true}，索引指向 req
+    requirement.attach_branch(R, "feat/x", "fix/x-followup", fork_sha="def")
+    assert requirement.resolve(R, "fix/x-followup") == "feat/x"
+    sess = (Path(R) / ".devloop" / "requirements" / "feat/x" / "session.jsonl").read_text().splitlines()
+    last = json.loads(sess[-1])
+    assert last["kind"] == "branch_cut" and last["branch"] == "fix/x-followup" and last["continues"] is True
+
+    # resolve 未索引分支 → None；note 对它惰性 open（id = 该分支）
+    assert requirement.resolve(R, "chore/z") is None
+    requirement.note(R, "chore/z", {"kind": "pr_created", "branch": "chore/z", "number": 9})
+    assert requirement.resolve(R, "chore/z") == "chore/z"
+    zsess = (Path(R) / ".devloop" / "requirements" / "chore/z" / "session.jsonl").read_text().splitlines()
+    assert json.loads(zsess[0])["kind"] == "session_start" and json.loads(zsess[-1])["kind"] == "pr_created"
+
+
 if __name__ == "__main__":
     run_main(globals())
