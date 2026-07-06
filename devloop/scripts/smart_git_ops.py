@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
 from lib import cli, git_state, gitcmd, lifecycle, repo_resolve  # noqa: E402
-from lib.context import RepoContext, gate, prstate, record_active_repo  # noqa: E402
+from lib.context import RepoContext, gate, prstate, record_active_repo, requirement  # noqa: E402
 from lib.forge import Forge, ForgeError, PullRequest, forge_for_repo, pr_label  # noqa: E402
 
 
@@ -73,6 +73,9 @@ class GitIntent:
     # description: title alone is the "cram everything into one line" pressure that
     # produced 150-char MR titles over empty descriptions.
     description: str = ""
+    # Requirement scope (loop-state): the requirement this branch continues. None → this branch
+    # STARTS a new requirement (id = the branch). A value → attach to that existing requirement.
+    requirement: str | None = None
 
 
 @dataclass(frozen=True)
@@ -345,6 +348,7 @@ def resolve_intent(ns: argparse.Namespace, invoke_cwd: str) -> GitIntent:
         repo=resolved.git_root,
         source=how,
         invoke_cwd=invoke_cwd,
+        requirement=ns.requirement,
     )
 
 
@@ -391,6 +395,7 @@ def prepare_branch(intent: GitIntent, gv: gate.GateView, plan: list[str]) -> Bra
         fork = intent.base.split("/", 1)[1] if intent.base.startswith("origin/") else intent.base
         RepoContext.refresh_branch(intent.repo).set_fork_from(fork)
         plan.append(f"recorded fork_from={fork}")
+        _open_or_attach_requirement(intent, plan)
         return BranchResult(branch=intent.requested_branch, cut=True)
     if gv.in_flight():
         # continuing onto a branch whose PR is still open — the loop's between-rounds state.
@@ -399,6 +404,24 @@ def prepare_branch(intent: GitIntent, gv: gate.GateView, plan: list[str]) -> Bra
         plan.append(f"continuing in-flight {label} on '{gv.branch}'")
         return BranchResult(branch=gv.branch or "", cut=False, active_pr=pr)
     return BranchResult(branch=gv.branch or "", cut=False)
+
+
+def _open_or_attach_requirement(intent: GitIntent, plan: list[str]) -> None:
+    """Establish the requirement scope for a freshly cut branch (loop-state slice 3): start a new
+    requirement (id = this branch) or attach it to the one --requirement names. Best-effort — a
+    ledger write must never fail the git action, so any error degrades to a PLAN note."""
+    branch = intent.requested_branch or ""
+    fork = intent.base.split("/", 1)[1] if intent.base.startswith("origin/") else intent.base
+    fork_sha = gitcmd.git(intent.repo, "rev-parse", intent.base).out or None
+    try:
+        if intent.requirement:
+            requirement.attach_branch(intent.repo, intent.requirement, branch, fork_sha=fork_sha)
+            plan.append(f"requirement: '{branch}' continues '{intent.requirement}'")
+        else:
+            requirement.open_requirement(intent.repo, branch, fork_from=fork, fork_sha=fork_sha)
+            plan.append(f"requirement: opened '{branch}'")
+    except OSError as e:
+        plan.append(f"requirement: scope note skipped (non-fatal): {e}")
 
 
 def stage_and_commit(intent: GitIntent, plan: list[str]) -> StageResult:
@@ -448,7 +471,12 @@ def publish(intent: GitIntent, branch: BranchResult, staged: StageResult, plan: 
     if intent.mode == "mr":
         rng = run(repo, "log", "--oneline", f"origin/{target}..{current}").strip()
         plan.append(f"PR carries {len(rng.splitlines()) if rng else 0} commit(s) vs origin/{target}")
-        reuse_or_create_pr(repo, current, target, intent.title, intent.description, plan)
+        pr = reuse_or_create_pr(repo, current, target, intent.title, intent.description, plan)
+        # loop-state: note the PR on this branch's requirement (best-effort, joins by branch).
+        try:
+            requirement.note(repo, current, {"kind": "pr_created", "branch": current, "number": pr.number})
+        except OSError:
+            pass
         RepoContext.refresh_branch(repo)
         # Don't write pr_number here — keep the `pr` segment single-owner. Trigger one
         # authoritative poll so it (the sole writer) populates number + window for the new
@@ -507,6 +535,12 @@ def _build_parser() -> cli.ArgParser:
     )
     ap.add_argument("--files", "-f", default=None, help="comma-separated explicit files to stage")
     ap.add_argument("--title", default=None, help="MR title (defaults to the message's first line)")
+    ap.add_argument(
+        "--requirement",
+        default=None,
+        help="loop-state: the requirement (its first-branch name) this new branch CONTINUES; "
+             "omit to start a new requirement (id = this branch)",
+    )
     cli.add_repo_arg(ap, positional=False)  # --repo/-r only; gcampr takes no positional repo
     return ap
 
