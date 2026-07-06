@@ -203,6 +203,21 @@ def save_segment(root: str | Path, name: str, data: dict) -> None:
     _write_atomic(segment_file(root, name), data)
 
 
+def append_jsonl(root: str | Path, name: str, record: dict) -> None:
+    """Append one record as a line to `.devloop/<name>.jsonl` — the **ledger** primitive,
+    peer of `save_segment`. A segment is single-writer whole-file overwrite; a ledger is
+    many-writer append-only, never rewritten (the loop's event stream). A single json line
+    stays under PIPE_BUF, so concurrent O_APPEND writes don't interleave — no lock needed.
+    Best-effort: a failed write is swallowed (a ledger is a cache, never a hard dependency)."""
+    try:
+        p = state_dir(root) / f"{name}.jsonl"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def to_dict(obj) -> dict:
     """Serialize a context dataclass to a plain dict (for save_raw)."""
     return asdict(obj)
