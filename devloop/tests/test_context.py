@@ -49,17 +49,19 @@ def test_context_segments():
     _git(R, "checkout", "-q", "-b", "feat/a")
     Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
 
-    # refresh_all writes ONLY the refresher-owned segments
+    # refresh_all writes ONLY the refresher-owned segments; branch-domain ones land under
+    # branches/<branch>/ (三域布局), repo-domain ones at the .devloop root
     RepoContext.refresh_all(R)
-    seg = set(os.listdir(f"{R}/.devloop"))
-    assert {"meta.json", "branch.json"} <= seg and "validation.json" not in seg and "pr.json" not in seg
+    D = Path(R) / ".devloop"
+    assert (D / "meta.json").exists() and (D / "branches/feat/a/branch.json").exists()
+    assert not (D / "branches/feat/a/validation.json").exists() and not (D / "pr.json").exists()
 
     ctx = RepoContext.load(R)
     assert ctx.branch.local.name == "feat/a" and ctx.branch.pr_number is None and ctx.prs == []
 
-    # a validation mark writes only validation.json
+    # a validation mark writes only its branch's validation.json
     ctx.mark_lint_passed()
-    assert (Path(R) / ".devloop" / "validation.json").exists()
+    assert (D / "branches/feat/a/validation.json").exists()
     assert RepoContext.load(R).validation.edits_since_lint == 0
 
     # monitor-owned pr write, branch-keyed; provider is repo-level (header, not per-PR)
@@ -666,6 +668,58 @@ def test_requirement_arcs_and_offwindow_closure():
     base.save_segment(R, "pr", {"prs": []})
     requirement.reconcile_closures(R)               # 该仓无 origin → forge None → unknown
     assert not any(e["kind"] == "session_end" for e in requirement.session_events(R, "feat/y"))
+
+
+def test_state_domains_worktree():
+    """三域布局的核心承诺：linked worktree 里产生的 repo 域（friction/requirements）与 branch 域
+    （branch/validation）状态全部落**主仓** .devloop（worktree 清理不再丢数据）；owner 锁留在
+    worktree 自己的 .devloop（并行 worktree 不被误串行化）；submodule 形态的 .git 文件回落本地
+    （绝不往宿主 .git/modules 里写）。"""
+    from lib.context import RepoContext, base, friction, requirement
+    from lib.context import session as session_lock
+    from lib.core.domain import Decision, Finding, Severity
+    M = "/tmp/dlut_domains_main"
+    shutil.rmtree(M, ignore_errors=True); os.makedirs(M)
+    _git(M, "init", "-q", "-b", "main"); _git(M, "config", "user.email", "t@t.t"); _git(M, "config", "user.name", "t")
+    Path(f"{M}/f").write_text("x"); _git(M, "add", "f"); _git(M, "commit", "-qm", "i")
+    W = f"{M}/.worktrees/wt"
+    _git(M, "worktree", "add", "-q", "-b", "feat/wt", W)
+
+    # 解析原语：主 checkout → 自身；worktree → 主仓（.git 文件里是 canonical 路径，
+    # 故与 /tmp→/private/tmp 软链无关地按 resolve 比较）；无 .git → 自身
+    assert base._main_repo_root(M) == Path(M)
+    assert base._main_repo_root(W).resolve() == Path(M).resolve()
+    assert base.state_dir(W).resolve() == (Path(M) / ".devloop").resolve()   # repo 域统一落主仓
+    assert base.worktree_state_dir(W) == Path(W) / ".devloop"                # working-tree 域留本地
+
+    # repo 域：worktree 里的 friction / requirement 落主仓
+    deny = Decision.of([Finding(rule="protect-branch", severity=Severity.DENY, message="n", locator="x")])
+    friction.record_deny(deny, tool="Bash", cwd=W)
+    assert (Path(M) / ".devloop/friction.jsonl").exists()
+    assert not (Path(W) / ".devloop/friction.jsonl").exists()
+    requirement.open_requirement(W, "feat/wt")
+    assert (Path(M) / ".devloop/requirements/feat/wt/session.jsonl").exists()
+
+    # branch 域：worktree 的 refresh/validation 落主仓 branches/feat/wt/，与主 checkout 的
+    # branches/main/ 并存互不干扰（git 禁止同分支双检出 → 每文件单写者天然成立）
+    RepoContext.refresh_all(W).mark_lint_passed()
+    RepoContext.refresh_all(M)
+    assert (Path(M) / ".devloop/branches/feat/wt/validation.json").exists()
+    assert (Path(M) / ".devloop/branches/feat/wt/branch.json").exists()
+    assert (Path(M) / ".devloop/branches/main/branch.json").exists()
+    assert RepoContext.load(W).branch.local.name == "feat/wt"   # load 按 live 分支取段
+    assert RepoContext.load(M).branch.local.name == "main"
+
+    # working-tree 域：owner 锁各归各的工作树
+    assert session_lock.acquire(W, "sess-wt", "feat/wt", pid=os.getpid())
+    assert (Path(W) / ".devloop/owner.lock").exists()
+    assert not (Path(M) / ".devloop/owner.lock").exists()
+
+    # submodule 形态：.git 文件指向宿主 .git/modules/... → 回落本地，绝不写进宿主 git dir
+    S = "/tmp/dlut_domains_sub"
+    shutil.rmtree(S, ignore_errors=True); os.makedirs(S)
+    Path(f"{S}/.git").write_text(f"gitdir: {M}/.git/modules/sub\n")
+    assert base._main_repo_root(S) == Path(S)
 
 
 if __name__ == "__main__":

@@ -59,9 +59,10 @@ def test_review_source():
     assert wake_key({"status": "error", "count": 0, "failed": 0, "reviewed_sha": "c"}) is not None
     src = ReviewSource(); assert src.name == "review"
     R = "/tmp/dlut_rsrc"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
-    base.save_segment(R, "review", {"status": "running", "reviewed_sha": "a", "count": 0})
+    _rseg = base.branch_segment(None, "review")   # R 无 git → source 同样解析到 @detached 桶
+    base.save_segment(R, _rseg, {"status": "running", "reviewed_sha": "a", "count": 0})
     carry = src.seed(R); assert carry is None               # armed mid-run → no startup fire
-    base.save_segment(R, "review", {"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
+    base.save_segment(R, _rseg, {"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
                                     "reviewed_range": "origin/main..HEAD", "generated_at": 100.0,
                                     "comments": [{"path": "a.py", "start_line": 3, "end_line": 5,
                                                   "alias": "ds-v4", "content": "bug here"}]})
@@ -71,10 +72,10 @@ def test_review_source():
     assert notes[0].content.splitlines()[0] == "review[dlut_rsrc]: 1 finding(s) on abcdef123 [origin/main..HEAD]"
     assert notes[0].content.splitlines()[1] == "  - a.py:3-5 (ds-v4) — bug here"
     # same sha re-reviewed → new generated_at → new key → fires again; then a clean review → silent
-    base.save_segment(R, "review", {"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
+    base.save_segment(R, _rseg, {"status": "success", "count": 1, "reviewed_sha": "abcdef123456",
                                     "generated_at": 200.0, "comments": [{"path": "a.py", "content": "x"}]})
     carry, notes = src.step(R, carry); assert len(notes) == 1
-    base.save_segment(R, "review", {"status": "success", "count": 0, "failed": 0, "reviewed_sha": "z"})
+    base.save_segment(R, _rseg, {"status": "success", "count": 0, "failed": 0, "reviewed_sha": "z"})
     _, notes = src.step(R, carry); assert notes == []       # clean terminal review → no wake
 
 def test_forge_source():

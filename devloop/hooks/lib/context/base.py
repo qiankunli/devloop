@@ -29,6 +29,7 @@ import os
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 # The neutral code-review proposal lives in the forge domain (provider-agnostic). The
@@ -146,8 +147,62 @@ def is_stale(ts: float | None, ttl: float, *, now_: float | None = None) -> bool
 
 
 # ── persistence primitives ───────────────────────────────────────────────────
+# `.devloop/` state is split into three DOMAINS (see devloop/AGENTS.md 状态总线):
+#   repo domain      → the MAIN repo's .devloop (state_dir): segments + ledgers that describe
+#                      the repo / a requirement — one copy, survives worktree cleanup.
+#   branch domain    → main .devloop/branches/<branch>/ (branch_segment): state that describes
+#                      one BRANCH (topology / validation / review). git forbids checking the
+#                      same branch out in two worktrees, so per-file single-writer holds free.
+#   working-tree domain → each worktree's own .devloop (worktree_state_dir): the owner lock —
+#                      it protects THIS working tree's mutable surface; centralizing it would
+#                      wrongly serialize parallel worktrees.
+@lru_cache(maxsize=64)
+def _main_repo_root(root: str) -> Path:
+    """Resolve a working-tree root to the MAIN repo root — pure file parse, no subprocess.
+
+    `.git` is a dir (main checkout) or absent (workspace root / not a repo) → `root` itself.
+    `.git` is a FILE → parse its `gitdir:` line: a linked worktree points into
+    `<main>/.git/worktrees/<name>` → return `<main>`. Anything else (a SUBMODULE points into
+    the superproject's `.git/modules/…` — writing state there would be a data accident) →
+    fall back to `root` itself (local, safe). Cached: the mapping is immutable per process."""
+    p = Path(root)
+    g = p / ".git"
+    try:
+        if not g.is_file():
+            return p
+        text = g.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return p
+    for line in text.splitlines():
+        if line.startswith("gitdir:"):
+            gitdir = Path(line[len("gitdir:"):].strip())
+            if not gitdir.is_absolute():
+                gitdir = (p / gitdir).resolve()
+            parts = gitdir.parts
+            #  <main>/.git/worktrees/<name>  →  <main>
+            if len(parts) >= 3 and parts[-3] == ".git" and parts[-2] == "worktrees":
+                return Path(*parts[:-3])
+            break
+    return p
+
+
 def state_dir(root: str | Path) -> Path:
+    """Repo-domain state dir: the MAIN repo's `.devloop` (a linked worktree resolves to its
+    main checkout, so ledgers/segments have ONE home and survive worktree cleanup)."""
+    return _main_repo_root(str(root)) / STATE_DIRNAME
+
+
+def worktree_state_dir(root: str | Path) -> Path:
+    """Working-tree-domain state dir: THIS working tree's own `.devloop` (no resolution).
+    For state scoped to one working tree — today the owner lock."""
     return Path(root) / STATE_DIRNAME
+
+
+def branch_segment(branch: str | None, name: str) -> str:
+    """Segment name for a BRANCH-domain segment: `branches/<branch>/<name>` under the main
+    repo's state dir. `None` (detached HEAD) buckets to `@detached` — transient, never a real
+    branch name (git forbids `@`-leading refs)."""
+    return f"branches/{branch or '@detached'}/{name}"
 
 
 def state_file(root: str | Path) -> Path:

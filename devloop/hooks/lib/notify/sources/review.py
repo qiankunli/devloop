@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from lib import git_state
 from lib.context import base
 from lib.notify.base import Notification
 
@@ -86,17 +87,23 @@ def summarize(seg: dict, repo: str) -> str:
 
 
 class ReviewSource:
-    """Watches `.devloop/review.json` for one repo. carry = the last `wake_key`; fires `review_done`
-    when an actionable terminal review with a NEW key lands."""
+    """Watches the CURRENT branch's `branches/<b>/review.json` for one repo (review is
+    branch-domain state). The branch is re-resolved on every seed/step, so a checkout switch
+    while a waiter is armed just repoints the watch — no stale-branch review can fire it.
+    carry = the last `wake_key`; fires `review_done` when an actionable terminal review with
+    a NEW key lands."""
 
     name = "review"
     instructions = INSTRUCTIONS
 
+    def _seg(self, repo: str):
+        return base.load_segment(repo, base.branch_segment(git_state.get_current_branch(repo), "review"))
+
     def seed(self, repo: str):
-        return wake_key(base.load_segment(repo, "review"))
+        return wake_key(self._seg(repo))
 
     def step(self, repo: str, carry):
-        seg = base.load_segment(repo, "review")
+        seg = self._seg(repo)
         key = wake_key(seg)
         notes = []
         if key is not None and key != carry:

@@ -210,14 +210,22 @@ class RepoContext:
         meta = base.load_segment(repo_dir, "meta")
         if meta is None:
             return None
-        branch = BranchTopology.from_local_dict(base.load_segment(repo_dir, "branch") or {})
+        # Branch-domain segments live under branches/<branch>/ — keyed by the LIVE branch (one
+        # rev-parse), not by whatever some cached file last observed. This kills the whole
+        # "stale branch.json after an unobserved checkout fools the display" class structurally:
+        # switching branches switches which segment directory is read.
+        live = git_state.get_current_branch(repo_dir)
+        branch = BranchTopology.from_local_dict(
+            base.load_segment(repo_dir, base.branch_segment(live, "branch")) or {})
+        if not branch.local.name:
+            branch.local.name = live or ""   # fresh/missing segment: identity is still the live read
         branch.target = (meta.get("repo") or {}).get("default_branch", "")   # single source: RepoMeta.default_branch
         # monitor-owned remote trunk tips (remote_branches.json) + their provenance stamp.
         rb = base.load_segment(repo_dir, "remote_branches") or {}
         branch.remotes = [Branch.from_dict(r) for r in (rb.get("remotes") or [])]
         branch.remotes_fetched_at = rb.get("fetched_at")
-        # Join the monitor-owned pr_number only when it was computed for the CURRENT (cached)
-        # branch — DISPLAY-grade; write-gates re-derive against LIVE branch (lib.context.gate).
+        # Join the monitor-owned pr_number only when it was computed for the CURRENT branch —
+        # DISPLAY-grade; write-gates re-derive against LIVE branch (lib.context.gate).
         # pr.json is branch-keyed, so a branch switch self-invalidates the stale number.
         pr = base.load_segment(repo_dir, "pr") or {}
         on_branch = pr.get("branch") == branch.local.name   # pr.json is branch-keyed; only join if current
@@ -226,8 +234,10 @@ class RepoContext:
             repo=RepoMeta.from_dict(meta.get("repo")),
             agents_md=AgentsMd.from_dict(meta.get("agents_md") or {}),
             branch=branch,
-            validation=Validation.from_dict(base.load_segment(repo_dir, "validation") or {}),
-            injection=Injection.from_dict(base.load_segment(repo_dir, "injection") or {}),
+            validation=Validation.from_dict(
+                base.load_segment(repo_dir, base.branch_segment(live, "validation")) or {}),
+            injection=Injection.from_dict(
+                base.load_segment(repo_dir, base.branch_segment(live, "injection")) or {}),
             prs=[PullRequest.from_dict(p) for p in (pr.get("prs") or []) if p.get("number") is not None],
             provider=pr.get("provider", ""),
             merge_readiness=(pr.get("merge_readiness") if on_branch else None),
@@ -256,12 +266,16 @@ class RepoContext:
         })
         git_state.ensure_gitignore_excluded(root)   # keep /.devloop/ out of git
 
+    def _branch_seg(self, name: str) -> str:
+        """Branch-domain segment name for THIS context's branch (branches/<b>/<name>)."""
+        return base.branch_segment(self.branch.local.name or None, name)
+
     def _save_branch(self) -> None:
         """Refresh-owned: the LOCAL half only (local + worktrees + target). `remotes` is the
         monitor's (remote_branches.json) and `pr_number` is pr.json's — never written here."""
         if not self._root():
             return
-        base.save_segment(self._root(), "branch", {
+        base.save_segment(self._root(), self._branch_seg("branch"), {
             "local": asdict(self.branch.local),
             "worktrees": [asdict(w) for w in self.branch.worktrees],
         })   # target not persisted here — derived from meta.default_branch (single source)
@@ -283,11 +297,11 @@ class RepoContext:
 
     def _save_validation(self) -> None:
         if self._root():
-            base.save_segment(self._root(), "validation", asdict(self.validation))
+            base.save_segment(self._root(), self._branch_seg("validation"), asdict(self.validation))
 
     def _save_injection(self) -> None:
         if self._root():
-            base.save_segment(self._root(), "injection", asdict(self.injection))
+            base.save_segment(self._root(), self._branch_seg("injection"), asdict(self.injection))
 
     # ── refresh (re-derive from authoritative sources) ─────────────────────────
     @classmethod
@@ -548,7 +562,8 @@ def _format_turn(ctx: "RepoContext") -> str:
     # 外部进程写，RepoContext 视图可能滞后）；skipped 不出（无信号价值、避免噪声）。
     # 这是 pull 路径（醒着才看见）；另有 push 路径 notify 端口的 review Source（lib/notify/sources/review.py），
     # 经 channel 或 waiter（scripts/notify.py）在 review 出终态时主动唤醒 idle 会话并带上 findings——pull 是兜底。
-    _rv = base.load_segment(ctx.repo.repo_dir, "review") or {}
+    _rv = base.load_segment(ctx.repo.repo_dir,
+                            base.branch_segment(ctx.branch.local.name or None, "review")) or {}
     _rs, _sha = _rv.get("status"), (_rv.get("reviewed_sha") or "")[:9]
     # staleness 兜底：detach 的 run_review 不归 harness 跟踪，若中途被杀（休眠 / OOM / kill）就
     # 没机会写终态，review.json 会永远卡在 "running"。running 超过 REVIEW_STALE_SEC 即按 stale 报，

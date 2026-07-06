@@ -41,7 +41,10 @@ def _branch(repo: str) -> str:
 
 
 def _write(repo: str, **fields) -> None:
-    base.save_segment(repo, "review", fields)
+    # review is BRANCH-domain state (it reviews one branch's diff): branches/<b>/review.json.
+    # Branch resolved per write — cheap next to the review itself, and correct even if the
+    # checkout moved between the "running" stamp and the terminal write.
+    base.save_segment(repo, base.branch_segment(git_state.get_current_branch(repo), "review"), fields)
 
 
 def _append_history(repo: str, started: float, **fields) -> None:

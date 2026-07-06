@@ -137,9 +137,10 @@ def active_repo_candidates(ws_root: str | Path) -> list[str]:
 # - No shared heartbeat registry and no atomic rewrite of context.json — just this
 #   dedicated file, written rarely (on acquire) via tmp + os.replace.
 #
-# Each linked git worktree has its own `.devloop/`, so the lock is naturally
-# per-checkout: two sessions already in separate worktrees never see each other's
-# lock (they are already isolated — the goal).
+# The lock is WORKING-TREE domain BY DESIGN (base.worktree_state_dir, never the main-repo
+# state_dir): it protects one working tree's mutable surface, so each linked worktree keeps
+# its own lock and two sessions in separate worktrees never see each other's — parallel
+# worktrees stay parallel. Centralizing it in the main repo would wrongly serialize them.
 #
 # Caveat: only another *devloop session's* branch switch (a Bash tool call) is
 # guardable. A human switching branches in their own terminal is outside any hook.
@@ -148,7 +149,7 @@ OWNER_TTL_SEC = 30 * 60  # staleness fallback used only when pid liveness is una
 
 
 def _lock_file(repo: str | Path) -> Path:
-    return base.state_dir(repo) / "owner.lock"
+    return base.worktree_state_dir(repo) / "owner.lock"
 
 
 def _pid_alive(pid: object) -> bool:
