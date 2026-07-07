@@ -70,13 +70,24 @@ def open_requirement(root, branch: str, *, fork_from: str | None = None,
 
 def attach_branch(root, requirement_id: str, branch: str, *, fork_sha: str | None = None) -> None:
     """A subsequent branch joins requirement `requirement_id`. Indexes it and emits
-    `branch_cut{continues:true}`. No-op if already attached to that requirement."""
+    `branch_cut{continues:true}`. No-op if already attached to that requirement.
+
+    Guards the arc invariant first: every arc must OPEN with a `session_start` delimiter —
+    readers and `reconcile_closures` split arcs on session_start/session_end. Two attach paths
+    would otherwise violate it: `--requirement <never-opened id>` on the continue path makes
+    branch_cut the spine's FIRST line, and attaching after closure (post-merge follow-up)
+    leaves branch_cut dangling behind `session_end` — invisible to `_active_tail`, so the
+    follow-up's arc would never be reconciled."""
     idx = _index(root)
     if idx["branches"].get(branch) == requirement_id:
         return
     idx["branches"][branch] = requirement_id
     idx["requirements"].setdefault(requirement_id, {"status": "open", "ts": round(base.now(), 1)})
     store.save_segment(root, _INDEX, idx)
+    if not _active_tail(session_events(root, requirement_id)):   # empty spine or closed arc
+        record_event(root, requirement_id, {"kind": "session_start", "requirement": requirement_id,
+                                            "branch": requirement_id, "fork_from": None,
+                                            "fork_sha": None})
     record_event(root, requirement_id, {"kind": "branch_cut", "branch": branch,
                                         "continues": True, "fork_sha": fork_sha})
 
