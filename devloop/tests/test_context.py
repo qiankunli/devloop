@@ -674,6 +674,39 @@ def test_requirement_arcs_and_offwindow_closure():
     assert not any(e["kind"] == "session_end" for e in requirement.session_events(R, "feat/y"))
 
 
+def test_requirement_attach_guards_arc_invariant():
+    """狗粮发现（PR#62 后首用）：attach 必须守住「每段 arc 以 session_start 开头」的定界约定。
+    ① `--requirement <未开过的名字>` 走 continue 路径 → 先补 session_start 再 branch_cut
+    （否则 spine 首行是 branch_cut，工具靠首行识别原始流的约定被破坏）；
+    ② 需求已关闭后 attach 后续分支（merge 后 follow-up）→ 新 arc 的 session_start 先行
+    （否则 branch_cut 悬在 session_end 之后，_active_tail 看不见、永远不被 reconcile）。"""
+    from lib.context import store
+    from lib.context.loopstate import requirement
+    R = "/tmp/dlut_req_attach"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+
+    # ① attach 到从未 open 过的 requirement：session_start 先于 branch_cut，索引两条都建
+    requirement.attach_branch(R, "feat/new-req", "fix/first-cut", fork_sha="abc")
+    ks = [e["kind"] for e in requirement.session_events(R, "feat/new-req")]
+    assert ks == ["session_start", "branch_cut"]
+    assert requirement.resolve(R, "fix/first-cut") == "feat/new-req"
+
+    # 活跃 arc 上再 attach 其他分支 → 不重复 session_start
+    requirement.attach_branch(R, "feat/new-req", "fix/second-cut")
+    ks = [e["kind"] for e in requirement.session_events(R, "feat/new-req")]
+    assert ks == ["session_start", "branch_cut", "branch_cut"]
+
+    # ② 需求关闭后 attach follow-up 分支 → 新 arc：session_start 先行，branch_cut 可被 tail 看见
+    requirement.note(R, "feat/new-req", {"kind": "pr_created", "branch": "fix/first-cut", "number": 7})
+    store.save_segment(R, "pr", {"prs": [{"number": 7, "state": "merged", "source_branch": "fix/first-cut"}]})
+    requirement.reconcile_closures(R)
+    assert [e["kind"] for e in requirement.session_events(R, "feat/new-req")][-1] == "session_end"
+    requirement.attach_branch(R, "feat/new-req", "fix/followup")
+    tail = requirement._active_tail(requirement.session_events(R, "feat/new-req"))
+    assert [e["kind"] for e in tail] == ["session_start", "branch_cut"]
+    assert tail[-1]["branch"] == "fix/followup"
+
+
 def test_state_domains_worktree():
     """三域布局的核心承诺：linked worktree 里产生的 repo 域（friction/requirements）与 branch 域
     （branch/validation）状态全部落**主仓** .devloop（worktree 清理不再丢数据）；owner 锁留在
