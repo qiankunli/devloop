@@ -801,7 +801,13 @@ def test_state_domains_worktree():
 
     # branch 域：worktree 的 refresh/validation 落主仓 branches/feat/wt/，与主 checkout 的
     # branches/main/ 并存互不干扰（git 禁止同分支双检出 → 每文件单写者天然成立）
-    RepoContext.refresh_all(W).mark_lint_passed()
+    wt_ctx = RepoContext.refresh_all(W)
+    wt_turn = wt_ctx.turn_text()
+    header = wt_turn.split("]", 1)[0]
+    assert str(Path(M).resolve()) in header
+    assert ".worktrees/wt" not in header
+    assert "Branch: feat/wt (worktree)" in wt_turn
+    wt_ctx.mark_lint_passed()
     RepoContext.refresh_all(M)
     assert (Path(M) / ".devloop/branches/feat/wt/validation.json").exists()
     assert (Path(M) / ".devloop/branches/feat/wt/branch.json").exists()
