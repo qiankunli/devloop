@@ -1,4 +1,4 @@
-"""在聚合 workspace 根直接跑子项目级命令（make/uv/pytest/go/npm…）时拦——会失败或跑错对象。
+"""在聚合 workspace 根直接跑明确的子项目级命令时拦——会失败或跑错对象。
 
 CHANGE 级：跨命令 + 看 cwd 是否 workspace 根。用 cd-scope 区分——同 shell `cd <sub>` 进了真仓
 （放行），子 shell `(cd <sub>); cmd` 对命令无效（仍拦）；靠每个 Command 已解析的 run_dir 判断。
@@ -12,19 +12,28 @@ from lib.context import WorkspaceContext, load_active_repo
 from lib.core.domain import Change, Command, Finding, Severity, TargetKind
 from lib.core.protocol import Rule
 
-_SUBPROJECT_CMDS = {"make", "uv", "pytest", "go", "npm", "pnpm", "yarn", "cargo"}
-_GLOBAL_NPM_FLAGS = {"-g", "--global"}
-_REGISTRY_NPM_SUBCOMMANDS = {
-    "bin", "cache", "config", "doctor", "help", "info", "login", "logout",
-    "org", "owner", "ping", "prefix", "profile", "root", "search", "team",
-    "token", "view", "whoami",
+_GLOBAL_FLAGS = {"-g", "--global"}
+_HELP_FLAGS = {"-h", "--help", "-v", "--version", "version", "help"}
+_NPM_PROJECT_SUBCOMMANDS = {
+    "ci", "dedupe", "fund", "i", "install", "link", "list", "ls", "outdated",
+    "pack", "prune", "publish", "remove", "restart", "rm", "run", "start",
+    "stop", "test", "uninstall", "update", "version",
 }
-_REGISTRY_PNPM_SUBCOMMANDS = {
-    "cache", "config", "env", "help", "info", "ping", "search", "setup",
-    "store", "view",
+_PNPM_PROJECT_SUBCOMMANDS = {
+    "add", "build", "check", "dev", "i", "install", "lint", "list", "ls",
+    "pack", "publish", "remove", "restart", "rm", "run", "start", "test",
+    "unlink", "up", "update", "version",
 }
-_REGISTRY_YARN_SUBCOMMANDS = {
-    "cache", "config", "global", "help", "info", "npm", "plugin",
+_YARN_PROJECT_SUBCOMMANDS = {
+    "add", "build", "check", "dev", "install", "link", "lint", "pack",
+    "publish", "remove", "run", "start", "test", "unlink", "upgrade",
+    "version", "workspace", "workspaces",
+}
+_UV_PROJECT_SUBCOMMANDS = {"add", "build", "export", "lock", "remove", "run", "sync", "tree", "venv"}
+_GO_PROJECT_SUBCOMMANDS = {"build", "fmt", "generate", "get", "list", "mod", "run", "test", "vet", "work"}
+_CARGO_PROJECT_SUBCOMMANDS = {
+    "add", "bench", "build", "check", "clippy", "doc", "fmt", "metadata",
+    "remove", "rm", "run", "test", "tree", "update",
 }
 
 
@@ -38,7 +47,7 @@ class WorkspaceCwdRule(Rule):
     def check(self, change: Change, ctx) -> list[Finding]:
         subproj = [
             t for t in change.targets
-            if isinstance(t, Command) and t.base in _SUBPROJECT_CMDS and not _is_global_package_command(t)
+            if isinstance(t, Command) and _is_project_local_command(t)
         ]
         if not subproj:
             return []
@@ -70,17 +79,30 @@ class WorkspaceCwdRule(Rule):
         ]
 
 
-def _is_global_package_command(target: Command) -> bool:
-    """Global package-manager maintenance is machine-level, not subproject-level."""
-    if target.base == "npm":
-        args = target.argv[1:]
-        return any(a in _GLOBAL_NPM_FLAGS for a in args) or _subcommand(args) in _REGISTRY_NPM_SUBCOMMANDS
-    if target.base == "pnpm":
-        args = target.argv[1:]
-        return any(a in _GLOBAL_NPM_FLAGS for a in args) or _subcommand(args) in _REGISTRY_PNPM_SUBCOMMANDS
-    if target.base == "yarn":
-        args = target.argv[1:]
-        return _subcommand(args) in _REGISTRY_YARN_SUBCOMMANDS
+def _is_project_local_command(target: Command) -> bool:
+    """Only block high-confidence project-local commands; unknown subcommands pass."""
+    base = target.base
+    args = target.argv[1:]
+    if base == "pytest":
+        return True
+    if base == "make":
+        return not args or not all(a in _HELP_FLAGS for a in args)
+    if base == "uv":
+        return _subcommand(args) in _UV_PROJECT_SUBCOMMANDS
+    if base == "go":
+        return _subcommand(args) in _GO_PROJECT_SUBCOMMANDS
+    if base == "cargo":
+        return _subcommand(args) in _CARGO_PROJECT_SUBCOMMANDS
+    if base == "npm":
+        if any(a in _GLOBAL_FLAGS for a in args):
+            return False
+        return _subcommand(args) in _NPM_PROJECT_SUBCOMMANDS
+    if base == "pnpm":
+        if any(a in _GLOBAL_FLAGS for a in args):
+            return False
+        return _subcommand(args) in _PNPM_PROJECT_SUBCOMMANDS
+    if base == "yarn":
+        return _subcommand(args) in _YARN_PROJECT_SUBCOMMANDS
     return False
 
 

@@ -133,13 +133,29 @@ def test_workspace_cwd_guard_cd_scope():
         return guard.decide(_hook_input("Bash", {"cwd": root, "tool_input": {"command": cmd}}))
 
     assert at_root("uv run pytest")                     # 裸命令在根 → 拦
+    assert at_root("uv sync")
     assert at_root("make build")
+    assert at_root("make")
     assert at_root("npm install")                       # 项目依赖安装在根 → 拦
     assert at_root("npm run build")
     assert at_root("npm install -g @larksuite/cli@latest") is None
     assert at_root("npm view @larksuite/cli version") is None
+    assert at_root("npm help install") is None
+    assert at_root("npm init vite") is None              # 未知/脚手架类命令默认放行，避免误拦
+    assert at_root("pnpm install")
+    assert at_root("pnpm run build")
     assert at_root("pnpm add -g @scope/pkg") is None
+    assert at_root("pnpm dlx create-vite") is None
+    assert at_root("yarn install")
+    assert at_root("yarn run build")
     assert at_root("yarn global add eslint") is None
+    assert at_root("yarn npm info eslint") is None
+    assert at_root("uv tool install ruff") is None
+    assert at_root("uv cache clean") is None
+    assert at_root("go env") is None
+    assert at_root("go version") is None
+    assert at_root("cargo install ripgrep") is None
+    assert at_root("cargo search tokio") is None
     assert at_root("cd sub && uv run pytest") is None   # cd 进子项目 → 放行
     assert at_root("(cd sub); uv run pytest")           # 子 shell cd 不外泄 → 仍拦(修复点)
     assert at_root("git status") is None                # 非子项目命令 → 放行
