@@ -2,9 +2,9 @@
 
 # devloop
 
-**A guard-railed development loop for AI coding agents.** A cross-CLI plugin marketplace: `devloop` is the first (and flagship) plugin — a developer workflow built on native Claude Code events, working with both **GitHub (PR)** and **GitLab (MR)** (picked per-repo from the origin remote); `example` is a placeholder showing the repo is built to host *multiple* plugins.
+**A guard-railed development loop for AI coding agents.** A cross-CLI plugin marketplace: `devloop` is the first (and flagship) plugin — a developer workflow for Claude Code and Codex, working with both **GitHub (PR)** and **GitLab (MR)** (picked per-repo from the origin remote); `example` is a placeholder showing the repo is built to host *multiple* plugins.
 
-> Currently Claude Code only. Design / architecture: [AGENTS.md](./AGENTS.md). Each plugin's own docs live in its directory.
+> Claude Code and Codex are supported. Design / architecture: [AGENTS.md](./AGENTS.md). Each plugin's own docs live in its directory.
 
 ## The problem
 
@@ -93,13 +93,22 @@ Forge features (PR/MR creation + state injection) need a token for your host (`G
 
 ### Codex / opencode
 
-The marketplace layout is CLI-agnostic: a new CLI just needs a `.<cli>-plugin/marketplace.json` at the repo root (`.agents/plugins/marketplace.json` for Codex and `.opencode/marketplace.json` already exist) plus a matching manifest per plugin. `devloop` itself is currently **Claude Code only** (its hard intercepts / state injection sit on Claude-native events); the Codex side currently ships only the `example` placeholder.
+Codex support is packaged through `.agents/plugins/marketplace.json` and `devloop/.codex-plugin/plugin.json`.
+
+```
+codex plugin marketplace add https://github.com/qiankunli/devloop.git
+# then install devloop from /plugins, or use `codex plugin add devloop@devloop`
+```
+
+Codex does not expose every Claude event that devloop uses. The Codex manifest points at `devloop/hooks/hooks.codex.json`, which uses the supported subset (`PreToolUse` / `PostToolUse` / `SessionStart` / `UserPromptSubmit` / `PostCompact`) and refreshes cwd/state from `PostToolUse` as the fallback for Claude's `CwdChanged`. `FileChanged` and `SessionEnd` have no Codex equivalent yet, so AGENTS.md reparse and owner-lock release rely on the existing prompt/TTL fallback paths there.
+
+opencode remains placeholder-only until its plugin/hook protocol is wired.
 
 ## Plugins
 
 | Plugin | What it is | README |
 |--------|-----------|--------|
-| `devloop` | Developer workflow: git/PR (GitHub + GitLab) + cwd-aware enter + lifecycle hooks (lint/test/code-review per phase) + live state injection + execution-level hard intercepts (Claude-only) | [devloop/README.md](./devloop/README.md) |
+| `devloop` | Developer workflow: git/PR (GitHub + GitLab) + cwd-aware state + lifecycle hooks (lint/test/code-review per phase) + live state injection + execution-level hard intercepts (Claude + Codex) | [devloop/README.md](./devloop/README.md) |
 | `example` | Placeholder demonstrating the multi-plugin marketplace structure | [example/README.md](./example/README.md) |
 
 ## Adding a plugin

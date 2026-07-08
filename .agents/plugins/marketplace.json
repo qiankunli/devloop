@@ -3,16 +3,43 @@
   "owner": {
     "name": "qiankunli"
   },
-  "description": "Cross-CLI plugin marketplace (Codex side). Only plugins shipping a .codex-plugin/plugin.json are listed here. devloop itself is currently Claude-only.",
+  "description": "Cross-CLI plugin marketplace (Codex side). devloop is the primary developer-workflow plugin; example is a placeholder for the multi-plugin intent.",
   "plugins": [
     {
+      "name": "devloop",
+      "source": {
+        "source": "local",
+        "path": "./devloop"
+      },
+      "description": "Dev-loop workflow: git/PR + lint/test + workspace-aware state injection + execution-level hard intercepts for Codex.",
+      "author": {
+        "name": "qiankunli",
+        "url": "https://github.com/qiankunli"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Workflow",
+      "keywords": ["git", "github", "gitlab", "pr", "mr", "lint", "test", "workspace", "hooks"]
+    },
+    {
       "name": "example",
-      "source": "./example",
+      "source": {
+        "source": "local",
+        "path": "./example"
+      },
       "description": "Placeholder plugin demonstrating that the devloop marketplace hosts multiple plugins (Codex side).",
       "author": {
         "name": "qiankunli",
         "url": "https://github.com/qiankunli"
-      }
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Example",
+      "keywords": ["example", "template"]
     }
   ]
 }
