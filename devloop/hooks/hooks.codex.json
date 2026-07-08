@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart_init.py",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart_codex_init.py",
             "timeout": 10,
             "statusMessage": "Initializing devloop session"
           }

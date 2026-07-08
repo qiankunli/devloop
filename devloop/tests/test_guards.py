@@ -40,6 +40,8 @@ def test_protocol_files_schema():
                     assert {"type", "command"} <= set(h)
                     assert set(h) <= {"type", "command", "timeout", "statusMessage"}, f"unknown hook key: {set(h)}"
                     assert h["type"] == "command" and "${CLAUDE_PLUGIN_ROOT}" in h["command"]
+                    rel = h["command"].split("${CLAUDE_PLUGIN_ROOT}/", 1)[1].split()[0]
+                    assert (P / rel).exists(), f"hook command points to missing script: {rel}"
 
     assert_hooks(
         P / "hooks/hooks.json",
@@ -71,6 +73,18 @@ def test_enter_does_not_acquire_owner():
     inp = _hook_input("", {"session_id": "sess-reader", "cwd": R})
     ce.handle(inp)
     assert session_lock.read(R) is None
+
+def test_codex_sessionstart_drops_watchpaths():
+    """Codex SessionStart 不接受 Claude 的 watchPaths 字段；Codex wrapper 复用
+    sessionstart_init 的内容生成，但只把 Codex 支持的 additionalContext 发回去。"""
+    h = _load_hook("sessionstart_codex_init")
+    orig = h.sessionstart_init.build
+    try:
+        h.sessionstart_init.build = lambda inp: {"additionalContext": "refs", "watchPaths": ["/x/AGENTS.md"]}
+        out = h.build(_hook_input("", {"cwd": "/tmp", "session_id": "s"}))
+    finally:
+        h.sessionstart_init.build = orig
+    assert out == {"additionalContext": "refs"}
 
 def test_owner_lock_acquire_atomic():
     """acquire 的 first-actor-wins 必须原子:check-then-replace 的 TOCTOU 窗口里两个
