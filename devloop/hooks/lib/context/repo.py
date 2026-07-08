@@ -511,7 +511,7 @@ _READINESS_BLURB = {
 
 
 def _format_turn(ctx: "RepoContext") -> str:
-    lines = [f"[Current repo: {ctx.repo.code_dir} ({ctx.repo.language or '?'})]"]
+    lines = [f"[Current repo: {_display_code_dir(ctx)} ({ctx.repo.language or '?'})]"]
     b = ctx.branch
     cur = b.local.name or "?"
     wt = " (worktree)" if git_state.is_linked_worktree(ctx.repo.real_repo_dir) else ""
@@ -603,6 +603,24 @@ def _format_turn(ctx: "RepoContext") -> str:
         lines.append(rl)
 
     return " | ".join(lines)
+
+
+def _display_code_dir(ctx: "RepoContext") -> str:
+    """Human-facing repo identity for turn injection.
+
+    `code_dir` intentionally follows the live checkout so lifecycle hooks run in the
+    worktree being edited. The prompt header is different: it should name the repo,
+    not the transient `.worktrees/...` checkout path. For worktrees, project the
+    code-dir relative path back onto the main checkout; keep execution paths untouched.
+    """
+    code_dir = Path(ctx.repo.code_dir or ctx.repo.real_repo_dir or ctx.repo.repo_dir)
+    checkout = Path(ctx.repo.real_repo_dir or ctx.repo.repo_dir or code_dir)
+    main = store.state_dir(checkout).parent
+    try:
+        rel = code_dir.resolve().relative_to(checkout.resolve())
+    except (OSError, ValueError):
+        return str(code_dir)
+    return str(main / rel)
 
 
 def _format_session(ctx: "RepoContext") -> str:
