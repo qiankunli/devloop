@@ -6,6 +6,7 @@ __pycache__/
 
 # Plugin runtime state (in case workspace itself is git)
 .devloop/
+.worktrees/
 
 # Claude Code local settings
 .claude/

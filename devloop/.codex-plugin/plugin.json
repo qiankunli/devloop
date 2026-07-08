@@ -1,0 +1,36 @@
+{
+  "name": "devloop",
+  "version": "0.1.31",
+  "description": "Dev-loop workflow: git/PR (GitHub + GitLab) + workspace-aware state injection + lint/test gates + execution-level hard intercepts for Claude Code and Codex.",
+  "author": {
+    "name": "qiankunli",
+    "url": "https://github.com/qiankunli"
+  },
+  "license": "MIT",
+  "keywords": [
+    "git",
+    "github",
+    "gitlab",
+    "pr",
+    "mr",
+    "devloop",
+    "lint",
+    "test",
+    "workspace",
+    "context",
+    "hooks"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.codex.json",
+  "interface": {
+    "displayName": "devloop",
+    "shortDescription": "Git/PR + lint/test + state-aware hooks",
+    "longDescription": "Bundles developer workflow skills (git-ops / gcam / gcamp / gcampr / run-test / fix-lint) plus lifecycle hooks: hard intercepts on protected branches, git add -A, pip install in uv projects, requirements.txt edits, stale lint gate; refreshes .devloop state from supported Codex events and injects branch / workspace / validation context.",
+    "category": "Developer Workflow",
+    "capabilities": [
+      "Read",
+      "Write",
+      "Interactive"
+    ]
+  }
+}

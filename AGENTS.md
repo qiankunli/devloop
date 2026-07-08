@@ -17,7 +17,7 @@ devloop 托管聚焦开发者效率的 plugin 集合。本仓库**根层**只负
 - 具体 plugin 的设计动机、内部架构、hook 列表、状态文件、配置项 → 见对应 `<plugin>/README.md`
 - 整个工作流落地的方案记录（feature 矩阵、版本规划等）→ 见 plan 文档
 
-当前实施范围：`devloop` 是 Claude Code only（硬拦截 / 状态注入坐在 Claude 原生事件上，Codex hook 协议跟上再接，架构已预留 CLI-agnostic）；Codex / opencode 侧目前只有 `example` 占位 plugin 演示 marketplace 结构。
+当前实施范围：`devloop` 支持 Claude Code 与 Codex；Claude 侧使用完整 native event（含 CwdChanged / FileChanged / SessionEnd），Codex 侧使用其已支持的 hook 子集（PreToolUse / PostToolUse / SessionStart / UserPromptSubmit / PostCompact）并在 PostToolUse 做 cwd/state 刷新降级。opencode 侧目前只有 `example` 占位 plugin 演示 marketplace 结构。
 
 ---
 
@@ -30,10 +30,11 @@ devloop/                              # ← 仓库根（marketplace）
 ├── .agents/plugins/marketplace.json  # Codex marketplace 索引（Codex 标准路径）
 ├── .opencode/marketplace.json        # opencode marketplace 索引（占位，按协议补）
 │
-├── devloop/                          # plugin: 开发者日常工作流（第一个真实 plugin，Claude-only）
+├── devloop/                          # plugin: 开发者日常工作流（第一个真实 plugin，Claude + Codex）
 │   │                                 #   git / MR / lint / test / cwd-aware enter / 状态注入 / 硬拦截
-│   │                                 #   坐到原生事件上：CwdChanged / PostCompact / FileChanged / monitors
-│   ├── .claude-plugin/plugin.json    #     Claude manifest（Codex 推迟，架构仍 CLI-agnostic）
+│   │                                 #   Claude 坐到原生事件上：CwdChanged / PostCompact / FileChanged / monitors；Codex 用 hooks.codex.json 的事件子集
+│   ├── .claude-plugin/plugin.json    #     Claude manifest
+│   ├── .codex-plugin/plugin.json     #     Codex manifest（hooks 指向 hooks.codex.json）
 │   ├── skills/                       #     6 个 skill（CLI 共享）
 │   ├── commands/                     #     slash commands（Claude 端）
 │   ├── hooks/lib/                    #     统一 git runner(gitcmd) + GitLab facade(gitlab/) + hook harness(hook_io) + 状态总线(context/)
@@ -55,7 +56,7 @@ devloop/                              # ← 仓库根（marketplace）
 └── CONTRIBUTING.md                   # 新 plugin 接入规范
 ```
 
-**CLI 范围差异**：`devloop` 当前 Claude-only（skills + commands + hooks 坐在 Claude 原生事件上）。Codex 端 `example` 占位演示结构——Codex 无 slash command 概念，`commands/` 仅 Claude 端有效，Codex 端由 skill 名作为入口；opencode 待协议明确。
+**CLI 范围差异**：`devloop` 当前支持 Claude Code 与 Codex。`skills/` 共享；`commands/` 仍是 Claude slash command 入口，Codex 无同构 slash command，主要由 skill 名 + bundled hooks 作为入口；Claude hooks 用 `hooks.json` 的完整 native event，Codex hooks 用 `hooks.codex.json` 的事件子集；opencode 待协议明确。
 
 详细：[`devloop/README.md`](./devloop/README.md)（使用向） · [`devloop/AGENTS.md`](./devloop/AGENTS.md)（开发向）。
 

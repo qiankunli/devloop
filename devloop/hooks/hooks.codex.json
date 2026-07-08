@@ -1,0 +1,91 @@
+{
+  "description": "devloop plugin hooks for Codex: supported event subset plus Codex fallbacks for state refresh",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_policy_bash.py",
+            "timeout": 5,
+            "statusMessage": "Checking command policy"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pretool_policy_edit.py",
+            "timeout": 5,
+            "statusMessage": "Checking edit policy"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart_init.py",
+            "timeout": 10,
+            "statusMessage": "Initializing devloop session"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/userprompt_inject.py",
+            "timeout": 10,
+            "statusMessage": "Injecting devloop context"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/postcompact_reinject.py",
+            "timeout": 5,
+            "statusMessage": "Re-injecting devloop state after compaction"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/posttool_codex_refresh.py",
+            "timeout": 10,
+            "statusMessage": "Refreshing devloop state"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/posttool_track_edits.py",
+            "timeout": 5,
+            "statusMessage": "Tracking file edits"
+          }
+        ]
+      }
+    ]
+  }
+}

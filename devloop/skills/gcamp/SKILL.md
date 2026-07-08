@@ -11,4 +11,4 @@ bash <PLUGIN_ROOT>/scripts/smart_gcamp.sh --message "<commit msg>" [--repo <name
 
 Same preflight / staging / message rules as the `gcampr` skill (no `cd` prefix needed — `--repo` targets a subproject by name; add `--branch` on PROTECTED/INACTIVE branches; explicit `--files` or tracked-only; never `git add -A`; multi-line message → Write to `<repo>/.devloop/commit_msg` + `--message-file`). Does **not** create a PR/MR — but when the branch already has an in-flight (open) PR/MR, the message's body (lines after the subject) is **appended to its description** automatically, so write a short subject + a detail body as usual. Trust the `PLAN:` banner.
 
-`<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code.
+`<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code; `${PLUGIN_ROOT}` on Codex.

@@ -27,7 +27,7 @@ enter 某子模块 → 提需求(可能跨多个 subproject) → 开发 → comm
 - **两级模型**：聚合工作区（Mode A，多 subproject）与单仓库（Mode B）都支持，按全局配置（`~/.devloop/config.json` 的 `workspaces`）自动判定，workspace 可选。配置**不放 plugin 目录**——那是版本化 cache，`/plugin update` 即清零；workspace 根（非 git 仓 + AGENTS.md + 至少一个子项目，子项目存在性由文件系统自发现或 AGENTS.md 表声明）在 SessionStart / cd / resolve 时自动注册，手工 init 不是前置。
 - **跨 subproject 需求是常态，但 0.1 的多 repo 协同（fanout / 发包依赖顺序）仍是占位**——当前以"逐个 enter subproject 开发"承载。
 - 只管循环里"在 subproject 内动手开发"这一段的 git / 工作区 / 验证效率；**不做**问题发现与 trace（as-ops / infra-ops 等）、部署、通用 git 教学。
-- 当前 **Claude-only**（CLI-agnostic by construction：hook 不读 plugin-root env、payload 只用公共子集、`${CLAUDE_PLUGIN_ROOT}` 占位；Codex 跟上加个 manifest 即可，0.1 不投入）。
+- 当前支持 **Claude Code + Codex**。Claude 侧保留完整 native-first 映射；Codex 侧通过 `.codex-plugin/plugin.json` + `hooks/hooks.codex.json` 接入其支持的事件子集，并用 `posttool_codex_refresh.py` 补 CwdChanged 缺口。opencode 仍待协议明确。
 
 ---
 
@@ -37,7 +37,8 @@ enter 某子模块 → 提需求(可能跨多个 subproject) → 开发 → comm
 devloop/
 ├── .claude-plugin/plugin.json     # Claude manifest（0.0.1；靠目录约定自动发现）
 ├── hooks/
-│   ├── hooks.json                 # 事件注册
+│   ├── hooks.json                 # Claude 事件注册
+│   ├── hooks.codex.json           # Codex 事件注册（支持事件子集 + PostToolUse 降级）
 │   ├── lib/                        # CLI-agnostic 纯逻辑（无协议依赖，sys.path 自定位）
 │   │   ├── hook_io.py             #   ★hook harness：guard / inject / observe / run 四个 runner（CC 原生 event 侧）
 │   │   ├── notify/                 #   ★notify 端口：Notification/Notifier/Source（base）；channel + waiter 两投递；sources/（forge/review + CompositeSource `all`）；should-arm 按能力决定是否 arm
@@ -57,7 +58,8 @@ devloop/
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
 │   │   └── context/               #   .devloop/ 状态总线，五族分模块：store(磁盘原语/三域) + base(共享词汇) / repo+workspace(视图) / gate+prstate(真相接缝) / session(运行态+owner锁)
 │   │       └── loopstate/         #     经验沉淀 ledger 半（loop-state / requirement-first，见 workspace docs/）：friction(guard deny→friction.jsonl，per-repo) + requirement(域落 dev root——workspace 根、单仓退化 repo 根；单 spine 跨仓、事件带 repo；turn_line 派生任务视图；monitor reconcile 收口)
-│   ├── cwdchanged_enter.py        # CwdChanged：自动 enter
+│   ├── cwdchanged_enter.py        # Claude CwdChanged：自动 enter
+│   ├── posttool_codex_refresh.py  # Codex PostToolUse：补 cwd/state 刷新
 │   ├── sessionstart_init.py       # SessionStart：References(additionalContext) + watchPaths + 预热
 │   ├── userprompt_inject.py       # UserPromptSubmit：turn + session 注入
 │   ├── postcompact_reinject.py    # PostCompact：清注入 dedup

@@ -4,7 +4,7 @@
 
 > 架构 / 扩展看 [`AGENTS.md`](./AGENTS.md)；术语看 [`CONCEPTS.md`](./CONCEPTS.md)。
 
-独立 `.devloop/` 命名空间状态，与其它工具互不干扰。当前 **Claude Code only**（Codex 等其 hook 协议跟上再接，架构已预留）。
+独立 `.devloop/` 命名空间状态，与其它工具互不干扰。当前支持 **Claude Code + Codex**；Claude 使用完整 native event，Codex 使用其 hook 子集并在少数事件上降级。
 
 ## 它做什么
 
@@ -12,6 +12,7 @@
 - **硬拦截**（PreToolUse deny）：保护分支 commit/push、`git add -A`、过期分支（PR 已 merged/closed）改文件、别的 session 占用的 checkout 上切分支或改文件（引导 worktree）、工作区根跑子项目命令、裸 `pytest`、uv 项目 `pip install`、编辑 `requirements.txt`、`lifecycle.pre_commit` 含 lint 时 lint 过期的裸 `git commit` gate。
 - **PR 感知**：后台 monitor 周期轮询 forge（GitHub/GitLab），把当前分支的 PR + 近期 PR 窗口写进状态，注入里以 `Recent PRs:` / `Recent MRs:` 呈现（按 provider）。
 - **自动进项目**：`cd` 进子项目时（`CwdChanged`）自动刷新上下文、浮现 AGENTS.md References，无需手动 `/enter`。
+- **Codex 降级**：Codex 没有 `CwdChanged / FileChanged / SessionEnd`，`hooks.codex.json` 用 `PostToolUse` 刷新 cwd / command-scoped repo 状态；AGENTS.md 变更重注入与 owner 锁释放走已有 TTL / 下一轮兜底。
 - **生命周期 hook**：`pre_commit / post_commit / pre_mr / post_mr` 四相位可挂 hook，挂哪相位由 config 决定；两类——**inline 门禁**（失败挡 commit/MR）与 **signal hook**（advisory、后台跑、不挡）。当前内置三个：`lint`、`test`（门禁），`review`（signal——后台跑 [ocr](https://github.com/alibaba/open-code-review) 审全量改动、结果回流会话、有开放 MR 时发评论）。机制见 [`docs/lifecycle-hooks.md`](./docs/lifecycle-hooks.md)；code-review 细节见 [`docs/code-review.md`](./docs/code-review.md)。
 
 ## Slash 命令
@@ -35,6 +36,13 @@ gcam* / lint / test 都不依赖 cwd：默认解析 cwd 所在仓库，在 works
 # Claude Code 内
 /plugin marketplace add https://github.com/qiankunli/devloop.git
 /plugin install devloop@devloop
+```
+
+Codex：
+
+```
+codex plugin marketplace add https://github.com/qiankunli/devloop.git
+# 然后在 /plugins 中安装 devloop，或使用 codex plugin add devloop@devloop
 ```
 
 初始化（可选——hook 首次 cd 会自动建）：

@@ -17,8 +17,9 @@ instances live here:
   to MUTATE a checkout owns it; a guest's branch switches and edits are denied
   and routed to a worktree.
 
-Identity: hooks pass the payload session_id; scripts self-identify via
-CLAUDE_CODE_SESSION_ID (exported to Bash subprocesses).
+Identity: hooks pass the payload session_id; scripts self-identify via the CLI's
+session id environment when one is exported (Claude Code uses CLAUDE_CODE_SESSION_ID;
+Codex may expose CODEX_SESSION_ID in some runtimes).
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ def _session_key(session_id: str | None) -> str:
     """Explicit id (hooks, from the payload) wins; scripts fall back to the env."""
     if session_id is not None:
         return session_id
-    return os.environ.get("CLAUDE_CODE_SESSION_ID", "") or ""
+    return os.environ.get("CLAUDE_CODE_SESSION_ID", "") or os.environ.get("CODEX_SESSION_ID", "") or ""
 
 
 # ── active-repo binding ────────────────────────────────────────────────────────

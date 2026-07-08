@@ -16,4 +16,4 @@ detection, `make fix` (may edit files) + the lint target (`make lint-ci` preferr
 success. Trust its output; report pass/fail. If lint fails, fix the reported issues in source — do **not** hand-edit code
 solely to silence the linter (only `make fix` legitimately auto-edits).
 
-`<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code.
+`<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code; `${PLUGIN_ROOT}` on Codex.

@@ -18,4 +18,4 @@ Rules:
 - Trust the `PLAN:` banner; surface the PR/MR URL. On `✗`, fix per the message and retry — do not fall back to raw git. An INACTIVE/merged `✗` comes from a live, authoritative poll and quotes the MR's number/state/sha, so it's true even seconds after you created the MR (a reviewer can merge that fast) — just add `--branch` and re-run.
 
 The forge (GitHub vs GitLab) is picked automatically from the repo's origin remote.
-`<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code.
+`<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code; `${PLUGIN_ROOT}` on Codex.

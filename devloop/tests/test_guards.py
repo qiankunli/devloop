@@ -22,21 +22,35 @@ def test_protocol_files_schema():
     import re as _re
     P = Path(__file__).resolve().parent.parent  # devloop/
 
-    plugin = json.loads((P / ".claude-plugin/plugin.json").read_text())
-    assert {"name", "version", "description"} <= set(plugin)
-    assert _re.fullmatch(r"\d+\.\d+\.\d+", plugin["version"])
+    for manifest in [P / ".claude-plugin/plugin.json", P / ".codex-plugin/plugin.json"]:
+        plugin = json.loads(manifest.read_text())
+        assert {"name", "version", "description"} <= set(plugin)
+        assert _re.fullmatch(r"\d+\.\d+\.\d+", plugin["version"])
+    codex_plugin = json.loads((P / ".codex-plugin/plugin.json").read_text())
+    assert codex_plugin.get("skills") == "./skills/"
+    assert codex_plugin.get("hooks") == "./hooks/hooks.codex.json"
 
-    hooks = json.loads((P / "hooks/hooks.json").read_text())["hooks"]
-    KNOWN_EVENTS = {"PreToolUse", "PostToolUse", "SessionStart", "SessionEnd", "UserPromptSubmit",
-                    "PostCompact", "PreCompact", "FileChanged", "CwdChanged", "Stop", "SubagentStop"}
-    assert set(hooks) <= KNOWN_EVENTS, f"unknown hook event: {set(hooks) - KNOWN_EVENTS}"
-    for groups in hooks.values():
-        for g in groups:
-            assert set(g) <= {"matcher", "hooks"}
-            for h in g["hooks"]:
-                assert {"type", "command"} <= set(h)
-                assert set(h) <= {"type", "command", "timeout", "statusMessage"}, f"unknown hook key: {set(h)}"
-                assert h["type"] == "command" and "${CLAUDE_PLUGIN_ROOT}" in h["command"]
+    def assert_hooks(path, known_events):
+        hooks = json.loads(path.read_text())["hooks"]
+        assert set(hooks) <= known_events, f"{path.name} unknown hook event: {set(hooks) - known_events}"
+        for groups in hooks.values():
+            for g in groups:
+                assert set(g) <= {"matcher", "hooks"}
+                for h in g["hooks"]:
+                    assert {"type", "command"} <= set(h)
+                    assert set(h) <= {"type", "command", "timeout", "statusMessage"}, f"unknown hook key: {set(h)}"
+                    assert h["type"] == "command" and "${CLAUDE_PLUGIN_ROOT}" in h["command"]
+
+    assert_hooks(
+        P / "hooks/hooks.json",
+        {"PreToolUse", "PostToolUse", "SessionStart", "SessionEnd", "UserPromptSubmit",
+         "PostCompact", "PreCompact", "FileChanged", "CwdChanged", "Stop", "SubagentStop"},
+    )
+    assert_hooks(
+        P / "hooks/hooks.codex.json",
+        {"PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "PostCompact", "PreCompact",
+         "PermissionRequest", "Stop", "SubagentStart", "SubagentStop"},
+    )
 
     monitors = json.loads((P / "monitors/monitors.json").read_text())
     assert isinstance(monitors, list) and monitors

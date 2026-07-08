@@ -15,4 +15,4 @@ to cwd's repo, then the workspace's last-active repo; pass a subproject name/pat
 target another. Pass `-- <args>` (e.g. a path or `-k` filter) to narrow scope. Trust the output; report pass/fail. Fix only test code
 that broke due to the change — never weaken assertions to force a pass.
 
-`<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code.
+`<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code; `${PLUGIN_ROOT}` on Codex.

@@ -82,10 +82,15 @@ def read_input() -> HookInput:
             raw = {}
     except (json.JSONDecodeError, ValueError):
         raw = {}
+    tool_input = raw.get("tool_input") or {}
+    if not isinstance(tool_input, dict):
+        # Codex freeform tools can surface a string payload. Keep the common dict API
+        # for hook logic by preserving it under a neutral key instead of dropping it.
+        tool_input = {"input": str(tool_input)}
     return HookInput(
         event=raw.get("hook_event_name", "") or "",
         tool_name=raw.get("tool_name", "") or "",
-        tool_input=raw.get("tool_input") or {},
+        tool_input=tool_input,
         cwd=raw.get("cwd") or str(Path.cwd()),
         raw=raw,
     )

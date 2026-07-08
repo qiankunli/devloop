@@ -35,6 +35,8 @@ def test_code_policy_engine():
     assert isinstance(w.targets[0], FileChange) and w.targets[0].mode == "write"
     e = engine.project(_hook_input("Edit", {"tool_input": {"file_path": "/r/a.py", "old_string": "a", "new_string": "b"}}))
     assert e.targets[0].mode == "edit"
+    ap = engine.project(_hook_input("apply_patch", {"tool_input": {"patch": "*** Begin Patch\n*** Update File: /r/a.py\n@@\n-x\n+y\n*** End Patch\n"}}))
+    assert isinstance(ap.targets[0], FileChange) and ap.targets[0].path == "/r/a.py" and ap.targets[0].mode == "edit"
     bash = engine.project(_hook_input("Bash", {"cwd": "/r", "tool_input": {"command": "cd x && go build ./..."}}))
     assert len(bash.targets) == 2 and all(isinstance(t, Command) for t in bash.targets)
 

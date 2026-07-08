@@ -12,7 +12,7 @@ against the forge API** — that one facade backs both script surfaces below (gc
 MR; `pr` *inspects/manages* an existing one) and resolves the token from config, so there's no
 credentials file to hunt for.
 
-Paths use `<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code.
+Paths use `<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code; `${PLUGIN_ROOT}` on Codex.
 
 ## Commit / push / PR
 

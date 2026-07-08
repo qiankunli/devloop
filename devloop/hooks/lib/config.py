@@ -90,12 +90,12 @@ def config_file() -> Path:
 
 
 def plugin_root() -> Path:
-    """Resolve plugin root from `${CLAUDE_PLUGIN_ROOT}` or relative fallback.
+    """Resolve plugin root from CLI-provided plugin root env or relative fallback.
 
     CLI-agnostic: any CLI exporting a plugin-root alias works; the relative
     fallback (this file at `<plugin_root>/hooks/lib/config.py`) covers the rest.
     """
-    env_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    env_root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT")
     if env_root:
         return Path(env_root)
     return Path(__file__).resolve().parent.parent.parent

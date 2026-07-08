@@ -16,7 +16,7 @@ from .context import PolicyContext
 from .domain import Change, Command, Decision, FileChange, Finding, Severity, Target, TargetKind
 from .protocol import FailurePolicy, Rule
 
-_FILE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+_FILE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch")
 
 
 def project(inp) -> Change:
@@ -37,6 +37,13 @@ def project(inp) -> Change:
             )
         return Change(targets=cmds, cwd=inp.cwd, tool="Bash", command=inp.command)
 
+    if inp.is_tool("apply_patch"):
+        targets = [
+            FileChange(path=path, mode=mode, tool_input=dict(inp.tool_input or {}))
+            for path, mode in _patch_file_changes(inp.tool_input)
+        ]
+        return Change(targets=targets, cwd=inp.cwd, tool=inp.tool_name)
+
     if inp.is_tool(*_FILE_TOOLS):
         path = inp.file_path
         mode = "write" if inp.is_tool("Write") else "edit"
@@ -46,6 +53,32 @@ def project(inp) -> Change:
         return Change(targets=targets, cwd=inp.cwd, tool=inp.tool_name)
 
     return Change(targets=[], cwd=inp.cwd, tool=inp.tool_name)
+
+
+def _patch_file_changes(tool_input: dict) -> list[tuple[str, str]]:
+    """Extract file paths from Codex apply_patch payloads.
+
+    The edit guards only need path-level targets. Parsing the full patch grammar here would
+    duplicate the tool; these stable hunk headers are enough for owner / inactive branch /
+    requirements-file rules, and malformed input just yields no targets (fail-open).
+    """
+    patch = (
+        tool_input.get("patch")
+        or tool_input.get("input")
+        or tool_input.get("command")
+        or ""
+    )
+    if not isinstance(patch, str):
+        return []
+    out: list[tuple[str, str]] = []
+    for line in patch.splitlines():
+        if line.startswith("*** Add File: "):
+            out.append((line[len("*** Add File: "):].strip(), "write"))
+        elif line.startswith("*** Update File: "):
+            out.append((line[len("*** Update File: "):].strip(), "edit"))
+        elif line.startswith("*** Delete File: "):
+            out.append((line[len("*** Delete File: "):].strip(), "edit"))
+    return out
 
 
 def evaluate(change: Change, ctx: PolicyContext, rules: list[Rule]) -> Decision:
