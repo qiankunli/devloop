@@ -13,6 +13,19 @@ from lib.core.domain import Change, Command, Finding, Severity, TargetKind
 from lib.core.protocol import Rule
 
 _SUBPROJECT_CMDS = {"make", "uv", "pytest", "go", "npm", "pnpm", "yarn", "cargo"}
+_GLOBAL_NPM_FLAGS = {"-g", "--global"}
+_REGISTRY_NPM_SUBCOMMANDS = {
+    "bin", "cache", "config", "doctor", "help", "info", "login", "logout",
+    "org", "owner", "ping", "prefix", "profile", "root", "search", "team",
+    "token", "view", "whoami",
+}
+_REGISTRY_PNPM_SUBCOMMANDS = {
+    "cache", "config", "env", "help", "info", "ping", "search", "setup",
+    "store", "view",
+}
+_REGISTRY_YARN_SUBCOMMANDS = {
+    "cache", "config", "global", "help", "info", "npm", "plugin",
+}
 
 
 class WorkspaceCwdRule(Rule):
@@ -23,7 +36,10 @@ class WorkspaceCwdRule(Rule):
         return change.tool == "Bash"
 
     def check(self, change: Change, ctx) -> list[Finding]:
-        subproj = [t for t in change.targets if isinstance(t, Command) and t.base in _SUBPROJECT_CMDS]
+        subproj = [
+            t for t in change.targets
+            if isinstance(t, Command) and t.base in _SUBPROJECT_CMDS and not _is_global_package_command(t)
+        ]
         if not subproj:
             return []
         cwd_resolved = Path(change.cwd).resolve()
@@ -52,3 +68,24 @@ class WorkspaceCwdRule(Rule):
                 locator=change.command,
             )
         ]
+
+
+def _is_global_package_command(target: Command) -> bool:
+    """Global package-manager maintenance is machine-level, not subproject-level."""
+    if target.base == "npm":
+        args = target.argv[1:]
+        return any(a in _GLOBAL_NPM_FLAGS for a in args) or _subcommand(args) in _REGISTRY_NPM_SUBCOMMANDS
+    if target.base == "pnpm":
+        args = target.argv[1:]
+        return any(a in _GLOBAL_NPM_FLAGS for a in args) or _subcommand(args) in _REGISTRY_PNPM_SUBCOMMANDS
+    if target.base == "yarn":
+        args = target.argv[1:]
+        return _subcommand(args) in _REGISTRY_YARN_SUBCOMMANDS
+    return False
+
+
+def _subcommand(args: list[str]) -> str:
+    for a in args:
+        if not a.startswith("-"):
+            return a
+    return ""

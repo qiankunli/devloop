@@ -7,6 +7,7 @@ git add -A、workspace 根、裸 pytest、pip install、precommit gate），deny
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,6 +21,7 @@ from lib.core.context import PolicyContext  # noqa: E402
 def decide(inp: hook_io.HookInput) -> str | None:
     if not inp.is_tool("Bash"):
         return None
+    inp = _with_effective_cwd(inp)
     change = engine.project(inp)
     ctx = PolicyContext(inp.cwd, session_id=inp.session_id)
     decision = engine.evaluate(change, ctx, rules.REGISTRY)
@@ -28,6 +30,22 @@ def decide(inp: hook_io.HookInput) -> str | None:
     friction.record_deny(decision, tool=inp.tool_name, cwd=inp.cwd,
                          session_id=inp.session_id)  # best-effort; never affects the verdict
     return decision.message()
+
+
+def _with_effective_cwd(inp: hook_io.HookInput) -> hook_io.HookInput:
+    """Codex may keep hook `cwd` at the session root while a tool call has `workdir`.
+
+    Command rules judge where the command will run, so prefer the tool-level working
+    directory when present. Claude-style Bash payloads don't have this field and keep
+    using `cwd`.
+    """
+    wd = (inp.tool_input or {}).get("workdir")
+    if not isinstance(wd, str) or not wd.strip():
+        return inp
+    p = Path(wd).expanduser()
+    if not p.is_absolute():
+        p = Path(inp.cwd or ".") / p
+    return replace(inp, cwd=str(p))
 
 
 if __name__ == "__main__":

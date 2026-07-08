@@ -134,6 +134,12 @@ def test_workspace_cwd_guard_cd_scope():
 
     assert at_root("uv run pytest")                     # 裸命令在根 → 拦
     assert at_root("make build")
+    assert at_root("npm install")                       # 项目依赖安装在根 → 拦
+    assert at_root("npm run build")
+    assert at_root("npm install -g @larksuite/cli@latest") is None
+    assert at_root("npm view @larksuite/cli version") is None
+    assert at_root("pnpm add -g @scope/pkg") is None
+    assert at_root("yarn global add eslint") is None
     assert at_root("cd sub && uv run pytest") is None   # cd 进子项目 → 放行
     assert at_root("(cd sub); uv run pytest")           # 子 shell cd 不外泄 → 仍拦(修复点)
     assert at_root("git status") is None                # 非子项目命令 → 放行
@@ -141,6 +147,11 @@ def test_workspace_cwd_guard_cd_scope():
     assert at_root("go -C /repo build ./...") is None
     assert at_root("make -C sub build") is None
     assert at_root("go build ./...")                    # 无 -C 的裸 go 在根 → 仍拦
+    # Codex hook 的 cwd 可能是 session 根；Bash 工具自己的 workdir 才是命令真实运行处。
+    assert guard.decide(_hook_input("Bash", {
+        "cwd": root,
+        "tool_input": {"command": "uv run pytest", "workdir": "/tmp"},
+    })) is None
     # 不在 workspace 根 → 与本守卫无关
     assert guard.decide(_hook_input("Bash", {"cwd": "/tmp", "tool_input": {"command": "uv run x"}})) is None
 
