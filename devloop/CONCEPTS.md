@@ -88,7 +88,7 @@ skill / 文档里脚本调用写 `<PLUGIN_ROOT>`，AI 按当前 CLI 替换：Cla
 PreToolUse 守卫统一成一个策略引擎（`hooks/lib/core/` + `hooks/lib/rules/`）：一次工具调用投影成 **`Change`**（携带 `Command` / `FileChange` 等 **`Target`**），跑匹配的 **`Rule`** 产出 `Finding`，聚合成 **`Decision`**（allow/warn/deny）。两个入口 hook——`pretool_policy_bash`（命令侧）、`pretool_policy_edit`（编辑侧）——把原先 10 个独立 guard 收成 2 个。
 
 - **`Target`**：被规则评判的主体（开放层级，仿 k8s resource）。`Command`（`cmdtree` 投影）/ `FileChange`（`codemodel` 投影，惰性带 `imports`/`decls`/`layer`）。**无顶层 operation 轴**，动词内置（`Command.subcommand` / `FileChange.mode`）。
-- **`Rule`**：可积累的判定单元，子类住 `hooks/lib/rules/{command,edit,code}/`、登记进 `rules.REGISTRY`；引擎按 `target_kind` 路由。`needs_content` 的 FileChange 规则才触发内容解析。逐规则 **fail-open**（守卫的 bug 绝不拦用户）。
+- **`Rule`**：可积累的判定单元，子类住 `hooks/lib/rules/{command,edit,code}/`、登记进 `rules.REGISTRY`；引擎按 `target_kind` 路由。`needs_content` 的 FileChange 规则才触发内容解析。逐规则 **fail-open**（守卫的 bug 绝不拦用户）。命令侧规则按风险黑名单设计：默认放行，只拦高置信的项目级 / 协作级风险，不把未知命令当违规。
 - **`Decision`**：`Finding.severity` 聚合——`deny`→硬拦（杠杆②）、`warn`→软提示。**刻意不叫 `verdict`**：`verdict` 专指评测 harness 的结构化输出。
 - **`arch` 配置**（`config.arch`）：层级依赖规则（`layers`/`order`/`enabled`），走 config 分层、默认 opt-in off。
 

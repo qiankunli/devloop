@@ -307,13 +307,22 @@ def test_workspace_registry_user_level():
     W = "/tmp/dlut_reg"
     shutil.rmtree(W, ignore_errors=True); os.makedirs(f"{W}/cfg")
     old_env = os.environ.get("DEVLOOP_CONFIG_DIR")
+    old_codex = os.environ.get("CODEX_HOME")
     os.environ["DEVLOOP_CONFIG_DIR"] = f"{W}/cfg"
     try:
         registry.register_workspace(f"{W}/ws1")
+        os.environ["CODEX_HOME"] = f"{W}/codex-home"
+        registry.register_workspace(f"{W}/codex-home")
         assert config.config_file() == Path(f"{W}/cfg/config.json")
         assert Path(f"{W}/cfg/config.json").exists()   # 落在用户级 config.json
         assert any(p.endswith("ws1") for p in registry.load_workspaces())
+        assert not any(p.endswith("codex-home") for p in registry.load_workspaces())
+        assert "codex-home" not in Path(f"{W}/cfg/config.json").read_text()
     finally:
+        if old_codex is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = old_codex
         if old_env is None:
             os.environ.pop("DEVLOOP_CONFIG_DIR", None)
         else:
@@ -415,13 +424,23 @@ def test_maybe_register_workspace():
         encoding="utf-8")
     Path(f"{W}/repo/AGENTS.md").write_text("# repo\n", encoding="utf-8")
     old_env = os.environ.get("DEVLOOP_CONFIG_DIR")
+    old_codex = os.environ.get("CODEX_HOME")
     os.environ["DEVLOOP_CONFIG_DIR"] = f"{W}/cfg"
     try:
+        os.environ["CODEX_HOME"] = f"{W}/codex-home"
+        os.makedirs(f"{W}/codex-home/tool-repo")
+        _git(f"{W}/codex-home/tool-repo", "init", "-q")
+        Path(f"{W}/codex-home/AGENTS.md").write_text("# tool home\n", encoding="utf-8")
+        assert registry.maybe_register_workspace(f"{W}/codex-home") is None
         assert registry.maybe_register_workspace(f"{W}/ws") == str(Path(f"{W}/ws").resolve())
         assert registry.find_containing_workspace(f"{W}/ws") is not None   # 注册即生效
         assert registry.maybe_register_workspace(f"{W}/repo") is None      # git 仓不算
         assert registry.maybe_register_workspace(f"{W}/plain") is None     # 无 AGENTS.md 不算
     finally:
+        if old_codex is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = old_codex
         if old_env is None:
             os.environ.pop("DEVLOOP_CONFIG_DIR", None)
         else:

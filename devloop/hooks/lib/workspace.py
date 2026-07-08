@@ -12,6 +12,7 @@ are re-exported from `config` for callers that still reference them through here
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from . import config
@@ -23,7 +24,7 @@ _expand = config._expand
 
 
 def load_workspaces() -> list[str]:
-    return config.workspaces()
+    return [p for p in config.workspaces() if not _is_reserved_tool_home(p)]
 
 
 def save_workspaces(workspaces: list[str]) -> None:
@@ -33,6 +34,8 @@ def save_workspaces(workspaces: list[str]) -> None:
 def register_workspace(path: str | Path) -> None:
     """Append a workspace path to the registry. Idempotent."""
     abs_path = str(Path(_expand(str(path))).resolve())
+    if _is_reserved_tool_home(abs_path):
+        return
     ws = load_workspaces()
     if abs_path not in [str(Path(_expand(p)).resolve()) for p in ws]:
         ws.append(abs_path)
@@ -52,6 +55,8 @@ def maybe_register_workspace(cwd: str | Path) -> str | None:
     step. Conservative on purpose: a plain repo or a random dir never qualifies.
     """
     root = Path(cwd).resolve()
+    if _is_reserved_tool_home(root):
+        return None
     if not root.is_dir() or (root / ".git").exists():
         return None
     agents_md = root / "AGENTS.md"
@@ -63,6 +68,26 @@ def maybe_register_workspace(cwd: str | Path) -> str | None:
         return None
     register_workspace(root)
     return str(root)
+
+
+def _is_reserved_tool_home(path: str | Path) -> bool:
+    """Tool state dirs can look like aggregate workspaces but are not dev workspaces.
+
+    `~/.codex` commonly has AGENTS.md plus git-backed helper dirs, so auto-discovery used
+    to register it and then workspace-root guards blocked global tool maintenance commands.
+    """
+    root = Path(config._expand(str(path))).resolve()
+    candidates = [
+        Path(config._expand(os.environ.get("CODEX_HOME", "~/.codex"))),
+        Path(config._expand(os.environ.get("CLAUDE_HOME", "~/.claude"))),
+    ]
+    for c in candidates:
+        try:
+            if root == c.resolve():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def find_containing_workspace(cwd: str | Path) -> str | None:
