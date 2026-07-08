@@ -104,6 +104,25 @@ codex plugin add devloop@devloop
 
 Codex 没有暴露 Claude 使用的全部事件。Codex manifest 指向 `devloop/hooks/hooks.codex.json`，使用其支持的子集（`PreToolUse` / `PostToolUse` / `SessionStart` / `UserPromptSubmit` / `PostCompact`），并用 `PostToolUse` 刷新 cwd / 状态，作为 Claude `CwdChanged` 的降级路径。`FileChanged` 和 `SessionEnd` 暂无 Codex 等价事件，所以 AGENTS.md 重解析和 owner-lock 释放会走已有 prompt / TTL 兜底。Codex 下手动运行初始化命令时，用 `${PLUGIN_ROOT}` 替代 `${CLAUDE_PLUGIN_ROOT}`。
 
+### 更新 devloop
+
+Claude Code：
+
+```
+/plugin marketplace update devloop
+/plugin update devloop
+```
+
+Codex：
+
+```
+codex plugin marketplace upgrade devloop
+codex plugin remove devloop@devloop
+codex plugin add devloop@devloop
+```
+
+更新后建议新开一个 session，让运行时重新加载最新 hooks 和 skills。用户级 devloop 配置仍在 `~/.devloop/`，不会被 plugin 更新删掉。
+
 opencode 仍是占位，等其 plugin / hook 协议接入后再启用。
 
 ## Plugin 列表
