@@ -95,6 +95,27 @@ def load_active_repo(ws_root: str | Path, session_id: str | None = None) -> str 
     return _live_binding(_session_file(ws_root, session_id))
 
 
+def load_active_repo_lenient(ws_root: str | Path,
+                             session_id: str | None = None) -> tuple[str, float] | None:
+    """READ-path binding: `(repo_dir, age_sec)` ignoring the TTL. For turn INJECTION only.
+
+    The TTL exists so WRITE-path fallbacks (/lint, /gcam repo resolution) never guess a stale
+    target — that semantic stays in `load_active_repo`. But injection sharing it caused silent
+    blindness: past the TTL the repo view vanished without a word and the model kept reasoning
+    from hours-old context (the cross-repo merge-order incident). The repo STATE itself is
+    monitor-fresh; only the "which repo" binding is old — so the read path keeps injecting and
+    lets the caller annotate the age instead of going dark."""
+    path = _session_file(ws_root, session_id)
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    repo = d.get("repo_dir") if isinstance(d, dict) else None
+    if not repo or not Path(repo).is_dir():
+        return None
+    return repo, max(0.0, base.now() - float(d.get("ts") or 0))
+
+
 def clear_active_repo(ws_root: str | Path, session_id: str | None = None) -> None:
     """SessionEnd path: drop this session's binding."""
     try:

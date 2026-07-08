@@ -536,14 +536,16 @@ def test_requirement_open_attach_resolve():
     R = "/tmp/dlut_req"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
 
-    # open：id = 首个分支名；索引段 + session_start
+    # open：id = 首个分支名；索引段（branches 按 repo 嵌套，键 = realpath）+ session_start（带 repo）
     rid = requirement.open_requirement(R, "feat/x", fork_from="main", fork_sha="abc")
     assert rid == "feat/x"
+    RK = str(Path(R).resolve())                  # repo 键 = realpath（symlink 拼写不分裂键）
     idx = store.load_segment(R, "requirements")
-    assert idx["branches"] == {"feat/x": "feat/x"} and idx["requirements"]["feat/x"]["status"] == "open"
+    assert idx["branches"] == {RK: {"feat/x": "feat/x"}} and idx["requirements"]["feat/x"]["status"] == "open"
     sess = (Path(R) / ".devloop" / "requirements" / "feat/x" / "session.jsonl").read_text().splitlines()
     e0 = json.loads(sess[0])
     assert e0["kind"] == "session_start" and e0["requirement"] == "feat/x" and e0["fork_sha"] == "abc"
+    assert e0["repo"] == RK                      # 事件带 repo：单 spine 跨仓的归因字段
 
     # open 幂等：不追加第二条 session_start
     requirement.open_requirement(R, "feat/x")
@@ -705,6 +707,65 @@ def test_requirement_attach_guards_arc_invariant():
     tail = requirement._active_tail(requirement.session_events(R, "feat/new-req"))
     assert [e["kind"] for e in tail] == ["session_start", "branch_cut"]
     assert tail[-1]["branch"] == "fix/followup"
+
+
+def test_requirement_cross_repo_dev_root():
+    """requirement-first 目标态：仓属于注册 workspace → requirement 域落 workspace 根（dev root），
+    跨仓事件写同一 spine（带 repo 字段）；turn_line 渲染跨仓 PR live 态（多仓带 repo 前缀）；
+    reconcile 按 (repo, number) join 各仓 pr.json 收口——同号不同仓不混淆。
+    （Mode B——仓不属任何 workspace——退化为 repo 根，即其余 requirement 测试的形态。）"""
+    import json
+
+    from lib import workspace as registry
+    from lib.context import store
+    from lib.context.loopstate import requirement
+
+    W = "/tmp/dlut_req_ws"
+    shutil.rmtree(W, ignore_errors=True)
+    A, B = f"{W}/repoA", f"{W}/repoB"
+    for r in (A, B):
+        os.makedirs(f"{r}/.git")                 # .git 目录 → _main_repo_root 返回自身
+    Path(f"{W}/AGENTS.md").write_text("# ws\n")
+    registry.register_workspace(W)
+
+    # A 开需求，B attach 同一需求 → 单 spine 落 W/.devloop，事件带各自 repo；仓内无 requirement 域
+    requirement.open_requirement(A, "feat/cross", fork_from="main")
+    requirement.attach_branch(B, "feat/cross", "feat/cross-b")
+    spine = Path(W) / ".devloop/requirements/feat/cross/session.jsonl"
+    assert spine.exists()
+    AK, BK = str(Path(A).resolve()), str(Path(B).resolve())
+    evs = [json.loads(x) for x in spine.read_text().splitlines()]
+    assert [e["kind"] for e in evs] == ["session_start", "branch_cut"]
+    assert evs[0]["repo"] == AK and evs[1]["repo"] == BK
+    assert not (Path(A) / ".devloop/requirements").exists()
+    assert requirement.resolve(B, "feat/cross-b") == "feat/cross"
+
+    # 双仓各自 note 同号 PR —— (repo, number) 是键，不混淆
+    requirement.note(A, "feat/cross", {"kind": "pr_created", "branch": "feat/cross", "number": 7})
+    requirement.note(B, "feat/cross-b", {"kind": "pr_created", "branch": "feat/cross-b", "number": 7})
+
+    # turn_line：从任一仓看到同一个任务视图，多仓时 PR 带 repo 短名前缀
+    store.save_segment(A, "pr", {"prs": [{"number": 7, "state": "merged", "source_branch": "feat/cross"}]})
+    store.save_segment(B, "pr", {"prs": [{"number": 7, "state": "open", "source_branch": "feat/cross-b"}]})
+    line = requirement.turn_line(B, "feat/cross-b")
+    assert line.startswith("Requirement: feat/cross")
+    assert "repoA#7 merged" in line and "repoB#7 open" in line
+    assert requirement.turn_line(B, "unrelated-branch") == ""   # 无 requirement → 零注入
+
+    # reconcile（从 A 触发，管整个 dev root）：A#7 merged 记账；B#7 仍 open → 不收口
+    requirement.reconcile_closures(A)
+    evs = [json.loads(x) for x in spine.read_text().splitlines()]
+    kinds = [e["kind"] for e in evs]
+    assert kinds.count("pr_merged") == 1 and "session_end" not in kinds
+    merged = next(e for e in evs if e["kind"] == "pr_merged")
+    assert merged["repo"] == AK and merged["number"] == 7
+
+    # B 的 PR 也 merge → 需求收口 done；收口后 turn_line 归零（任务已完成，不再占 token）
+    store.save_segment(B, "pr", {"prs": [{"number": 7, "state": "merged", "source_branch": "feat/cross-b"}]})
+    requirement.reconcile_closures(B)
+    evs = [json.loads(x) for x in spine.read_text().splitlines()]
+    assert evs[-1]["kind"] == "session_end" and evs[-1]["result"] == "done"
+    assert requirement.turn_line(B, "feat/cross-b") == ""
 
 
 def test_state_domains_worktree():
