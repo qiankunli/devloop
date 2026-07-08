@@ -97,10 +97,12 @@ Codex support is packaged through `.agents/plugins/marketplace.json` and `devloo
 
 ```
 codex plugin marketplace add https://github.com/qiankunli/devloop.git
-# then install devloop from /plugins, or use `codex plugin add devloop@devloop`
+codex plugin add devloop@devloop
 ```
 
-Codex does not expose every Claude event that devloop uses. The Codex manifest points at `devloop/hooks/hooks.codex.json`, which uses the supported subset (`PreToolUse` / `PostToolUse` / `SessionStart` / `UserPromptSubmit` / `PostCompact`) and refreshes cwd/state from `PostToolUse` as the fallback for Claude's `CwdChanged`. `FileChanged` and `SessionEnd` have no Codex equivalent yet, so AGENTS.md reparse and owner-lock release rely on the existing prompt/TTL fallback paths there.
+You can also install it from `/plugins` after adding the marketplace. Start a new Codex session after installation; if Codex asks for hook review, open `/hooks` and trust the devloop hooks.
+
+Codex does not expose every Claude event that devloop uses. The Codex manifest points at `devloop/hooks/hooks.codex.json`, which uses the supported subset (`PreToolUse` / `PostToolUse` / `SessionStart` / `UserPromptSubmit` / `PostCompact`) and refreshes cwd/state from `PostToolUse` as the fallback for Claude's `CwdChanged`. `FileChanged` and `SessionEnd` have no Codex equivalent yet, so AGENTS.md reparse and owner-lock release rely on the existing prompt/TTL fallback paths there. For manual init commands under Codex, use `${PLUGIN_ROOT}` instead of `${CLAUDE_PLUGIN_ROOT}`.
 
 opencode remains placeholder-only until its plugin/hook protocol is wired.
 
