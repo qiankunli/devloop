@@ -594,6 +594,14 @@ def _format_turn(ctx: "RepoContext") -> str:
             parts.append(f"{sigil}{p.number}{star} {p.state or '?'}({p.source_branch or '?'})")
         lines.append(f"Recent {noun}s: " + "  ".join(parts) + ("   (*=current branch)" if b.pr_number else ""))
 
+    # Requirement segment — "where is my TASK" vs the repo lines' "where am I STANDING".
+    # Cross-repo/cross-MR live view derived from the requirement spine + each repo's pr.json;
+    # empty unless the current branch belongs to an in-flight requirement (zero-token default).
+    from .loopstate import requirement as _requirement
+    rl = _requirement.turn_line(ctx.repo.repo_dir, b.local.name or None)
+    if rl:
+        lines.append(rl)
+
     return " | ".join(lines)
 
 

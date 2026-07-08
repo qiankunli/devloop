@@ -45,6 +45,7 @@ from .repo import Branch, BranchTopology, Injection, RepoContext, RepoMeta, Vali
 from .session import (
     clear_active_repo,
     load_active_repo,
+    load_active_repo_lenient,
     record_active_repo,
 )
 from .workspace import (

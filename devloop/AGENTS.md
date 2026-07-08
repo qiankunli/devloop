@@ -56,7 +56,7 @@ devloop/
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
 │   │   └── context/               #   .devloop/ 状态总线，五族分模块：store(磁盘原语/三域) + base(共享词汇) / repo+workspace(视图) / gate+prstate(真相接缝) / session(运行态+owner锁)
-│   │       └── loopstate/         #     经验沉淀 ledger 半（loop-state，见 workspace docs/loop-state.md）：friction(guard deny→friction.jsonl) + requirement(requirements 索引+session.jsonl 脊柱、monitor reconcile 收口)
+│   │       └── loopstate/         #     经验沉淀 ledger 半（loop-state / requirement-first，见 workspace docs/）：friction(guard deny→friction.jsonl，per-repo) + requirement(域落 dev root——workspace 根、单仓退化 repo 根；单 spine 跨仓、事件带 repo；turn_line 派生任务视图；monitor reconcile 收口)
 │   ├── cwdchanged_enter.py        # CwdChanged：自动 enter
 │   ├── sessionstart_init.py       # SessionStart：References(additionalContext) + watchPaths + 预热
 │   ├── userprompt_inject.py       # UserPromptSubmit：turn + session 注入
