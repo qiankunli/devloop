@@ -47,6 +47,21 @@ codex plugin add devloop@devloop
 
 也可以添加 marketplace 后，在 `/plugins` 中安装 `devloop`。安装后建议新开一个 Codex session；如果 Codex 提示需要审核 hook，打开 `/hooks` 并信任 devloop hooks。
 
+更新：
+
+```
+# Claude Code
+/plugin marketplace update devloop
+/plugin update devloop
+
+# Codex
+codex plugin marketplace upgrade devloop
+codex plugin remove devloop@devloop
+codex plugin add devloop@devloop
+```
+
+更新后建议新开一个 session，让运行时重新加载最新 hooks 和 skills。用户级配置保存在 `~/.devloop/`，不会被 plugin 更新删掉。
+
 初始化（可选——hook 首次 cd 会自动建）：
 
 ```

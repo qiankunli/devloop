@@ -104,6 +104,25 @@ You can also install it from `/plugins` after adding the marketplace. Start a ne
 
 Codex does not expose every Claude event that devloop uses. The Codex manifest points at `devloop/hooks/hooks.codex.json`, which uses the supported subset (`PreToolUse` / `PostToolUse` / `SessionStart` / `UserPromptSubmit` / `PostCompact`) and refreshes cwd/state from `PostToolUse` as the fallback for Claude's `CwdChanged`. `FileChanged` and `SessionEnd` have no Codex equivalent yet, so AGENTS.md reparse and owner-lock release rely on the existing prompt/TTL fallback paths there. For manual init commands under Codex, use `${PLUGIN_ROOT}` instead of `${CLAUDE_PLUGIN_ROOT}`.
 
+### Updating devloop
+
+Claude Code:
+
+```
+/plugin marketplace update devloop
+/plugin update devloop
+```
+
+Codex:
+
+```
+codex plugin marketplace upgrade devloop
+codex plugin remove devloop@devloop
+codex plugin add devloop@devloop
+```
+
+Start a new session after updating so the runtime loads the new hooks and skills. User-level devloop config stays under `~/.devloop/` and is not removed by a plugin update.
+
 opencode remains placeholder-only until its plugin/hook protocol is wired.
 
 ## Plugins
