@@ -96,7 +96,7 @@ def test_migrated_command_rules_parity():
     assert d("PYTHONPATH=. pytest", cwd=T) is None              # env 前缀
     assert d("make test", cwd=T) is None
 
-    # precommit_gate：lint 在 lifecycle.pre_commit + lint 从未跑 → 拦 commit。
+    # precommit_gate：lint 在 lifecycle.pre_commit + 有 lint target + lint 从未跑 → 拦 commit。
     G = "/tmp/dlut_pcg"; shutil.rmtree(G, ignore_errors=True); os.makedirs(f"{G}/.devloop")
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
     _git(G, "checkout", "-q", "-b", "feat/x")
@@ -104,6 +104,9 @@ def test_migrated_command_rules_parity():
     Path(f"{G}/.devloop/config.json").write_text(
         _json.dumps({"lifecycle": {"repos": {gabs: {"pre_commit": ["lint"]}}}}))
     RepoContext.refresh_all(G)
+    # 无 lint target → 放行：dispatch 的 lint 只会干净跳过、盖不出戳，硬要戳=锁死裸 commit
+    assert d("git commit -m x", cwd=G) is None
+    Path(f"{G}/Makefile").write_text("lint:\n\ttrue\n")
     assert "Refusing `git commit`" in (d("git commit -m x", cwd=G) or "")
     # lint 不在 pre_commit → 不拦（opt-in 默认放行）
     Path(f"{G}/.devloop/config.json").write_text(_json.dumps({"lifecycle": {"repos": {gabs: {"pre_commit": ["test"]}}}}))

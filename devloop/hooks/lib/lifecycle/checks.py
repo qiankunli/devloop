@@ -1,11 +1,12 @@
 """内置 inline-gate handler：`lint` / `test`。
 
-这两个 hook 与 `/lint` `/test` 命令是同一段逻辑、同一处盖 `.devloop` validation 戳——命令侧
-是 CLI 入口，gate 侧是 dispatch 调用，跑的是这里。stamp 在通过时盖，所以裸 `git commit` 的
-守卫（`rules/command/precommit_gate`）查到的戳与 dispatch 跑出的结果一致。
+这两个 hook 与 fix-lint / run-test skill（run_fixlint.py / run_tests.py）是同一段逻辑、
+同一处盖 `.devloop` validation 戳——skill 侧是 CLI 入口，gate 侧是 dispatch 调用，跑的是
+这里。stamp 在通过时盖，所以裸 `git commit` 的守卫（`rules/command/precommit_gate`）查到
+的戳与 dispatch 跑出的结果一致。
 
 handler 契约：`fn(repo) -> HookResult`。lint/test 是 inline gate——干实际活、失败返回
-`ok=False` 可挡 commit。`capture=False`（命令侧）让 make 直接走父进程 stdout（实时）；
+`ok=False` 可挡 commit。`capture=False`（skill 侧）让 make 直接走父进程 stdout（实时）；
 `capture=True`（dispatch 并发跑）收口输出、失败时把尾部塞进 summary，避免并发 lint‖test 的
 输出交错刷屏。
 """
@@ -23,7 +24,7 @@ from lib.lifecycle.base import HookResult
 _TAIL_LINES = 40   # 失败时回带的输出尾行数（够定位、不淹没 PLAN）
 
 
-def _code_dir(repo: str) -> str:
+def resolve_code_dir(repo: str) -> str:
     """make/uv 的 workdir：优先 RepoContext 记录的 code_dir，否则探测。"""
     ctx = RepoContext.load(repo)
     return (ctx.repo.code_dir if ctx and ctx.repo.code_dir else None) or repo_layout.find_repo_code_dir(repo)
@@ -74,7 +75,7 @@ def lint(repo: str, *, capture: bool = True) -> HookResult:
     跑 lint 前清 `.mypy_cache`：热缓存对一棵冷跑会被标红的树报过绿，一个能放行坏 MR 的戳比慢
     一点更糟。无 lint target → 干净跳过（ok，无可验证）。
     """
-    code_dir = _code_dir(repo)
+    code_dir = resolve_code_dir(repo)
     target = pick_lint_target(code_dir)
     if target is None:
         return HookResult("lint", ok=True, summary=f"no make lint/lint-ci target in {code_dir} — skipped")
@@ -99,7 +100,7 @@ def test(repo: str, *, capture: bool = True, extra: list[str] | None = None) -> 
     **advisory（软提示）**：失败只通报、不阻断 commit/MR。test 挂常因基线坏测 / 环境，与本次
     diff 未必有关；要不要拦该看「diff 是否与挂掉的测试相关」，那需 baseline-aware 分析（TODO），
     现阶段先不硬拦，把判断交给 CI / 人。lint 仍是硬拦截。"""
-    code_dir = _code_dir(repo)
+    code_dir = resolve_code_dir(repo)
     if not has_target(code_dir, "test", suffix=True):
         return HookResult("test", ok=True, advisory=True, summary=f"no make test target in {code_dir} — skipped")
 

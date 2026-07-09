@@ -23,12 +23,12 @@
 | `/gcam "<msg>"` | 只 commit |
 | `/gcamp "<msg>"` | commit + push |
 | `/gcampr "<msg>" [--branch <name>]` | commit + push + 建/复用 PR/MR |
-| `/lint [<repo>]` | `make fix` + lint（有 `lint-ci` 优先，对齐 CI）+ 标记验证 |
-| `/test [<repo>] [-- <args>]` | `make test` + 标记验证 |
+
+lint / test 无独立 slash 命令：正常由 gcam* 的 `pre_commit` gate 自动触发；手动跑走 fix-lint / run-test skill（自然语言"修下 lint"/"跑下测试"）。
 
 保护 / 过期分支上，gcam* 需 `--branch <name>`，脚本会从 `origin/<target>` 切新分支（不给会拒绝并提示）。
 
-gcam* / lint / test 都不依赖 cwd：默认解析 cwd 所在仓库，在 workspace 根则兜底到最近活跃子项目；用 `--repo <name|path>`（gcam*）或首参（lint/test）显式指定，无需 `cd` 前缀。
+gcam* 与 fix-lint / run-test 都不依赖 cwd：默认解析 cwd 所在仓库，在 workspace 根则兜底到最近活跃子项目；用 `--repo <name|path>` 显式指定，无需 `cd` 前缀。
 
 ## 安装
 

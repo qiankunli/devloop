@@ -47,7 +47,7 @@ def _session_key(session_id: str | None) -> str:
 # with zero exceptions: no cross-session read-modify-write exists at all. A
 # workspace hosts several subprojects, and several concurrent sessions each working
 # on a different one is its normal shape — per-session files keep one session's
-# no-arg /lint /gcam fallback untouchable by another's activity.
+# no-arg /gcam / run_fixlint fallback untouchable by another's activity.
 #
 # Readers never guess from OTHER sessions' files: a session with no binding of its
 # own gets None and the resolver asks for an explicit --repo — foreign bindings are
@@ -100,7 +100,7 @@ def load_active_repo_lenient(ws_root: str | Path,
                              session_id: str | None = None) -> tuple[str, float] | None:
     """READ-path binding: `(repo_dir, age_sec)` ignoring the TTL. For turn INJECTION only.
 
-    The TTL exists so WRITE-path fallbacks (/lint, /gcam repo resolution) never guess a stale
+    The TTL exists so WRITE-path fallbacks (/gcam, run_fixlint.py repo resolution) never guess a stale
     target — that semantic stays in `load_active_repo`. But injection sharing it caused silent
     blindness: past the TTL the repo view vanished without a word and the model kept reasoning
     from hours-old context (the cross-repo merge-order incident). The repo STATE itself is
