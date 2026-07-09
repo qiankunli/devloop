@@ -201,6 +201,14 @@ def normalize_files(repo: str, files: list[str], invoke_cwd: str | Path, plan: l
     return out
 
 
+def _registered_submodules(repo: str) -> set[str]:
+    """`.gitmodules` 里注册过的 submodule 路径集合；文件缺失/解析失败 → 空集（即全拦）。"""
+    r = gitcmd.git(repo, "config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$")
+    if not r.ok:
+        return set()
+    return {parts[1] for line in r.out.splitlines() if len(parts := line.split(None, 1)) == 2}
+
+
 def stage(repo: str, files: list[str], plan: list[str]) -> None:
     if files:
         # Explicit list still honors the sensitive blocklist (a named dir could pull in
@@ -240,6 +248,9 @@ def stage(repo: str, files: list[str], plan: list[str]) -> None:
     shown = ", ".join(to_add[:8]) + (" …" if len(to_add) > 8 else "")
     plan.append(f"staged {len(to_add)} file(s): {shown}" if to_add else "nothing to stage")
     # Safety: refuse an accidental embedded-repo gitlink (mode 160000) in the index.
+    # Exempt paths registered in .gitmodules: bumping a real submodule pointer is a
+    # legit commit (some repos' whole job, e.g. bedbox bumping hostel) — the accident
+    # this guard exists for is an UNregistered nested repo captured by `git add`.
     raw = gitcmd.git(repo, "diff", "--cached", "--raw").out
     gitlinks, real = [], []
     for line in raw.splitlines():
@@ -247,6 +258,10 @@ def stage(repo: str, files: list[str], plan: list[str]) -> None:
             continue
         meta, path = line.split("\t", 1)
         (gitlinks if (meta.startswith(":160000") or " 160000 " in meta) else real).append(path)
+    if gitlinks:
+        registered = _registered_submodules(repo)
+        real += [p for p in gitlinks if p in registered]
+        gitlinks = [p for p in gitlinks if p not in registered]
     if gitlinks:
         gitcmd.git(repo, "reset", "-q")
         # Hand back the safe retry instead of making the caller re-enumerate by hand.

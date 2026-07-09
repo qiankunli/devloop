@@ -21,6 +21,29 @@ def test_sensitive_filter():
     assert is_sensitive("a/.idea/x") and is_sensitive("pkg/__pycache__/m.pyc")
     assert not is_sensitive("src/main.py") and not is_sensitive("README.md")
 
+def test_gitlink_guard_exempts_registered_submodule():
+    """160000 守卫只拦**未注册**的嵌套仓（误 add 的 accident）；`.gitmodules` 注册过的
+    submodule 指针 bump 是合法提交（super-repo 的本职就是 bump 指针），放行。"""
+    sgo = _load_script("smart_git_ops")
+    R = "/tmp/dlut_gitlink"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    Path(f"{R}/README").write_text("x"); _git(R, "add", "README"); _git(R, "commit", "-qm", "init")
+    # 嵌套一个独立 git 仓：git add 会把它作为 160000 gitlink 收进 index
+    S = f"{R}/sub"; os.makedirs(S)
+    _git(S, "init", "-q"); _git(S, "config", "user.email", "t@t.t"); _git(S, "config", "user.name", "t")
+    Path(f"{S}/f").write_text("1"); _git(S, "add", "f"); _git(S, "commit", "-qm", "s")
+    # 未注册 → 拦，且 index 已回滚
+    try:
+        sgo.stage(R, [], [])
+        assert False, "expected SmartError for unregistered gitlink"
+    except sgo.SmartError as e:
+        assert "gitlink" in str(e)
+    assert _git_out(R, "diff", "--cached", "--name-only") == ""
+    # 注册进 .gitmodules → 放行，gitlink 留在 index
+    Path(f"{R}/.gitmodules").write_text('[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n')
+    sgo.stage(R, [], [])
+    assert "sub" in _git_out(R, "diff", "--cached", "--name-only").splitlines()
+
 def test_decide_branch_is_intent_driven():
     """--branch 一律基于 base(默认 origin/<target>),与当前停在哪条分支无关——避免新 MR
     夹带上一条未合 feature 分支的提交。"""

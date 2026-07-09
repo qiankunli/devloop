@@ -23,7 +23,7 @@ from lib.lifecycle.base import HookResult
 _TAIL_LINES = 40   # 失败时回带的输出尾行数（够定位、不淹没 PLAN）
 
 
-def _code_dir(repo: str) -> str:
+def resolve_code_dir(repo: str) -> str:
     """make/uv 的 workdir：优先 RepoContext 记录的 code_dir，否则探测。"""
     ctx = RepoContext.load(repo)
     return (ctx.repo.code_dir if ctx and ctx.repo.code_dir else None) or repo_layout.find_repo_code_dir(repo)
@@ -74,7 +74,7 @@ def lint(repo: str, *, capture: bool = True) -> HookResult:
     跑 lint 前清 `.mypy_cache`：热缓存对一棵冷跑会被标红的树报过绿，一个能放行坏 MR 的戳比慢
     一点更糟。无 lint target → 干净跳过（ok，无可验证）。
     """
-    code_dir = _code_dir(repo)
+    code_dir = resolve_code_dir(repo)
     target = pick_lint_target(code_dir)
     if target is None:
         return HookResult("lint", ok=True, summary=f"no make lint/lint-ci target in {code_dir} — skipped")
@@ -99,7 +99,7 @@ def test(repo: str, *, capture: bool = True, extra: list[str] | None = None) -> 
     **advisory（软提示）**：失败只通报、不阻断 commit/MR。test 挂常因基线坏测 / 环境，与本次
     diff 未必有关；要不要拦该看「diff 是否与挂掉的测试相关」，那需 baseline-aware 分析（TODO），
     现阶段先不硬拦，把判断交给 CI / 人。lint 仍是硬拦截。"""
-    code_dir = _code_dir(repo)
+    code_dir = resolve_code_dir(repo)
     if not has_target(code_dir, "test", suffix=True):
         return HookResult("test", ok=True, advisory=True, summary=f"no make test target in {code_dir} — skipped")
 
