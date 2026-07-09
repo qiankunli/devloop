@@ -3,7 +3,8 @@
 并作为一条评论**发到该分支的 MR 上**——让 review 历史挂在 MR 上、可跟踪对比。
 
 由 lifecycle 的 `review` signal hook（挂 `post_mr`）经 detach 起（见 docs/code-review.md）。审
-`origin/<target>..HEAD`（整条分支 vs target）；查到分支的开放 MR 就发评论，没有就只落 review.json。
+`origin/<target>..HEAD`（整条分支 vs target）；查到分支的开放 MR 且有 finding（或有文件审失败）
+才发评论——clean 不发，结论留 review.json；没有开放 MR 就只落 review.json。
 
 为提准，自动给引擎拼 `--background`（业务上下文）：本次提交说明 + MR 标题/描述（detach 进程
 自己经 git log / forge 取，不依赖会话）。
@@ -283,8 +284,14 @@ def main(argv: list[str]) -> int:
     comments = result.comments
     tool_label = f"{engine.name} {result.tool_version}" if result.tool_version else ""
     inline_posted, fallback = _post_inline(forge, pr, comments)   # inline 优先,锚不上的进汇总
-    posted = _post(forge, pr, _format_comment(fallback, result.failed, range_label, sha, result.models,
-                                              result.cost_sec, tool_label, inline_posted))
+    if not comments and not result.failed:
+        # clean（无 finding 且全部文件审完）不发 MR 评论——往在途 MR 反复 push 会攒出一串
+        # 无信息量的 "✅ clean" 刷屏；clean 结论已在 review.json（下一轮注入 Review: clean）。
+        # failed>0 仍发：没审完不是可信的 clean，要在 MR 上留痕。
+        posted = "clean — MR comment skipped"
+    else:
+        posted = _post(forge, pr, _format_comment(fallback, result.failed, range_label, sha, result.models,
+                                                  result.cost_sec, tool_label, inline_posted))
     _write(repo, status=result.status, reviewed_sha=sha, comments=comments,
            count=len(comments), failed=result.failed, warnings=result.warnings, message=result.message,
            cost_sec=result.cost_sec, tool_version=result.tool_version, inline_posted=inline_posted,
