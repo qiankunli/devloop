@@ -21,7 +21,9 @@ smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https:/
   forge **原生的 outdated 生命周期**:下一轮 AI 修完再 push,改到的行上的旧 finding 被 forge
   自动折叠成 outdated,不像普通 note 永远悬着（GitLab 项目开 `resolve_outdated_diff_discussions`
   还能 push 时自动 resolve）。锚不上的（无行号 / 行不在当前 diff / forge 不支持）回落到那条
-  汇总评论里列出;汇总评论始终有,承载 review 级身份（models / cost / 引擎版本）与历史对比。
+  汇总评论里列出;汇总评论承载 review 级身份（models / cost / 引擎版本）与历史对比,但只在有
+  finding 或有文件审失败时才发——clean 不发评论(结论留 review.json / 下轮注入),避免往在途 MR
+  反复 push 时攒出一串无信息量的 clean 刷屏。
 - **signal hook,不挡 commit**:review 跑得久,且写码 AI 与 review AI 同源——结论仅供参考、
   **merge 必须人拍**。故不像 lint/test 那样 inline 挡。
 - **detach、不靠 agent 起后台**:dispatch(subprocess)不能起「跑完唤醒 session」的 harness 后台
