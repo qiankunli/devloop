@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Mark lint/test as passed in the `.devloop/validation.json` segment — the single write
-surface for validation stamps (run_fixlint.py / run_tests.py and manual /lint /test call it).
+surface for validation stamps (run_fixlint.py / run_tests.py i.e. the fix-lint / run-test skills, call it).
 
 Usage: mark_validation.py <lint|test> [--repo R | R]   (R = a path or a workspace
 subproject name; default = cwd's repo, falling back to the workspace's last-active repo)

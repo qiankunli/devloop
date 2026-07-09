@@ -1,11 +1,12 @@
 """内置 inline-gate handler：`lint` / `test`。
 
-这两个 hook 与 `/lint` `/test` 命令是同一段逻辑、同一处盖 `.devloop` validation 戳——命令侧
-是 CLI 入口，gate 侧是 dispatch 调用，跑的是这里。stamp 在通过时盖，所以裸 `git commit` 的
-守卫（`rules/command/precommit_gate`）查到的戳与 dispatch 跑出的结果一致。
+这两个 hook 与 fix-lint / run-test skill（run_fixlint.py / run_tests.py）是同一段逻辑、
+同一处盖 `.devloop` validation 戳——skill 侧是 CLI 入口，gate 侧是 dispatch 调用，跑的是
+这里。stamp 在通过时盖，所以裸 `git commit` 的守卫（`rules/command/precommit_gate`）查到
+的戳与 dispatch 跑出的结果一致。
 
 handler 契约：`fn(repo) -> HookResult`。lint/test 是 inline gate——干实际活、失败返回
-`ok=False` 可挡 commit。`capture=False`（命令侧）让 make 直接走父进程 stdout（实时）；
+`ok=False` 可挡 commit。`capture=False`（skill 侧）让 make 直接走父进程 stdout（实时）；
 `capture=True`（dispatch 并发跑）收口输出、失败时把尾部塞进 summary，避免并发 lint‖test 的
 输出交错刷屏。
 """

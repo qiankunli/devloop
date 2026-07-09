@@ -47,7 +47,7 @@ def produce(inp: hook_io.HookInput) -> str | None:
             # than a stale pointer: the model silently keeps reasoning from hours-old context
             # (the cross-repo merge-order incident). The repo STATE is monitor-fresh; only the
             # "which repo" binding aged. Keep injecting, say so out loud. Write-path fallbacks
-            # (/lint, /gcam) still use the strict TTL — blindness may be tolerable, silent
+            # (/gcam, run_fixlint.py) still use the strict TTL — blindness may be tolerable, silent
             # blindness is not.
             lenient = load_active_repo_lenient(ws_root, inp.session_id)
             if lenient:

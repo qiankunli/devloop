@@ -52,7 +52,7 @@ devloop/
 │   │   ├── _vendor/               #   ★第三方原样 vendor（parable.py MIT + LICENSE/PROVENANCE）；永不手改
 │   │   ├── lifecycle/             #   ★devops 生命周期 hook 子系统（pre_commit/post_commit/pre_mr/post_mr）
 │   │   │   ├── base.py            #     facade：dispatch 并发 join + 聚合 + 内置注册表
-│   │   │   ├── checks.py          #     内置 inline-gate handler（lint/test，与 /lint /test 共用）
+│   │   │   ├── checks.py          #     内置 inline-gate handler（lint/test，与 fix-lint / run-test skill 共用）
 │   │   │   └── review.py          #     code-review signal handler（任意相位；审全量 diff，分支有开放 MR 时机会性发评论）
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
@@ -69,7 +69,7 @@ devloop/
 │   └── pretool_*.py               # 10 个硬拦截（guard harness；含 checkout/edit owner 锁）
 ├── scripts/                        # smart_git_ops + smart_*.sh / pr.py（show/list/update/close；create 归 gcampr）/ release.py（发版：forge 服务端建 tag+Release，免 push tag）/ run_fixlint / run_tests / run_review（后台 ocr→review.json）/ poll_pr_status / init_*
 ├── monitors/monitors.json          # ★PR-sweep 后台轮询（替代 hook 心跳 scheduler）
-├── commands/                       # slash：enter / gcam / gcamp / gcampr / lint / test
+├── commands/                       # slash：enter / gcam / gcamp / gcampr（lint/test 归 skill，gate 自动触发）
 ├── skills/                         # git-ops / gcam / gcamp / gcampr / fix-lint / run-test
 └── config/                         # config.example.json 模板；全局配置在 ~/.devloop/config.json，repo/workspace 可在 .devloop/config.json 就近覆盖
 ```

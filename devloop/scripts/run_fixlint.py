@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`/lint` 的 CLI 入口：解析 repo，跑 `make fix` + lint target，通过则盖 lint 戳。
+"""fix-lint skill 的 CLI 入口：解析 repo，跑 `make fix` + lint target，通过则盖 lint 戳。
 
 lint 逻辑见 `lib.lifecycle.checks.lint`（与 lifecycle 的 pre_commit gate 是同一段）。本脚本
 只做 repo 解析 + 实时输出 + 退出码。只有 `make fix` 能改文件，从不手改代码来满足 linter。

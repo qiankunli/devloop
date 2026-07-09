@@ -36,7 +36,7 @@ class PrecommitGateRule(Rule):
         if stale == 0 and last:
             return []
         # 无 lint target 的仓不拦：dispatch 的 lint 对它本来就是干净跳过、永远盖不出戳，
-        # 硬要戳等于把裸 commit 锁死（跑 /lint 也解不开）。与 checks.lint 的 skip 语义对齐。
+        # 硬要戳等于把裸 commit 锁死（跑 fix-lint 也解不开）。与 checks.lint 的 skip 语义对齐。
         if checks.pick_lint_target(checks.resolve_code_dir(git_root)) is None:
             return []
         parts = ["⚠️  Refusing `git commit`: lint is in the pre_commit gate and is stale."]
@@ -44,6 +44,6 @@ class PrecommitGateRule(Rule):
             parts.append("Lint has never run for this branch.")
         if stale:
             parts.append(f"{stale} edit(s) since last lint pass.")
-        parts.append("Run /lint (and /test if your repo requires it), then retry commit.")
+        parts.append("Commit via gcam/gcampr instead (the gate runs lint inline), or run the fix-lint skill, then retry.")
         parts.append("Adjust the gate under `lifecycle` in ~/.devloop/config.json.")
         return [Finding(rule=self.name, severity=Severity.DENY, message="\n".join(parts), locator=" ".join(target.argv))]
