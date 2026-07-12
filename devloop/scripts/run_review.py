@@ -79,8 +79,13 @@ def _post_inline(forge, pr, comments: list) -> tuple[int, list]:
             fallback.append(c)
             continue
         head = "🤖 **devloop code-review**" + (f" · {alias}" if alias else "")
+        # ccr:fp footer——finding 的稳定指纹（path+content hash），把这条评论和 session
+        # finding / 复跑重现 / 人工标注（回复 `ccr:label=<verdict>`）join 到一起；
+        # 回收约定见 ccr 仓 eval/README「人工标注统一约定」。
+        fp = (c.get("fingerprint") or "").strip()
+        foot = f"\n\n<sub>ccr:fp={fp}</sub>" if fp else ""
         try:
-            forge.diff_comment(pr.number, f"{head}\n\n{body}", path, int(line))
+            forge.diff_comment(pr.number, f"{head}\n\n{body}{foot}", path, int(line))
             posted += 1
         except ForgeError:
             fallback.append(c)   # 常见:行不在 diff 里(context 行 finding)→ 留在汇总
@@ -120,6 +125,9 @@ def _format_comment(comments: list, failed: int, range_label: str, sha: str, mod
         alias = (c.get("alias") or "").strip()   # 多 model 池里哪个 model 出的（引擎 routing alias），便于对比
         tag = f" ({alias})" if alias else ""
         body = (c.get("content") or "").strip().replace("\n", " ")
+        fp = (c.get("fingerprint") or "").strip()
+        if fp:
+            tag += f" `ccr:fp={fp}`"   # 汇总列表也可 grep 到指纹（标注约定见 ccr eval/README）
         lines.append(f"- `{loc}`{tag} — {body[:300]}" if body else f"- `{loc}`{tag}")   # 空 content 不留悬空破折号
     if len(comments) > _MAX_COMMENT_FINDINGS:
         lines.append(f"- … 另有 {len(comments) - _MAX_COMMENT_FINDINGS} 条,见 `.devloop/review.json`")
