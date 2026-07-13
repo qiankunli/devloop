@@ -10,9 +10,8 @@ lint，只查戳——PreToolUse 有 5s 超时、fail-open，跑不了 lint。
 """
 from __future__ import annotations
 
-from lib import config, repo_layout
+from lib import config, repo_layout, repo_resolve
 from lib.context import RepoContext
-from lib.lifecycle import checks
 from lib.core.domain import Command, Finding, Severity, TargetKind
 from lib.core.protocol import Rule
 
@@ -37,7 +36,7 @@ class PrecommitGateRule(Rule):
             return []
         # 无 lint target 的仓不拦：dispatch 的 lint 对它本来就是干净跳过、永远盖不出戳，
         # 硬要戳等于把裸 commit 锁死（跑 fix-lint 也解不开）。与 checks.lint 的 skip 语义对齐。
-        if checks.pick_lint_target(checks.resolve_code_dir(git_root)) is None:
+        if repo_resolve.default_unit(git_root).lint_target() is None:
             return []
         parts = ["⚠️  Refusing `git commit`: lint is in the pre_commit gate and is stale."]
         if not last:

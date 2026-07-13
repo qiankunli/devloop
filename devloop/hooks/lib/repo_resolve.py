@@ -51,16 +51,25 @@ class ResolvedRepo:
     source: str
 
 
+def default_unit(git_root: str | Path, ctx: RepoContext | None = None) -> repo_layout.CodeUnit:
+    """repo 级**默认** unit：持久化 `code_dir` 缓存优先（= 探测结果的缓存），否则现探
+    （`server/` > `backend/` > repo 根）。没有更具体操作目标路径时用——解析边界的默认分支、
+    lifecycle gate 的回落、按名字 `/enter` 一个仓，都收敛到这一个入口（单一事实源）。"""
+    ctx = ctx if ctx is not None else RepoContext.load(git_root)
+    cached = ctx.repo.code_dir if ctx and ctx.repo.code_dir else None
+    if cached:
+        return repo_layout.CodeUnit(cached, repo_layout.detect_language(cached))
+    return repo_layout.default_code_unit(git_root)
+
+
 def _resolved(git_root: str, source: str, target_path: str | Path | None = None) -> tuple[ResolvedRepo, str]:
     """`target_path` 给出时（显式路径 / cwd 等有具体操作目标的解析），unit 按目标路径向上归属
-    （多代码目录仓选对 unit）；否则用 repo 默认 unit（持久化缓存优先，否则探测）。"""
+    （多代码目录仓选对 unit）；否则用 repo 默认 unit。"""
     ctx = RepoContext.load(git_root)
     if target_path is not None:
         unit = repo_layout.enclosing_code_unit(target_path, git_root)
     else:
-        cached = ctx.repo.code_dir if ctx and ctx.repo.code_dir else None
-        unit = repo_layout.CodeUnit(cached, repo_layout.detect_language(cached)) if cached \
-            else repo_layout.default_code_unit(git_root)
+        unit = default_unit(git_root, ctx)
     # workspace_for_repo, NOT plain containment: workspaces are symlink farms, so the
     # canonical git_root usually lives outside the workspace tree — containment-only
     # would report workspace_root=None for every symlinked subproject (Mode B 误判)

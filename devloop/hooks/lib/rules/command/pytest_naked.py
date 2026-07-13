@@ -6,8 +6,6 @@ CHANGE 级：要按 env-aware 的 segment 判断（`PYTHONPATH=. pytest` 带 env
 from __future__ import annotations
 
 import os
-import re
-from pathlib import Path
 
 from lib import repo_layout
 from lib.cmdtree import cmdparse
@@ -30,16 +28,6 @@ def _is_naked_pytest(seg: list[str]) -> bool:
     return bool(base.startswith("python") and toks[1:3] == ["-m", "pytest"])
 
 
-def _has_make_test(code_dir: str) -> bool:
-    makefile = Path(code_dir) / "Makefile"
-    if not makefile.exists():
-        return False
-    try:
-        return bool(re.search(r"^test(-\w+)?\s*:", makefile.read_text(encoding="utf-8"), re.MULTILINE))
-    except OSError:
-        return False
-
-
 class PytestNakedRule(Rule):
     name = "pytest-naked"
     target_kind = TargetKind.CHANGE
@@ -55,8 +43,9 @@ class PytestNakedRule(Rule):
             return []
         # 按命令的实际 cwd 归属到 code unit，而非拿 repo 单值 code_dir——多代码目录仓里
         # 在 cli/ 下跑 pytest，该查 cli/ 的 Makefile，不是默认的 server/。
-        code_dir = repo_layout.enclosing_code_unit(change.cwd, git_root).path
-        if not _has_make_test(code_dir):
+        unit = repo_layout.enclosing_code_unit(change.cwd, git_root)
+        code_dir = unit.path
+        if not unit.has_target("test", suffix=True):
             return []
         return [
             Finding(

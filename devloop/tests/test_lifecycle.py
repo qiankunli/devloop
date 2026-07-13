@@ -160,19 +160,19 @@ def test_lifecycle_dispatch():
     # 内置注册表解析得到可调用 handler
     assert callable(lc.resolve_handler("lint")) and lc.resolve_handler("nope") is None
 
-def test_pick_test_target_detect_matches_execute():
-    """探测即执行：只有 `test-ci` 的仓要跑 `make test-ci`，不能判成「有测试」却硬跑不存在的
-    `make test`（旧 `has_target(suffix=True)` bug）。无任何 test 目标 → None（干净跳过）。"""
-    from lib.lifecycle import checks
+def test_code_unit_test_target_detect_matches_execute():
+    """CodeUnit.test_target 探测即执行：只有 `test-ci` 的仓要跑 `make test-ci`，不能判成「有
+    测试」却硬跑不存在的 `make test`（旧 `has_target(suffix=True)` bug）。无 test 目标 → None。"""
+    from lib.repo_layout import CodeUnit
     D = "/tmp/dlut_testtarget"
     shutil.rmtree(D, ignore_errors=True)
     os.makedirs(f"{D}/ci"); os.makedirs(f"{D}/plain"); os.makedirs(f"{D}/none")
     Path(f"{D}/ci/Makefile").write_text("test-ci:\n\techo ok\n")
     Path(f"{D}/plain/Makefile").write_text("test:\n\techo ok\ntest-local:\n\techo ok\n")
     Path(f"{D}/none/Makefile").write_text("build:\n\techo ok\n")
-    assert checks.pick_test_target(f"{D}/ci") == "test-ci"      # 判据==执行目标，不再错跑 make test
-    assert checks.pick_test_target(f"{D}/plain") == "test"      # canonical `test` 优先
-    assert checks.pick_test_target(f"{D}/none") is None         # 无 test 目标 → 跳过
+    assert CodeUnit(f"{D}/ci").test_target() == "test-ci"      # 判据==执行目标，不再错跑 make test
+    assert CodeUnit(f"{D}/plain").test_target() == "test"      # canonical `test` 优先
+    assert CodeUnit(f"{D}/none").test_target() is None         # 无 test 目标 → 跳过
 
 def test_lifecycle_config_layering():
     """config.lifecycle()：default 全空（opt-in），repo 级 .devloop/config.json 覆盖该 repo 的相位。"""

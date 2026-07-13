@@ -35,7 +35,7 @@ def main(argv: list[str]) -> int:
     record_active_repo(repo)
 
     # 用解析到的 unit（按操作目标选出），不让 checks 从 git_root 重探默认 unit 盖掉它。
-    res = checks.lint(repo, capture=False, code_dir=unit.path)   # capture=False：make 实时走到终端
+    res = checks.lint(repo, capture=False, unit=unit)   # capture=False：make 实时走到终端
     print(("✓ " if res.ok else "✗ ") + res.summary)
     return 0 if res.ok else 1
 

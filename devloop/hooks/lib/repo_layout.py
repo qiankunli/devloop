@@ -6,6 +6,7 @@ Routes the git call through `gitcmd`
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,9 +20,44 @@ class CodeUnit:
     一个 git 仓可含多个 unit（`server/` + `cli/`、`packages/*`、`cmd/*`）；「操作落在哪个
     unit」由**操作目标路径**决定，不由 repo 的单值属性决定——这正是单值 `code_dir` 在多代码
     目录仓上选错目录的根因。path+language 在解析边界一次算清、绑成一个值对象随解析结果下传，
-    消费方不再各自 `detect_language` 重推（与 `ResolvedRepo` 同动机，低一层）。"""
+    消费方不再各自 `detect_language` 重推（与 `ResolvedRepo` 同动机，低一层）。
+
+    unit 也拥有**自己的工具链动作**（`has_target` / `lint_target` / `test_target`）：一个
+    unit「能不能 / 该怎么 lint/test」是它自己的事实，收在这里，消费方（checks / gate rules）
+    直接问 unit，而不是各自拿 `str` 路径去重解析 Makefile（避免 str 路径当隐式协议、同一判断
+    出现多份实现）。"""
     path: str
     language: str | None = None
+
+    def has_target(self, name: str, *, suffix: bool = False) -> bool:
+        """本 unit 的 Makefile 是否有名为 `name` 的 target。suffix=True 时 `name-ci` /
+        `name-local` 也算命中（用于「有没有这类目标」的宽判）。"""
+        mk = Path(self.path) / "Makefile"
+        if not mk.exists():
+            return False
+        pat = rf"^{re.escape(name)}(-\w+)?\s*:" if suffix else rf"^{re.escape(name)}\s*:"
+        try:
+            return bool(re.search(pat, mk.read_text(encoding="utf-8"), re.MULTILINE))
+        except OSError:
+            return False
+
+    def lint_target(self) -> str | None:
+        """要跑的 lint target：`lint-ci` > `lint`。`lint-ci` 通常先 `uv sync` 钉版工具链，
+        跑 plain `lint` 用本地新版 formatter 会本地过、CI 挂；有 lint-ci 就用它与 CI 对齐。
+        无 → None（无 lint 目标，干净跳过）。"""
+        for t in ("lint-ci", "lint"):
+            if self.has_target(t):
+                return t
+        return None
+
+    def test_target(self) -> str | None:
+        """要跑的 test target：`test` > `test-ci` > `test-local`。**探测即执行**——返回真正
+        存在的目标名，判据与执行对齐（旧代码判「有测试」用宽判、却硬跑 `make test`，只有
+        `test-ci` 的仓会误判成有测试再报错）。无 → None（干净跳过）。"""
+        for t in ("test", "test-ci", "test-local"):
+            if self.has_target(t):
+                return t
+        return None
 
 
 def find_git_root(cwd: str | Path) -> str | None:
