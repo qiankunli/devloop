@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 
 from lib import repo_layout
-from lib.context import RepoContext
 from lib.core.domain import Command, Finding, Severity, TargetKind
 from lib.core.protocol import Rule
 
@@ -33,8 +32,9 @@ class PipInstallRule(Rule):
         git_root = repo_layout.find_git_root(ctx.cwd)
         if not git_root:
             return []
-        rc = RepoContext.load(git_root)
-        code_dir = Path(rc.repo.code_dir if rc else git_root)
+        # 按命令 cwd 归属到 code unit：uv-managed 判定看你实际所在 unit 的 pyproject+uv.lock，
+        # 多代码目录仓里不同 unit 的包管理方式可能不同。
+        code_dir = Path(repo_layout.enclosing_code_unit(ctx.cwd, git_root).path)
         if not ((code_dir / "pyproject.toml").exists() and (code_dir / "uv.lock").exists()):
             return []
         return [

@@ -6,9 +6,58 @@ Routes the git call through `gitcmd`
 from __future__ import annotations
 
 import os
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import gitcmd
+
+
+@dataclass(frozen=True)
+class CodeUnit:
+    """仓库内一个自带工具链、可独立 build/lint/test 的目录（make/uv 的 workdir）。
+
+    一个 git 仓可含多个 unit（`server/` + `cli/`、`packages/*`、`cmd/*`）；「操作落在哪个
+    unit」由**操作目标路径**决定，不由 repo 的单值属性决定——这正是单值 `code_dir` 在多代码
+    目录仓上选错目录的根因。path+language 在解析边界一次算清、绑成一个值对象随解析结果下传，
+    消费方不再各自 `detect_language` 重推（与 `ResolvedRepo` 同动机，低一层）。
+
+    unit 也拥有**自己的工具链动作**（`has_target` / `lint_target` / `test_target`）：一个
+    unit「能不能 / 该怎么 lint/test」是它自己的事实，收在这里，消费方（checks / gate rules）
+    直接问 unit，而不是各自拿 `str` 路径去重解析 Makefile（避免 str 路径当隐式协议、同一判断
+    出现多份实现）。"""
+    path: str
+    language: str | None = None
+
+    def has_target(self, name: str, *, suffix: bool = False) -> bool:
+        """本 unit 的 Makefile 是否有名为 `name` 的 target。suffix=True 时 `name-ci` /
+        `name-local` 也算命中（用于「有没有这类目标」的宽判）。"""
+        mk = Path(self.path) / "Makefile"
+        if not mk.exists():
+            return False
+        pat = rf"^{re.escape(name)}(-\w+)?\s*:" if suffix else rf"^{re.escape(name)}\s*:"
+        try:
+            return bool(re.search(pat, mk.read_text(encoding="utf-8"), re.MULTILINE))
+        except OSError:
+            return False
+
+    def lint_target(self) -> str | None:
+        """要跑的 lint target：`lint-ci` > `lint`。`lint-ci` 通常先 `uv sync` 钉版工具链，
+        跑 plain `lint` 用本地新版 formatter 会本地过、CI 挂；有 lint-ci 就用它与 CI 对齐。
+        无 → None（无 lint 目标，干净跳过）。"""
+        for t in ("lint-ci", "lint"):
+            if self.has_target(t):
+                return t
+        return None
+
+    def test_target(self) -> str | None:
+        """要跑的 test target：`test` > `test-ci` > `test-local`。**探测即执行**——返回真正
+        存在的目标名，判据与执行对齐（旧代码判「有测试」用宽判、却硬跑 `make test`，只有
+        `test-ci` 的仓会误判成有测试再报错）。无 → None（干净跳过）。"""
+        for t in ("test", "test-ci", "test-local"):
+            if self.has_target(t):
+                return t
+        return None
 
 
 def find_git_root(cwd: str | Path) -> str | None:
@@ -33,6 +82,32 @@ def find_repo_code_dir(repo_dir: str | Path) -> str:
         if candidate.is_dir() and _has_code_markers(candidate):
             return str(candidate)
     return str(repo_dir)
+
+
+def default_code_unit(git_root: str | Path) -> CodeUnit:
+    """repo 级默认 unit：没有更具体的操作目标路径时用（如按名字 /enter 一个仓、cwd 就是仓根）。
+    探测规则同 `find_repo_code_dir`（`server/` > `backend/` > repo 根）。"""
+    code_dir = find_repo_code_dir(git_root)
+    return CodeUnit(code_dir, detect_language(code_dir))
+
+
+def enclosing_code_unit(target: str | Path, git_root: str | Path) -> CodeUnit:
+    """操作目标 `target`（文件或目录）落在哪个 code unit：从 target 向上找**最近**的带工具链清单
+    的目录，边界止于 `git_root`（不越出仓）。
+
+    当 target 就是（或在）仓根、其间没有更具体的 unit 时回落 `default_code_unit`——所以
+    `run_tests.py doctor` 仍走默认 `server/`，而 `run_tests.py doctor/cli` 精确命中 `cli/`。
+    仓根自身的 orchestration Makefile 不抢默认：target==git_root 直接走 default（探测顺序说了算）。"""
+    root = Path(git_root).resolve()
+    p = Path(target).resolve()
+    cur = p if p.is_dir() else p.parent
+    # 只在 git_root 严格子目录里向上走；命中 marker 即为该 unit。target 在仓根或仓外 →
+    # 循环不进入，落到 default（仓根的探测优先级说了算，别被根级编排 Makefile 抢走）。
+    while cur != root and root in cur.parents:
+        if _has_code_markers(cur):
+            return CodeUnit(str(cur), detect_language(str(cur)))
+        cur = cur.parent
+    return default_code_unit(git_root)
 
 
 def _has_code_markers(path: Path) -> bool:
