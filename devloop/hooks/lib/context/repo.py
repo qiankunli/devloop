@@ -584,7 +584,10 @@ def _format_turn(ctx: "RepoContext") -> str:
         if _rs == "error":
             parts.append("review errored")
         summary = ", ".join(parts) if parts else "clean (no findings)"
-        lines.append(f"Review: {summary} on {_sha} — see .devloop/review.json")
+        # findings 处理后要逐条打 ccr:label（ground truth 双向积累）——nudge 挂在
+        # 有 finding 的行上，让所有 session/agent（含 Codex）都收到，不依赖个体记忆。
+        hint = "; 处理后逐条打标（label-review skill）" if _n else ""
+        lines.append(f"Review: {summary} on {_sha} — see .devloop/review.json{hint}")
 
     if ctx.prs:
         noun, sigil = vocab(ctx.provider)
