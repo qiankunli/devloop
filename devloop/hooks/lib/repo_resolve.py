@@ -33,26 +33,34 @@ from .context.workspace import workspace_for_repo
 
 @dataclass(frozen=True)
 class ResolvedRepo:
-    """The four path identities of one resolved repo, computed ONCE at the resolution
-    boundary so consumers stop re-deriving them ad hoc（symlink/canonical/code-dir 语义
-    散落在各消费方时，路径不一致问题会反复出现）:
+    """The identities of one resolved repo, computed ONCE at the resolution boundary so
+    consumers stop re-deriving them ad hoc（symlink/canonical/code-unit 语义散落在各消费方
+    时，路径不一致问题会反复出现）:
 
     - `git_root`: 解析入口路径（可能经 symlink，保留调用方视角）
     - `real_git_root`: realpath 后的 canonical 路径（比较 / rebase 用这个）
-    - `code_dir`: make/uv 的 workdir（Python 常是 server/、backend/）
+    - `code_unit`: 本次操作落在哪个 code unit（make/uv 的 workdir + 语言）。多代码目录仓
+      （server/ + cli/…）里由**操作目标路径**决定，不是 repo 单值属性——见 `CodeUnit`
     - `workspace_root`: 所属聚合工作区根（单仓库模式为 None）
     - `source`: 解析来源自述（"cwd" / "subproject 'x'" / …），进 PLAN banner
     """
     git_root: str
     real_git_root: str
-    code_dir: str
+    code_unit: repo_layout.CodeUnit
     workspace_root: str | None
     source: str
 
 
-def _resolved(git_root: str, source: str) -> tuple[ResolvedRepo, str]:
+def _resolved(git_root: str, source: str, target_path: str | Path | None = None) -> tuple[ResolvedRepo, str]:
+    """`target_path` 给出时（显式路径 / cwd 等有具体操作目标的解析），unit 按目标路径向上归属
+    （多代码目录仓选对 unit）；否则用 repo 默认 unit（持久化缓存优先，否则探测）。"""
     ctx = RepoContext.load(git_root)
-    code = (ctx.repo.code_dir if ctx and ctx.repo.code_dir else None) or repo_layout.find_repo_code_dir(git_root)
+    if target_path is not None:
+        unit = repo_layout.enclosing_code_unit(target_path, git_root)
+    else:
+        cached = ctx.repo.code_dir if ctx and ctx.repo.code_dir else None
+        unit = repo_layout.CodeUnit(cached, repo_layout.detect_language(cached)) if cached \
+            else repo_layout.default_code_unit(git_root)
     # workspace_for_repo, NOT plain containment: workspaces are symlink farms, so the
     # canonical git_root usually lives outside the workspace tree — containment-only
     # would report workspace_root=None for every symlinked subproject (Mode B 误判)
@@ -60,7 +68,7 @@ def _resolved(git_root: str, source: str) -> tuple[ResolvedRepo, str]:
     r = ResolvedRepo(
         git_root=str(git_root),
         real_git_root=str(Path(git_root).resolve()),
-        code_dir=str(code),
+        code_unit=unit,
         workspace_root=str(ws) if ws else None,
         source=source,
     )
@@ -131,7 +139,7 @@ def resolve_repo_dir(query: str | None, cwd: str | Path = ".") -> tuple[Resolved
                 p = cwd / p
             root = repo_layout.find_git_root(p) if p.is_dir() else None
             if root:
-                return _resolved(root, f"path '{query}'")
+                return _resolved(root, f"path '{query}'", target_path=p)
             return None, f"--repo path is not (in) a git repo: {p}"
         # subproject name: containing workspace first (ordering only breaks ties),
         # then every registered workspace — cwd may be anywhere.
@@ -149,7 +157,7 @@ def resolve_repo_dir(query: str | None, cwd: str | Path = ".") -> tuple[Resolved
             p = cwd / query
             root = repo_layout.find_git_root(p) if p.is_dir() else None
             if root:
-                return _resolved(root, f"path '{query}'")
+                return _resolved(root, f"path '{query}'", target_path=p)
             return None, f"no subproject matches '{query}' in any registered workspace"
         scored.sort(key=lambda t: (t[0], t[1]))
         exact = [x for x in scored if x[0] == 0]
@@ -164,7 +172,8 @@ def resolve_repo_dir(query: str | None, cwd: str | Path = ".") -> tuple[Resolved
 
     root = repo_layout.find_git_root(cwd)
     if root:
-        return _resolved(root, "cwd")
+        # cwd is the operation target: being in server/ vs cli/ picks that unit.
+        return _resolved(root, "cwd", target_path=cwd)
 
     ws_root = workspace.find_containing_workspace(cwd)
     if ws_root:

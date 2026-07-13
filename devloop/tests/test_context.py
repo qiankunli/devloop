@@ -225,8 +225,8 @@ def test_resolve_repo_dir():
     try:
         r, how = repo_resolve.resolve_repo_dir(f"{W}/real/nb", "/")           # 显式路径
         assert r and Path(r.git_root).resolve() == real_nb
-        # 四个路径身份在解析边界一次算清(ResolvedRepo),消费方不再各自 re-derive
-        assert Path(r.real_git_root) == real_nb and r.code_dir and r.source == how
+        # 路径身份在解析边界一次算清(ResolvedRepo),消费方不再各自 re-derive
+        assert Path(r.real_git_root) == real_nb and r.code_unit.path and r.source == how
         r, how = repo_resolve.resolve_repo_dir("nb", "/")                     # 子项目名 → canonical 仓库
         assert r and Path(r.git_root).resolve() == real_nb and "subproject" in how
         # symlink farm 下 canonical git_root 在 workspace 树外,containment-only 会得
@@ -245,6 +245,34 @@ def test_resolve_repo_dir():
         assert r is None
     finally:
         registry.load_workspaces = orig
+
+def test_code_unit_multi_dir():
+    """多代码目录仓（server/ + cli/）：unit 由**操作目标路径**决定，不是 repo 单值属性。
+    显式点名 cli 命中 cli；指向仓根 / 深层子目录归属到对应 unit；仓根回落默认 unit。"""
+    from lib import repo_layout, repo_resolve
+    R = "/tmp/dlut_unit"
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/repo/server/internal", exist_ok=True)
+    os.makedirs(f"{R}/repo/cli", exist_ok=True)
+    _git(f"{R}/repo", "init", "-q")
+    Path(f"{R}/repo/server/pyproject.toml").write_text("[project]\n")
+    Path(f"{R}/repo/cli/package.json").write_text('{"devDependencies":{"typescript":"5"}}')
+    Path(f"{R}/repo/cli/Makefile").write_text("test:\n\techo ok\n")
+
+    # 向上归属：cli 目标 → cli（语言 ts）；server 深层 → server（语言 py）
+    u_cli = repo_layout.enclosing_code_unit(f"{R}/repo/cli", f"{R}/repo")
+    assert Path(u_cli.path).name == "cli" and u_cli.language == "typescript"
+    u_srv = repo_layout.enclosing_code_unit(f"{R}/repo/server/internal", f"{R}/repo")
+    assert Path(u_srv.path).name == "server" and u_srv.language == "python"
+    # 目标就是仓根 → 默认 unit（探测 server/ 优先），不被根级无 marker 抢成 repo 根
+    assert Path(repo_layout.enclosing_code_unit(f"{R}/repo", f"{R}/repo").path).name == "server"
+    assert Path(repo_layout.default_code_unit(f"{R}/repo").path).name == "server"
+
+    # 解析边界：显式路径把 unit 带进 ResolvedRepo.code_unit，不再折叠成 git_root 重探默认
+    r, _ = repo_resolve.resolve_repo_dir(f"{R}/repo/cli", "/")
+    assert r and Path(r.code_unit.path).name == "cli" and r.code_unit.language == "typescript"
+    r, _ = repo_resolve.resolve_repo_dir(None, f"{R}/repo/cli")   # cwd 在 cli 下
+    assert r and Path(r.code_unit.path).name == "cli"
 
 def test_active_repo_first_entry_symlink_workspace():
     """P1 回归:首次进入(尚无 context.json)+ symlink 子仓,record_active_repo 也要落

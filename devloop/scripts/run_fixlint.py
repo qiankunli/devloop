@@ -27,11 +27,15 @@ def main(argv: list[str]) -> int:
     ns = ap.parse_args(argv)
     resolved, how = cli.resolve_repo_or_exit(ns, "run_fixlint")
     repo = resolved.git_root
+    unit = resolved.code_unit
     if how != "cwd":
         print(f"run_fixlint: repo = {repo} ({how})")
+    if unit.path != repo:   # 多代码目录仓：点明落在哪个 unit
+        print(f"run_fixlint: code unit = {unit.path} ({unit.language or '?'})")
     record_active_repo(repo)
 
-    res = checks.lint(repo, capture=False)   # capture=False：make 实时走到终端
+    # 用解析到的 unit（按操作目标选出），不让 checks 从 git_root 重探默认 unit 盖掉它。
+    res = checks.lint(repo, capture=False, code_dir=unit.path)   # capture=False：make 实时走到终端
     print(("✓ " if res.ok else "✗ ") + res.summary)
     return 0 if res.ok else 1
 

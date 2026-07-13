@@ -11,7 +11,6 @@ from pathlib import Path
 
 from lib import repo_layout
 from lib.cmdtree import cmdparse
-from lib.context import RepoContext
 from lib.core.domain import Change, Finding, Severity, TargetKind
 from lib.core.protocol import Rule
 
@@ -54,8 +53,9 @@ class PytestNakedRule(Rule):
         git_root = repo_layout.find_git_root(change.cwd)
         if not git_root:
             return []
-        rc = RepoContext.load(git_root)
-        code_dir = rc.repo.code_dir if rc else git_root
+        # 按命令的实际 cwd 归属到 code unit，而非拿 repo 单值 code_dir——多代码目录仓里
+        # 在 cli/ 下跑 pytest，该查 cli/ 的 Makefile，不是默认的 server/。
+        code_dir = repo_layout.enclosing_code_unit(change.cwd, git_root).path
         if not _has_make_test(code_dir):
             return []
         return [
