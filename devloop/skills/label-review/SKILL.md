@@ -23,12 +23,15 @@ review 质量评估的 ground truth，双向积累：真问题和误报一样有
    - `ccr:label=wrong — <理由>`（误报，附反证）
    理由里可带病因 tag：`#textbook` `#padding` `#pre-existing` `#stale` `#cross-file`。
    发现 review 漏掉的问题，对该 diff 行**直接评论** `ccr:missed — <一句描述>`。
-4. **无 PR 线程的 finding**（本地 review.json）：把标注手工追加进 ccr 仓
+4. **无 PR/MR 线程的 finding**（本地 review.json）：把标注手工追加进 ccr 仓
    `eval/labels/<owner>-<repo>.jsonl`（一行 JSON：fingerprint/label/note/tags/path/line/
    `source: "local:<repo>#<pr>"`），fingerprint 取自 review.json 的 comments[]。
-5. **回收**（有 PR 线程时）：在 ccr 仓运行
-   `python3 eval/labels.py github <owner>/<repo> <pr> --out eval/labels/<owner>-<repo>.jsonl`，
-   标注资产提交入库（ccr 仓 github.com/qiankunli/case-code-review）。
+5. **回收**（有 PR/MR 线程时）：在 ccr 仓（github.com/qiankunli/case-code-review）运行，
+   标注资产提交入库：
+   - GitHub：`python3 eval/labels.py github <owner>/<repo> <pr> --out eval/labels/<owner>-<repo>.jsonl`
+   - GitLab/Codebase：`GITLAB_TOKEN=<token> python3 eval/labels.py gitlab <group/proj> <mr-iid>
+     --host <forge-host> --out eval/labels/<path 以 - 连接>.jsonl`
+     （token/host 与 devloop forge 配置同源：env `GITLAB_TOKEN` 或 config `forges[<host>].token`）
 
 ## 纪律
 
