@@ -138,6 +138,45 @@ def test_pr_cli_dispatch():
         prcli.forge_for_repo = orig_forge
         prcli.cli.resolve_repo_or_exit = orig_resolve
 
+
+def test_pr_cli_findings_and_reply():
+    """`pr findings` / `pr reply` 是打标闭环的读写两半:一条 provider-neutral 命令,让 skill
+    不必分 GitHub/GitLab 各写一套 API 姿势。reply 用 findings 打印的 comment id 定位,线程
+    在这里解析——调用方不碰 provider 的 threading 模型。"""
+    from lib.forge.base import Comment
+    prcli = _load_script("pr")
+
+    class _F(_FakeForge):
+        def __init__(self, prs):
+            super().__init__(prs)
+            self.replied = []
+        def comments(self, number):
+            return [
+                Comment(id="20", thread_id="20", path="a.py", line=5, body="漏判空 ccr:fp=fp1"),
+                Comment(id="21", thread_id="20", reply_to="20", body="ccr:label=wrong — 走不到"),
+                Comment(id="30", thread_id="30", path="b.py", body="缺测试 ccr:fp=fp2"),
+            ]
+        def reply(self, number, target, body):
+            self.replied.append((number, target.id, body))
+
+    fake = _F([PullRequest(number=5, state="open", source_branch="feat/x")])
+
+    class _R:
+        git_root = "/x"
+
+    orig_forge, orig_resolve = prcli.forge_for_repo, prcli.cli.resolve_repo_or_exit
+    try:
+        prcli.forge_for_repo = lambda repo: fake
+        prcli.cli.resolve_repo_or_exit = lambda ns, prog: (_R(), "test")
+        assert prcli.main(["findings", "5"]) == 0
+        assert prcli.main(["findings", "5", "--pending"]) == 0
+        assert prcli.main(["reply", "5", "30", "ccr:label=minor — 补了"]) == 0
+        assert fake.replied == [(5, "30", "ccr:label=minor — 补了")]
+        assert prcli.main(["reply", "5", "999", "x"]) == 1      # 不存在的 comment id → 报错,不静默
+    finally:
+        prcli.forge_for_repo = orig_forge
+        prcli.cli.resolve_repo_or_exit = orig_resolve
+
 def test_forge_release_endpoints():
     """create_release / latest_release hit the right endpoint with the provider's field names
     and map back to the neutral Release: github POST/GET releases (`target_commitish`/`body`,

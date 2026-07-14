@@ -197,6 +197,8 @@ class RepoContext:
     provider: str = ""   # repo-level forge ("github"/"gitlab"); drives display vocabulary
     merge_readiness: str | None = None   # current branch's open-MR readiness — a pr.json hint
                                          # (MergeReadiness value); re-checked live before a merge
+    label_pending: int | None = None     # open MR's findings still awaiting a ccr:label verdict
+                                         # — a pr.json hint; None = no open MR / poll failed
     updated_at: float = 0.0
 
     # ── load (merge segments) ──────────────────────────────────────────────────
@@ -241,6 +243,7 @@ class RepoContext:
             prs=[PullRequest.from_dict(p) for p in (pr.get("prs") or []) if p.get("number") is not None],
             provider=pr.get("provider", ""),
             merge_readiness=(pr.get("merge_readiness") if on_branch else None),
+            label_pending=(pr.get("label_pending") if on_branch else None),
             updated_at=float(meta.get("updated_at", 0) or 0),
         )
         if not ctx.repo.repo_dir:
@@ -584,10 +587,17 @@ def _format_turn(ctx: "RepoContext") -> str:
         if _rs == "error":
             parts.append("review errored")
         summary = ", ".join(parts) if parts else "clean (no findings)"
-        # findings 处理后要逐条打 ccr:label（ground truth 双向积累）——nudge 挂在
-        # 有 finding 的行上，让所有 session/agent（含 Codex）都收到，不依赖个体记忆。
-        hint = "; 处理后逐条打标（label-review skill）" if _n else ""
-        lines.append(f"Review: {summary} on {_sha} — see .devloop/review.json{hint}")
+        lines.append(f"Review: {summary} on {_sha} — see .devloop/review.json")
+
+    # 待打标 nudge（ground truth 双向积累）——让所有 session/agent（含 Codex）都收到，
+    # 不依赖个体记忆。数来自 pr.json（forge 派生:有 ccr:fp 却没有 ccr:label 回复的 finding
+    # comment），刻意不用 review.json 的 finding 数:那是「上次 review 出了几条」,不是「还剩
+    # 几条没标」——标完了它照喊，review.json 被下轮覆盖 / 换机器 / worktree 删了它就没了，
+    # 而 MR 上没标的 finding 还挂着。pending 锚在 forge 上，跟本地状态无关。
+    # 独立于上面的 Review 行:review.json 没了不影响它，两者是不同的事实源。
+    if ctx.label_pending:
+        lines.append(f"Review findings: {ctx.label_pending} 条待打标 — 逐条求证后回复 "
+                     f"`ccr:label=`（label-review skill）")
 
     if ctx.prs:
         noun, sigil = vocab(ctx.provider)

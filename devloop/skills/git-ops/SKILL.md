@@ -98,11 +98,16 @@ One provider-neutral, config-driven surface for **inspecting / managing an exist
 is gcampr's job, above.
 
 ```
-python3 <PLUGIN_ROOT>/scripts/pr.py show   <number|url>        # state/branches/merge-readiness/comments
-python3 <PLUGIN_ROOT>/scripts/pr.py list   [--limit N] [--branch B]
-python3 <PLUGIN_ROOT>/scripts/pr.py update <number> --title "..." --description "..." --target-branch <b>
-python3 <PLUGIN_ROOT>/scripts/pr.py close  <number>            # close without merging
+python3 <PLUGIN_ROOT>/scripts/pr.py show     <number|url>      # state/branches/merge-readiness/comments
+python3 <PLUGIN_ROOT>/scripts/pr.py list     [--limit N] [--branch B]
+python3 <PLUGIN_ROOT>/scripts/pr.py update   <number> --title "..." --description "..." --target-branch <b>
+python3 <PLUGIN_ROOT>/scripts/pr.py close    <number>          # close without merging
+python3 <PLUGIN_ROOT>/scripts/pr.py findings <number> [--pending]  # findings + 其 ccr:label verdict
+python3 <PLUGIN_ROOT>/scripts/pr.py reply    <number> <comment-id> "<body>"  # 回到某 comment 的线程
 ```
+
+`findings` / `reply` 是打标闭环的读写两半;判定纪律（必须对照真实代码求证、四档词表）在
+`label-review` skill,别绕开它自己编标准——那会让 ground truth 退化成"模型认同模型"。
 
 There is no `pr create`: `pr` only ever operates on an MR that already exists and never touches
 your working tree. Opening a new one is a commit+push transaction under the branch/staging gates

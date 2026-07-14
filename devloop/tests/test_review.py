@@ -64,6 +64,37 @@ def test_review_injection_line():
     assert "2 finding(s)" in t and "1 file(s) failed" in t
     seg(status="error", count=0); assert "Review: review errored on abcdef123" in ctx.turn_text()
 
+
+def test_label_pending_nudge_is_forge_derived():
+    """待打标 nudge 的数来自 pr.json（forge 派生的 pending），不是 review.json 的 finding 数。
+    两个关键性质：(1) review.json 说有 2 条 finding、但都标完了(pending=0) → 不再喊;
+    (2) review.json 整个没了 / 被下轮覆盖 → nudge 照样在,因为 pending 锚在 forge 上。"""
+    from lib.context import RepoContext, store
+    G = "/tmp/dlut_labelnudge"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
+    _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
+    Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
+    ctx = RepoContext.refresh_all(G)
+    R, branch = ctx.repo.repo_dir, ctx.branch.local.name
+
+    def prseg(**kw): store.save_segment(R, "pr", {"branch": branch, "provider": "github", **kw})
+    _rseg = store.branch_segment(branch, "review")
+    def revseg(**kw): store.save_segment(R, _rseg, {"reviewed_sha": "abcdef1234567", "comments": [],
+                                                    "generated_at": 1.0, **kw})
+
+    revseg(status="success", count=2)
+    prseg(label_pending=2); assert "2 条待打标" in RepoContext.load(R).turn_text()
+    prseg(label_pending=0); assert "待打标" not in RepoContext.load(R).turn_text()   # 标完 → 不喊
+    prseg(label_pending=None); assert "待打标" not in RepoContext.load(R).turn_text()  # 无开着的 MR / poll 失败
+
+    # review.json 没了（下轮覆盖 / 换机器 / worktree 删了）→ nudge 仍在：MR 上没标的还挂着
+    store.save_segment(R, _rseg, {})
+    prseg(label_pending=3); t = RepoContext.load(R).turn_text()
+    assert "3 条待打标" in t and "Review:" not in t
+
+    # pr.json 是 branch-keyed：切走后不认（与 pr_number / merge_readiness 同一条约定）
+    prseg(label_pending=3); store.save_segment(R, "pr", {"branch": "other", "label_pending": 3})
+    assert "待打标" not in RepoContext.load(R).turn_text()
+
 def test_launch_background_relays():
     """detach 起后台 relay：不抛、写 PLAN 行；空列表 no-op。"""
     sgo = _load_script("smart_git_ops")
@@ -236,6 +267,35 @@ def test_post_inline_degrades_line_to_file_anchor():
     assert (n, fb) == (1, [])                          # 没掉进汇总
     assert f.diff_posted[0][:3] == (7, "a.py", None)   # 退到文件级锚点
     assert "ccr:fp=fp1" in f.diff_posted[0][3]         # 指纹仍在 → 仍 join 得回 finding
+
+
+def test_review_feedback_joins_fp_to_label():
+    """review_feedback 把 finding comment（`ccr:fp=`）和它线程里的 `ccr:label=` 回复 join
+    起来——join 键在 body 里、锚在 forge 上，不依赖任何本地状态。汇总 note 里也有 ccr:fp
+    （每条回落 finding 一个），但它没锚点、没 thread，回不进去也就标不了，必须排除。"""
+    from lib.forge.base import Comment
+    from lib.review_feedback import findings, pending
+
+    cs = [
+        # 汇总 note：无 thread，body 里有多个 ccr:fp → 不是 published finding
+        Comment(id="1", thread_id="", body="2 finding(s)\n- `a.py` `ccr:fp=aaa`\n- `b.py` `ccr:fp=bbb`"),
+        Comment(id="20", thread_id="20", path="a.py", line=5, body="漏判空 <sub>ccr:fp=fp1</sub>"),
+        Comment(id="21", thread_id="20", reply_to="20", body="ccr:label=wrong — 该路径走不到 #textbook"),
+        Comment(id="30", thread_id="30", path="b.py", body="缺测试 <sub>ccr:fp=fp2</sub>"),   # file-level
+    ]
+    fs = findings(cs)
+    assert [(f.fp, f.label) for f in fs] == [("fp1", "wrong"), ("fp2", "")]   # 汇总 note 未入列
+    assert [f.fp for f in pending(cs)] == ["fp2"]
+    assert fs[1].comment.path == "b.py" and fs[1].comment.line is None
+
+    # 词表外的 verdict 视为未标——打错字必须显示成还没标,不能污染 ground truth
+    typo = [Comment(id="40", thread_id="40", body="x <sub>ccr:fp=fp3</sub>"),
+            Comment(id="41", thread_id="40", reply_to="40", body="ccr:label=importnat — oops")]
+    assert [f.fp for f in pending(typo)] == ["fp3"]
+
+    # 带 ccr:label 但不是回复（thread 根自己提了一嘴）→ 不算 verdict
+    selfref = [Comment(id="50", thread_id="50", body="讲讲 ccr:label=wrong 的用法 <sub>ccr:fp=fp4</sub>")]
+    assert [f.fp for f in pending(selfref)] == ["fp4"]
 
 
 def test_format_comment_counts_inline():
