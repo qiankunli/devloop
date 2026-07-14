@@ -19,6 +19,7 @@ from lib.context import (  # noqa: E402
     WorkspaceContext,
     load_active_repo,
     load_active_repo_lenient,
+    record_injection,
 )
 
 
@@ -66,7 +67,17 @@ def produce(inp: hook_io.HookInput) -> str | None:
             parts.append(f"{t} | {stale_note}" if stale_note else t)
             ctx.mark_turn_emitted(t)
 
-    return "\n\n".join(parts) if parts else None
+    text = "\n\n".join(parts) if parts else None
+    # Log what actually went out (see session.record_injection). Placed here, not around each
+    # emit, because what's worth reviewing is the ASSEMBLED block the model saw. Needs
+    # git_root: the ledger is repo-domain, and a workspace-only turn has no repo to file it
+    # under. Fail-open — an observability write must never cost the injection itself.
+    if git_root and text:
+        try:
+            record_injection(git_root, inp.session_id, text)
+        except Exception:
+            pass
+    return text
 
 
 if __name__ == "__main__":

@@ -42,6 +42,30 @@ def _session_key(session_id: str | None) -> str:
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "") or os.environ.get("CODEX_SESSION_ID", "") or ""
 
 
+# ── injection log ──────────────────────────────────────────────────────────────
+def record_injection(repo_dir: str | Path, session_id: str | None, text: str) -> None:
+    """Append what devloop injected into this prompt → `<repo>/.devloop/sessions/<sid>.jsonl`.
+
+    An OBSERVABILITY ledger, read by humans, never by devloop: nothing loads this back, so it
+    can be deleted at any time. It exists because the injection is otherwise write-only — it's
+    assembled per turn, spent inside the model's context, and gone. You can read the code that
+    builds it, but not what it actually said on a given turn, which is what you need to judge
+    whether a line earned its tokens.
+
+    Records ONLY devloop's own injected text, not the user's prompt: the value is in reviewing
+    what WE emit, and the user's words are already in the CLI's transcript. Recording them here
+    would duplicate that into a second, unaudited place.
+
+    Not to be confused with `requirements/<id>/session.jsonl` — that's a REQUIREMENT's lifecycle
+    ledger keyed by its first branch, and devloop does read it back. This one is keyed by CLI
+    session and is pure exhaust.
+    """
+    if not text:
+        return
+    store.append_jsonl(repo_dir, f"sessions/{_session_name(session_id)}",
+                       {"ts": round(base.now(), 1), "text": text})
+
+
 # ── active-repo binding ────────────────────────────────────────────────────────
 # One file per session, owner = that session, so the one-file-one-owner rule holds
 # with zero exceptions: no cross-session read-modify-write exists at all. A
@@ -55,10 +79,14 @@ def _session_key(session_id: str | None) -> str:
 # sessions never ran SessionEnd) are pruned opportunistically on write.
 
 
+def _session_name(session_id: str | None) -> str:
+    """A session id as a safe path component. A CLI that provides no session id degrades to
+    one shared "anon" slot — sessions merge there rather than the state going nowhere."""
+    return re.sub(r"[^A-Za-z0-9._-]", "-", _session_key(session_id)) or "anon"
+
+
 def _session_file(ws_root: str | Path, session_id: str | None) -> Path:
-    # a CLI that provides no session id degrades to one shared "anon" slot
-    name = re.sub(r"[^A-Za-z0-9._-]", "-", _session_key(session_id)) or "anon"
-    return store.state_dir(ws_root) / "active" / f"{name}.json"
+    return store.state_dir(ws_root) / "active" / f"{_session_name(session_id)}.json"
 
 
 def _live_binding(path: Path) -> str | None:

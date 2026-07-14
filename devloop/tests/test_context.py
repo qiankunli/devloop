@@ -621,6 +621,44 @@ def test_inject_at_workspace_root_uses_active_repo():
     assert out and "Branch: feat/x" in out                 # active repo's turn context reached the prompt
 
 
+def test_inject_recorded_to_session_ledger():
+    """注入本来是 write-only 的——每轮拼好、在模型 context 里花掉、就没了；能读到构造它的代码，
+    读不到某一轮它实际说了什么，而后者才是判断「这行值不值它的 token」的依据。
+    `<repo>/.devloop/sessions/<sid>.jsonl` 把发出去的那一份留下，纯 exhaust：devloop 自己从不
+    读回，删了也不影响任何行为。只记 devloop 注入的文本，不记用户 prompt（那在 CLI transcript
+    里，再存一份等于多一处没人审的留存）。"""
+    import json as _json
+    from lib.context import RepoContext
+    ui = _load_hook("userprompt_inject")
+    R = "/tmp/dlut_injlog"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+
+    out = ui.produce(_hook_input("UserPromptSubmit", {"cwd": R, "session_id": "sess-A"}))
+    assert out and "Branch: feat/a" in out
+    p = Path(R) / ".devloop" / "sessions" / "sess-A.jsonl"
+    rows = [_json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["text"] == out and rows[0]["ts"] > 0      # 记的正是发出去的那一份
+
+    # cadence 压掉这轮（状态没变）→ 什么都没注入 → 不记：ledger 是「模型看见了什么」的账，
+    # 不是「hook 跑了几次」的账，记空行只会稀释它。
+    assert ui.produce(_hook_input("UserPromptSubmit", {"cwd": R, "session_id": "sess-A"})) is None
+    assert len(p.read_text(encoding="utf-8").splitlines()) == 1
+
+    # 另一个 session 各记各的；session id 里的路径分隔符必须消毒掉，不能写穿出目录
+    Path(f"{R}/dirty").write_text("y")     # 让 turn block 变化，否则会被 cadence 压掉
+    out2 = ui.produce(_hook_input("UserPromptSubmit", {"cwd": R, "session_id": "a/../../evil"}))
+    assert out2
+    sess_dir = Path(R) / ".devloop" / "sessions"
+    assert (sess_dir / "a-..-..-evil.jsonl").exists()             # `/` 消毒成 `-`，写不穿出去
+    assert sorted(x.name for x in sess_dir.iterdir()) == ["a-..-..-evil.jsonl", "sess-A.jsonl"]
+    assert len(p.read_text(encoding="utf-8").splitlines()) == 1   # sess-A 的账没被串写
+
+
 def test_append_jsonl_ledger():
     """store.append_jsonl 是 ledger 原语：多次追加成多行、每行独立 json、不覆写（对照 save_segment
     的整体覆写）；写失败 best-effort 不抛。"""
