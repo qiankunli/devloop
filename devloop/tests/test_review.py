@@ -104,6 +104,17 @@ def test_review_line_told_once_per_result():
     c = RepoContext.load(R); c.clear_injection_dedup()
     assert tell() is False
 
+    # running → stale 必须还能讲：stale 是 *推导* 的（running 超时），段里的 status 一直是
+    # running。若 key 认存的 status，这条「review 半路死了」就永远发不出来——而那正是
+    # staleness 兜底存在的唯一理由。
+    seg(status="running", count=0, reviewed_sha="bbbbbbbbbbbbb", generated_at=base.now())
+    assert tell() is True and tell() is False                  # running 讲一次
+    seg(status="running", count=0, reviewed_sha="bbbbbbbbbbbbb", generated_at=1.0)   # 超时 → stale
+    c = RepoContext.load(R)
+    assert "Review: stale" in c.turn_text()                    # 同一 status，但事件变了
+    c.mark_turn_emitted(c.turn_text())
+    assert tell() is False                                     # stale 也只讲一次
+
 
 def test_label_pending_nudge_is_forge_derived():
     """待打标 nudge 的数来自 pr.json（forge 派生的 pending），不是 review.json 的 finding 数。

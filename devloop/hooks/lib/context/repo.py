@@ -175,17 +175,34 @@ class Validation:
         )
 
 
-def _review_key(rv: dict) -> str:
-    """Identity of a review RESULT — what makes it a different thing worth telling again.
+def _review_status(rv: dict) -> str:
+    """The review status as DISPLAYED, which is not always the one stored.
 
-    status + the sha it ran against + its counts. A re-run over new code, or the same run
-    finishing (running → success), is new; the same result re-read every turn is not. Empty
-    for `skipped` / no review — nothing to tell.
+    `stale` is DERIVED, never written: a detached run_review that got killed (sleep / OOM /
+    kill) never wrote a terminal status, so review.json sits at `running` forever — past
+    REVIEW_STALE_SEC that reads as stale. "" for skipped / no review (no signal, pure noise).
+
+    Shared by the renderer and `_review_key` on purpose: keying on the STORED status would
+    make running and stale the same event, so a review told once while running could never
+    report that it died — the exact case the staleness backstop exists for.
     """
     status = rv.get("status")
     if not status or status == "skipped":
         return ""
-    return f"{status}:{rv.get('reviewed_sha') or ''}:{rv.get('count', 0)}:{rv.get('failed', 0)}"
+    if status == "running" and (base.now() - (rv.get("generated_at") or 0)) > base.REVIEW_STALE_SEC:
+        return "stale"
+    return status
+
+
+def _review_key(rv: dict) -> str:
+    """Identity of a review RESULT — what makes it a different thing worth telling again.
+
+    Displayed status + the sha it ran against + its counts. A re-run over new code, a run
+    finishing (running → success), or one dying (running → stale) is new; the same result
+    re-read every turn is not.
+    """
+    st = _review_status(rv)
+    return f"{st}:{rv.get('reviewed_sha') or ''}:{rv.get('count', 0)}:{rv.get('failed', 0)}" if st else ""
 
 
 @dataclass
@@ -623,18 +640,18 @@ def _format_turn(ctx: "RepoContext") -> str:
     # 经 channel 或 waiter（scripts/notify.py）在 review 出终态时主动唤醒 idle 会话并带上 findings——pull 是兜底。
     _rv = store.load_segment(ctx.repo.repo_dir,
                             store.branch_segment(ctx.branch.local.name or None, "review")) or {}
-    _rs, _sha = _rv.get("status"), (_rv.get("reviewed_sha") or "")[:9]
+    _sha = (_rv.get("reviewed_sha") or "")[:9]
     # Review 是**事件**,不是状态——「这次 review 出了什么」讲一遍就讲完了,它不描述「你现在
     # 在哪」。所以按 review 身份（status+sha+计数）报一次就闭嘴,而不是每轮跟着整块重发:
     # turn Cadence 按整块 hash 去重,随便哪行一动就整块重发,事件行会被反复重投,agent 于是
     # 反复 triage 同一批已经处理过的 findings。同理它不该被 PostCompact 复活（见 Nudge）。
-    if not ctx.review_nudge_due(_rv):
-        _rs = None
-    if _rs == "running" and (base.now() - (_rv.get("generated_at") or 0)) > base.REVIEW_STALE_SEC:
+    # 状态取 `_review_status`（与 key 同源）:stale 是推导出来的,不在段里。
+    _rs = _review_status(_rv) if ctx.review_nudge_due(_rv) else ""
+    if _rs == "stale":
         lines.append(f"Review: stale on {_sha} — 疑似中途中断（见 .devloop/review.json）；下次 gcampr/commit 会重跑")
     elif _rs == "running":
         lines.append(f"Review: running on {_sha} (.devloop/review.json)")
-    elif _rs and _rs != "skipped":   # success / completed_with_(warnings|errors) / error；skipped 不出（噪声）
+    elif _rs:   # success / completed_with_(warnings|errors) / error；skipped 已被 _review_status 滤掉
         _n, _failed = _rv.get("count", 0), _rv.get("failed", 0)
         # 诚实呈现：findings 与「N 文件 review 失败」分别报；都没有才是 clean。
         # 关键修正：completed_with_errors+0 评论曾被误报成 clean——失败要看得见。
