@@ -225,8 +225,9 @@ def test_resolve_repo_dir():
     try:
         r, how = repo_resolve.resolve_repo_dir(f"{W}/real/nb", "/")           # 显式路径
         assert r and Path(r.git_root).resolve() == real_nb
-        # 路径身份在解析边界一次算清(ResolvedRepo),消费方不再各自 re-derive
-        assert Path(r.real_git_root) == real_nb and r.code_unit.path and r.source == how
+        # 路径身份在解析边界一次算清(ResolvedRepo),消费方不再各自 re-derive；显式路径解析
+        # 带出 target_path（喂 select_units 当 explicit 信号），unit 不再挂在解析结果上
+        assert Path(r.real_git_root) == real_nb and r.target_path and r.source == how
         r, how = repo_resolve.resolve_repo_dir("nb", "/")                     # 子项目名 → canonical 仓库
         assert r and Path(r.git_root).resolve() == real_nb and "subproject" in how
         # symlink farm 下 canonical git_root 在 workspace 树外,containment-only 会得
@@ -268,11 +269,46 @@ def test_code_unit_multi_dir():
     assert Path(repo_layout.enclosing_code_unit(f"{R}/repo", f"{R}/repo").path).name == "server"
     assert Path(repo_layout.default_code_unit(f"{R}/repo").path).name == "server"
 
-    # 解析边界：显式路径把 unit 带进 ResolvedRepo.code_unit，不再折叠成 git_root 重探默认
+    # 解析边界不再挂 unit：显式路径带出 target_path，选哪个 unit 交给 select_units（explicit 信号）
     r, _ = repo_resolve.resolve_repo_dir(f"{R}/repo/cli", "/")
-    assert r and Path(r.code_unit.path).name == "cli" and r.code_unit.language == "typescript"
+    ws = repo_resolve.select_units(r.git_root, explicit=r.target_path)
+    assert ws.how == "explicit" and [Path(u.path).name for u in ws.units] == ["cli"]
+    assert ws.units[0].language == "typescript"
     r, _ = repo_resolve.resolve_repo_dir(None, f"{R}/repo/cli")   # cwd 在 cli 下
-    assert r and Path(r.code_unit.path).name == "cli"
+    ws = repo_resolve.select_units(r.git_root, explicit=r.target_path)
+    assert [Path(u.path).name for u in ws.units] == ["cli"]
+
+def test_select_units_by_change():
+    """WorkSet 契约：验证目标由**本次改动**决定，不由解析来源猜——把「改 cli 不得跑 server」
+    从约定升级成可执行约束。clean 从仓根 repo-wide 全选；显式=仓根不静默回落默认 server。"""
+    from lib import repo_layout, repo_resolve
+    R = "/tmp/dlut_select"
+    shutil.rmtree(R, ignore_errors=True)
+    repo = f"{R}/repo"
+    os.makedirs(f"{repo}/server", exist_ok=True)
+    os.makedirs(f"{repo}/cli", exist_ok=True)
+    _git(repo, "init", "-q")
+    Path(f"{repo}/server/pyproject.toml").write_text("[project]\n")
+    Path(f"{repo}/cli/package.json").write_text('{"devDependencies":{"typescript":"5"}}')
+    Path(f"{repo}/cli/Makefile").write_text("test:\n\techo ok\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+    names = lambda ws: sorted(Path(u.path).name for u in ws.units)
+
+    # discover：两个 unit 都在
+    assert sorted(Path(u.path).name for u in repo_layout.discover_code_units(repo)) == ["cli", "server"]
+    # clean tree：repo-wide 全选（绝不静默 server-only）
+    ws = repo_resolve.select_units(repo)
+    assert ws.how == "repo-wide" and names(ws) == ["cli", "server"]
+    # 只改 cli → dirty 只投影 cli（核心：改 cli 不跑 server）
+    Path(f"{repo}/cli/app.ts").write_text("export const x = 1\n")
+    ws = repo_resolve.select_units(repo)
+    assert ws.how == "dirty" and names(ws) == ["cli"]
+    # explicit == 仓根：不静默回 server，落回 dirty(cli)
+    assert names(repo_resolve.select_units(repo, explicit=repo)) == ["cli"]
+    # 两个 unit 都改 → 都进 WorkSet
+    Path(f"{repo}/server/mod.py").write_text("x = 1\n")
+    assert names(repo_resolve.select_units(repo)) == ["cli", "server"]
 
 def test_active_repo_first_entry_symlink_workspace():
     """P1 回归:首次进入(尚无 context.json)+ symlink 子仓,record_active_repo 也要落

@@ -25,7 +25,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import repo_layout, workspace
+from . import gitcmd, repo_layout, workspace
 from .context import RepoContext, WorkspaceContext
 from .context.session import active_repo_candidates, load_active_repo
 from .context.workspace import workspace_for_repo
@@ -39,14 +39,16 @@ class ResolvedRepo:
 
     - `git_root`: 解析入口路径（可能经 symlink，保留调用方视角）
     - `real_git_root`: realpath 后的 canonical 路径（比较 / rebase 用这个）
-    - `code_unit`: 本次操作落在哪个 code unit（make/uv 的 workdir + 语言）。多代码目录仓
-      （server/ + cli/…）里由**操作目标路径**决定，不是 repo 单值属性——见 `CodeUnit`
+    - `target_path`: 解析入口的操作目标路径——显式路径 / cwd 落在仓内时有值，按名字 / last-active
+      兜底时为 None。它是「解析怎么找到这个 repo」的事实，喂给 `select_units` 当 explicit 信号；
+      **不是** unit 决策——选哪些 unit 由 `select_units` 按本次改动定（见 `WorkSet`），不再挂在
+      解析结果上当单值属性（那正是多代码目录仓选错 unit 的根因）。
     - `workspace_root`: 所属聚合工作区根（单仓库模式为 None）
     - `source`: 解析来源自述（"cwd" / "subproject 'x'" / …），进 PLAN banner
     """
     git_root: str
     real_git_root: str
-    code_unit: repo_layout.CodeUnit
+    target_path: str | None
     workspace_root: str | None
     source: str
 
@@ -62,14 +64,73 @@ def default_unit(git_root: str | Path, ctx: RepoContext | None = None) -> repo_l
     return repo_layout.default_code_unit(git_root)
 
 
+@dataclass(frozen=True)
+class WorkSet:
+    """本轮要处理的 code unit 工作集——由「本次改动」而非「解析来源」决定，消费方（lint / test /
+    review hook、gate、注入）对 `units` 逐个 fan-out。**中立**对象：只答「哪些 unit」，不含
+    「对它们跑什么 check」——那是消费方各自的事，别塞进来（塞了就从「选范围」滑向「验证专属」）。
+
+    - `units`:  0..N 个 CodeUnit；多代码目录仓一次改动可命中多个，并行处理
+    - `how`:    'explicit' / 'dirty' / 'repo-wide'——这批 unit 怎么来的（选择透明，选错一眼可见）
+    - `reason`: 面向人的一句自述，进命令输出 / PLAN
+    """
+    units: tuple[repo_layout.CodeUnit, ...]
+    how: str
+    reason: str
+
+
+def _changed_paths(git_root: str | Path) -> list[str]:
+    """working tree 里有改动的文件（相对仓根的路径）：tracked 改动（staged + unstaged vs HEAD）
+    + untracked。**刻意不用 `status --porcelain`**——`gitcmd` 对输出整体 `strip()`，会吃掉
+    porcelain 首行的前导状态空格（` M path`）导致列错位；这两条命令输出纯路径、strip 无害。"""
+    paths: list[str] = []
+    d = gitcmd.git(git_root, "diff", "--name-only", "HEAD")          # tracked: staged+unstaged
+    if d.ok and d.out:
+        paths += d.out.splitlines()
+    o = gitcmd.git(git_root, "ls-files", "--others", "--exclude-standard")   # untracked
+    if o.ok and o.out:
+        paths += o.out.splitlines()
+    return [p.strip() for p in paths if p.strip()]
+
+
+def _dirty_units(git_root: str | Path) -> list[repo_layout.CodeUnit]:
+    """working tree 里有改动的文件各自归属的 code unit，去重。这是「变更决定验证目标」的核心：
+    改了 cli/** 就只投影出 cli，不受解析来源是否带路径影响。"""
+    seen: dict[str, repo_layout.CodeUnit] = {}
+    for p in _changed_paths(git_root):
+        u = repo_layout.enclosing_code_unit(Path(git_root) / p, git_root)
+        seen.setdefault(u.path, u)
+    return list(seen.values())
+
+
+def select_units(git_root: str | Path, *, explicit: str | Path | None = None) -> WorkSet:
+    """本轮 WorkSet：显式目标 > dirty 改动投影 > repo-wide 全量。任何一级都**不静默回默认 server**。
+
+    - `explicit`（显式 --unit / 路径 / cwd 落在仓内某具体子目录）→ 归属那个 unit。仅当它指向仓根
+      **严格子路径**时才算显式；`explicit == 仓根`（cwd 恰停在仓根）不算——否则又会 enclosing 回落
+      到 default(server)，正是要消除的那个 bug。
+    - 无显式目标 → 看 working tree dirty 文件落在哪些 unit → 全部命中（多 unit 并行）。
+    - dirty 为空（clean tree）→ repo-wide：枚举全部 unit。
+    """
+    root = Path(git_root).resolve()
+    if explicit is not None:
+        ep = Path(explicit).resolve()
+        if ep != root and root in ep.parents:
+            u = repo_layout.enclosing_code_unit(ep, git_root)
+            return WorkSet((u,), "explicit", f"explicit target {ep.name} → unit {Path(u.path).name}")
+        # ep == 仓根：没有具体目标，落到 dirty（不走 enclosing → default → server）
+    dirty = _dirty_units(git_root)
+    if dirty:
+        names = ", ".join(Path(u.path).name for u in dirty)
+        return WorkSet(tuple(dirty), "dirty", f"changed files under: {names}")
+    allu = repo_layout.discover_code_units(git_root)
+    names = ", ".join(Path(u.path).name for u in allu)
+    return WorkSet(tuple(allu), "repo-wide", f"clean tree, all units: {names}")
+
+
 def _resolved(git_root: str, source: str, target_path: str | Path | None = None) -> tuple[ResolvedRepo, str]:
-    """`target_path` 给出时（显式路径 / cwd 等有具体操作目标的解析），unit 按目标路径向上归属
-    （多代码目录仓选对 unit）；否则用 repo 默认 unit。"""
-    ctx = RepoContext.load(git_root)
-    if target_path is not None:
-        unit = repo_layout.enclosing_code_unit(target_path, git_root)
-    else:
-        unit = default_unit(git_root, ctx)
+    """把解析结果收成 ResolvedRepo。`target_path` 是解析入口的操作目标（显式路径 / cwd），原样
+    带上供 `select_units` 当 explicit 信号——选哪些 unit 不在这里算（那由本次改动定，见 `select_units`）。"""
     # workspace_for_repo, NOT plain containment: workspaces are symlink farms, so the
     # canonical git_root usually lives outside the workspace tree — containment-only
     # would report workspace_root=None for every symlinked subproject (Mode B 误判)
@@ -77,7 +138,7 @@ def _resolved(git_root: str, source: str, target_path: str | Path | None = None)
     r = ResolvedRepo(
         git_root=str(git_root),
         real_git_root=str(Path(git_root).resolve()),
-        code_unit=unit,
+        target_path=str(target_path) if target_path is not None else None,
         workspace_root=str(ws) if ws else None,
         source=source,
     )
