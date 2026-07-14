@@ -189,33 +189,37 @@ def test_format_comment_shows_cost_and_tool():
 
 
 def test_post_inline_findings():
-    """findings 优先发成 diff 行锚点评论（换取 forge 原生 outdated 生命周期）：锚得上的逐条
-    inline、锚在末行；无行号的、forge 拒绝的（行不在 diff / 不支持）回落汇总；无 MR 原样回落。"""
+    """findings 逐条发成 diff 锚点评论（换取 forge 原生 outdated 生命周期）：finding 自带粒度
+    ——带行号的锚在末行，不带的（file-level finding）锚在文件上；连文件都没有的、forge 全拒的
+    回落汇总；无 MR 原样回落。"""
     rr = _load_script("run_review")
     fake = _FakeForge([PullRequest(number=7, state="open")])
     pr = fake.get(7)
     comments = [
         {"path": "a.py", "start_line": 3, "end_line": 5, "alias": "m1", "content": "bug"},
-        {"path": "b.py", "content": "no line info"},
+        {"path": "b.py", "content": "file-level: 缺测试"},      # 无行号 → 本就是 file-level
+        {"content": "no path at all"},                          # 无锚可锚 → 汇总
     ]
     n, fb = rr._post_inline(fake, pr, comments)
-    assert n == 1 and [c.get("path") for c in fb] == ["b.py"]
-    assert fake.diff_posted[0][:3] == (7, "a.py", 5)            # 锚在 end_line
+    assert n == 2 and [c.get("content") for c in fb] == ["no path at all"]
+    assert fake.diff_posted[0][:3] == (7, "a.py", 5)            # line-level：锚在 end_line
     assert "m1" in fake.diff_posted[0][3] and "bug" in fake.diff_posted[0][3]
-    assert len(fake.diff_posted) == 1                           # 行锚成功 → 不再试文件锚
+    assert fake.diff_posted[1][:3] == (7, "b.py", None)         # file-level：直接锚文件
+    assert len(fake.diff_posted) == 2                           # 行锚成功 → 不会再补一条文件锚
 
     class Refusing(_FakeForge):
         def diff_comment(self, *a, **kw):
             raise ForgeError("no anchor")
     rf = Refusing([PullRequest(number=7, state="open")])
     n2, fb2 = rr._post_inline(rf, rf.get(7), comments)
-    assert n2 == 0 and len(fb2) == 2                            # 全部回落，单条失败不致命
+    assert n2 == 0 and len(fb2) == 3                            # 全部回落，单条失败不致命
     assert rr._post_inline(None, None, comments) == (0, comments)   # 无 MR → 原样回落
 
 
 def test_post_inline_degrades_line_to_file_anchor():
-    """行锚不上（context 行 finding：行不在当前 diff 里）→ 先退一级到文件锚,而不是直接掉进
-    汇总。理由是可打标性:锚点评论才有 thread、能被回复 `ccr:label=`,汇总里只是一行文本。"""
+    """line-level finding 的行锚不上（context 行 finding：行不在当前 diff 里）→ 先退一级到
+    文件锚,而不是直接掉进汇总。理由是可打标性:锚点评论才有 thread、能被回复 `ccr:label=`,
+    汇总里只是一行文本。"""
     rr = _load_script("run_review")
 
     class LineRefusing(_FakeForge):
@@ -235,11 +239,13 @@ def test_post_inline_degrades_line_to_file_anchor():
 
 
 def test_format_comment_counts_inline():
-    """汇总评论只列回落的 findings；总数 = 回落 + inline，并标注 inline 条数。"""
+    """汇总评论只列回落的 findings；总数 = 回落 + 锚上的，并标注锚上条数。回落项没有行号
+    （file-level finding）时只渲染 path，不拼空的 `:0-0`。"""
     rr = _load_script("run_review")
     body = rr._format_comment([{"path": "b.py", "content": "left"}], 0, "r", "s", {}, 0, "",
                               inline_posted=2)
-    assert "**3 finding(s)**" in body and "2 条已内联" in body and "b.py" in body
+    assert "**3 finding(s)**" in body and "2 条已锚到 diff" in body and "b.py" in body
+    assert "b.py:" not in body                  # 无行号 → 不拼 `:0-0`
     assert "clean" in rr._format_comment([], 0, "r", "s", {}, 0, "", inline_posted=0)
 
 
