@@ -353,6 +353,93 @@ def test_forge_diff_comment_endpoint():
     except ForgeError as e:
         assert "base_sha" in str(e) and "start_sha" in str(e)
 
+
+def test_forge_comments_union_both_surfaces():
+    """comments() 返回两个面的并集并带 id/thread_id——调用方不必知道 finding 落在哪个面。
+    github 拆成 issues/{n}+pulls/{n} 两次 GET，按 created_at 交织；gitlab 一次 discussions
+    就覆盖两者。system note / individual_note 的处理见断言。"""
+    from lib.forge.github import GitHubForge
+    from lib.forge.gitlab import GitLabForge
+
+    class _Cap:
+        def __init__(self, by_path): self._by = by_path; self.gets = []
+        def get(self, path, **kw): self.gets.append(path); return self._by.get(path, [])
+
+    gh = GitHubForge("api.github.com", "o", "r", "t")
+    gh.c = _Cap({
+        "issues/7/comments": [
+            {"id": 1, "user": {"login": "amy"}, "body": "summary", "created_at": "2026-07-01T00:00:00Z"},
+        ],
+        "pulls/7/comments": [
+            {"id": 20, "user": {"login": "bot"}, "body": "finding ccr:fp=abc", "path": "a.py",
+             "line": 5, "created_at": "2026-07-02T00:00:00Z"},
+            {"id": 21, "user": {"login": "amy"}, "body": "ccr:label=wrong", "path": "a.py",
+             "in_reply_to_id": 20, "line": None, "original_line": 5,
+             "created_at": "2026-07-03T00:00:00Z"},
+        ],
+    })
+    cs = gh.comments(7)
+    assert sorted(gh.c.gets) == ["issues/7/comments", "pulls/7/comments"]   # 两个面都读了
+    assert [c.body for c in cs] == ["summary", "finding ccr:fp=abc", "ccr:label=wrong"]  # created_at 交织
+    assert (cs[0].id, cs[0].thread_id, cs[0].path) == ("1", "", "")         # 会话评论不成 thread
+    assert (cs[1].id, cs[1].thread_id, cs[1].reply_to) == ("20", "20", "")  # 根：thread 键 = 自身 id
+    assert (cs[2].id, cs[2].thread_id, cs[2].reply_to) == ("21", "20", "20")  # 回复归到根的 thread
+    assert cs[2].line == 5   # line 被 push 打成 null → 回落 original_line（写时的位置）
+
+    gl = GitLabForge("h", "o/r", "t")
+    gl.c = _Cap({"merge_requests/7/discussions": [
+        {"id": "d1", "individual_note": True,
+         "notes": [{"id": 1, "author": {"username": "amy"}, "body": "summary"}]},
+        {"id": "d2", "individual_note": False, "notes": [
+            {"id": 20, "author": {"username": "bot"}, "body": "finding ccr:fp=abc",
+             "position": {"new_path": "a.py", "new_line": 5}},
+            {"id": 21, "author": {"username": "amy"}, "body": "ccr:label=wrong"},
+            {"id": 99, "system": True, "body": "changed the description"},
+        ]},
+    ]})
+    cs = gl.comments(7)
+    assert gl.c.gets == ["merge_requests/7/discussions"]                    # 一次就够，不用第二个面
+    assert [c.body for c in cs] == ["summary", "finding ccr:fp=abc", "ccr:label=wrong"]  # system 被排除
+    assert cs[0].thread_id == ""              # individual_note 是普通 note 的包装,回不进去
+    assert (cs[1].id, cs[1].thread_id, cs[1].reply_to) == ("20", "d2", "")
+    assert (cs[2].id, cs[2].thread_id, cs[2].reply_to) == ("21", "d2", "20")  # GitLab 无 per-note parent → 归根
+    assert (cs[1].path, cs[1].line) == ("a.py", 5)
+
+
+def test_forge_reply_endpoint():
+    """reply() 回到 target 所在线程：gitlab → discussions/{id}/notes；github → 根 review
+    comment 的 /replies。不可成线程的 target（thread_id 为空）→ raise，由调用方决定是否回落，
+    而不是静默发成一条游离评论。端口默认实现同样 raise。"""
+    from lib.forge.base import Comment, Forge, ForgeError
+    from lib.forge.github import GitHubForge
+    from lib.forge.gitlab import GitLabForge
+
+    class _Cap:
+        def __init__(self): self.calls = []
+        def post(self, path, body): self.calls.append((path, body)); return {"id": 1}
+
+    gl = GitLabForge("h", "o/r", "t"); gl.c = _Cap()
+    gl.reply(7, Comment(id="21", thread_id="d2"), "ccr:label=important")
+    assert gl.c.calls == [("merge_requests/7/discussions/d2/notes", {"body": "ccr:label=important"})]
+
+    gh = GitHubForge("api.github.com", "o", "r", "t"); gh.c = _Cap()
+    gh.reply(7, Comment(id="21", thread_id="20"), "ccr:label=important")   # thread_id = 根 id
+    assert gh.c.calls == [("pulls/7/comments/20/replies", {"body": "ccr:label=important"})]
+
+    for f in (gl, gh):                                     # 普通评论无线程 → 明确报错,不静默游离
+        try:
+            f.reply(7, Comment(id="1", thread_id=""), "x")
+            raise AssertionError("reply to a non-threadable comment should raise")
+        except ForgeError:
+            pass
+
+    try:                                                   # 端口默认：不支持 → raise
+        Forge.reply(gl, 7, Comment(id="1", thread_id="d2"), "x")
+        raise AssertionError("default reply should raise")
+    except ForgeError:
+        pass
+
+
 def test_forge_default_branch():
     """default_branch() 读 repo 根对象的 default_branch（gitlab GET /projects/{id}、
     github GET /repos/{o}/{n}，路径为 ""）；缺字段 → ""。"""

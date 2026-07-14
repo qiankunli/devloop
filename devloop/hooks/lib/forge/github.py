@@ -117,18 +117,47 @@ class GitHubForge(Forge):
             return None
 
     def comments(self, number: int) -> list[Comment]:
-        # PR conversation comments live on the issue endpoint (review comments are a
-        # separate, line-anchored surface we don't surface here).
-        out = self.c.get(f"issues/{number}/comments", per_page=50)
-        notes = out if isinstance(out, list) else []
-        return [
-            Comment(author=(n.get("user") or {}).get("login", "?"), body=n.get("body") or "")
-            for n in notes
-        ]
+        # GitHub splits a PR's comments across two endpoints — conversation comments live on
+        # the ISSUE surface, the line-anchored ones `diff_comment` writes on the PULLS surface.
+        # Both are fetched and merged: a caller looking for what review posted can't be asked
+        # to know which surface it landed on. Interleaved by creation time so the merged list
+        # reads as one conversation.
+        issue = self.c.get(f"issues/{number}/comments", per_page=50)
+        review = self.c.get(f"pulls/{number}/comments", per_page=50)
+        rows = [(n, False) for n in (issue if isinstance(issue, list) else [])]
+        rows += [(n, True) for n in (review if isinstance(review, list) else [])]
+        rows.sort(key=lambda r: r[0].get("created_at") or "")   # ISO-8601 Z → lexical == chronological
+        return [self._to_comment(n, anchored=a) for n, a in rows]
+
+    @staticmethod
+    def _to_comment(n: dict, *, anchored: bool) -> Comment:
+        cid = str(n.get("id") or "")
+        parent = str(n.get("in_reply_to_id") or "")
+        return Comment(
+            author=(n.get("user") or {}).get("login", "?"),
+            body=n.get("body") or "",
+            id=cid,
+            # Only review comments thread; a thread is keyed by its ROOT comment id, which is
+            # also what the replies endpoint takes as its target.
+            thread_id=(parent or cid) if anchored else "",
+            reply_to=parent,
+            path=(n.get("path") or "") if anchored else "",
+            # `line` goes null once a push makes the anchor outdated — `original_line` still
+            # says where it was written, which is what a reader needs.
+            line=(n.get("line") or n.get("original_line")) if anchored else None,
+        )
 
     def comment(self, number: int, body: str) -> None:
-        # Conversation comment on the PR (= issue comment), same surface `comments()` reads.
+        # Conversation comment on the PR (= issue comment), one of the two surfaces
+        # `comments()` reads.
         self.c.post(f"issues/{number}/comments", {"body": body})
+
+    def reply(self, number: int, target: Comment, body: str) -> None:
+        if not target.thread_id:
+            raise ForgeError(f"PR #{number}: comment {target.id or '?'} is a conversation "
+                             "comment — GitHub can only reply to review comments")
+        # thread_id is the root review comment id — exactly what /replies anchors to.
+        self.c.post(f"pulls/{number}/comments/{target.thread_id}/replies", {"body": body})
 
     def diff_comment(self, number: int, body: str, path: str, line: int) -> None:
         # Line-anchored review comment — GitHub collapses it as outdated once a later
