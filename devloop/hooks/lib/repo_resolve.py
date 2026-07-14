@@ -89,7 +89,17 @@ def _changed_paths(git_root: str | Path) -> list[str]:
         paths += d.out.splitlines()
     o = gitcmd.git(git_root, "ls-files", "--others", "--exclude-standard")   # untracked
     if o.ok and o.out:
-        paths += o.out.splitlines()
+        root = Path(git_root)
+        for raw in o.out.splitlines():
+            p = raw.strip()
+            if not p:
+                continue
+            target = root / p
+            # git 会把未跟踪的软链或嵌套 repo/worktree 折叠成一条顶层路径。
+            # 它们不是当前 repo 的代码改动；投影进 WorkSet 只会误选仓根 unit。
+            if target.is_symlink() or (target.is_dir() and (target / ".git").exists()):
+                continue
+            paths.append(p)
     return [p.strip() for p in paths if p.strip()]
 
 
@@ -222,6 +232,14 @@ def resolve_repo_dir(query: str | None, cwd: str | Path = ".") -> tuple[Resolved
                 continue
             seen.add(wr)
             scored += match_subprojects(query, wr)
+        # 同一 repo 可被多个已注册 workspace/symlink 命中；歧义应按 canonical
+        # repo 判，不能把同一路径的重复条目当成多个候选。
+        by_path: dict[str, tuple[int, str, str]] = {}
+        for candidate in scored:
+            previous = by_path.get(candidate[2])
+            if previous is None or candidate[:2] < previous[:2]:
+                by_path[candidate[2]] = candidate
+        scored = list(by_path.values())
         if not scored:
             # Not a known subproject — maybe a bare relative dirname (`run_fixlint.py devloop`).
             p = cwd / query

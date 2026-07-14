@@ -247,6 +247,28 @@ def test_resolve_repo_dir():
     finally:
         registry.load_workspaces = orig
 
+def test_resolve_repo_dir_deduplicates_canonical_matches():
+    """同一 canonical repo 被多个 workspace symlink 注册时仍是一个候选，不误报 ambiguous。"""
+    from lib import repo_resolve, workspace as registry
+    from lib.context import Subproject, WorkspaceContext
+    R = "/tmp/dlut_rr_dedup"
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/real/repo")
+    _git(f"{R}/real/repo", "init", "-q")
+    for name in ("ws1", "ws2"):
+        os.makedirs(f"{R}/{name}")
+        os.symlink(f"{R}/real/repo", f"{R}/{name}/repo")
+        WorkspaceContext(workspace_root=f"{R}/{name}",
+                         subprojects=[Subproject(name="repo", path="repo")]).save()
+    orig = registry.load_workspaces
+    registry.load_workspaces = lambda: [f"{R}/ws1", f"{R}/ws2"]
+    try:
+        resolved, how = repo_resolve.resolve_repo_dir("repo", "/")
+        assert resolved and Path(resolved.git_root).resolve() == Path(f"{R}/real/repo").resolve()
+        assert "subproject" in how
+    finally:
+        registry.load_workspaces = orig
+
 def test_code_unit_multi_dir():
     """多代码目录仓（server/ + cli/）：unit 由**操作目标路径**决定，不是 repo 单值属性。
     显式点名 cli 命中 cli；指向仓根 / 深层子目录归属到对应 unit；仓根回落默认 unit。"""
@@ -300,6 +322,14 @@ def test_select_units_by_change():
     # clean tree：repo-wide 全选（绝不静默 server-only）
     ws = repo_resolve.select_units(repo)
     assert names(ws) == ["cli", "server"] and "all units" in ws.reason
+    # 开发根里常有自指软链 + linked worktrees：它们不是本仓 code unit，也不是
+    # 当前代码改动；不得污染 discover，更不得把 dirty WorkSet 拉回无语言的仓根。
+    os.symlink(repo, f"{repo}/repo-link")
+    os.makedirs(f"{repo}/worktrees/branch")
+    _git(f"{repo}/worktrees/branch", "init", "-q")
+    Path(f"{repo}/worktrees/branch/go.mod").write_text("module nested\n")
+    assert names(repo_resolve.select_units(repo)) == ["cli", "server"]
+    assert sorted(Path(u.path).name for u in repo_layout.discover_code_units(repo)) == ["cli", "server"]
     # 只改 cli → dirty 只投影 cli（核心：改 cli 不跑 server）
     Path(f"{repo}/cli/app.ts").write_text("export const x = 1\n")
     ws = repo_resolve.select_units(repo)

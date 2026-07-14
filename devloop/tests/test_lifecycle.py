@@ -166,13 +166,16 @@ def test_code_unit_test_target_detect_matches_execute():
     from lib.repo_layout import CodeUnit
     D = "/tmp/dlut_testtarget"
     shutil.rmtree(D, ignore_errors=True)
-    os.makedirs(f"{D}/ci"); os.makedirs(f"{D}/plain"); os.makedirs(f"{D}/none")
+    os.makedirs(f"{D}/ci"); os.makedirs(f"{D}/plain"); os.makedirs(f"{D}/none"); os.makedirs(f"{D}/go")
     Path(f"{D}/ci/Makefile").write_text("test-ci:\n\techo ok\n")
     Path(f"{D}/plain/Makefile").write_text("test:\n\techo ok\ntest-local:\n\techo ok\n")
     Path(f"{D}/none/Makefile").write_text("build:\n\techo ok\n")
+    Path(f"{D}/go/go.mod").write_text("module x\n")
     assert CodeUnit(f"{D}/ci").test_target() == "test-ci"      # 判据==执行目标，不再错跑 make test
     assert CodeUnit(f"{D}/plain").test_target() == "test"      # canonical `test` 优先
     assert CodeUnit(f"{D}/none").test_target() is None         # 无 test 目标 → 跳过
+    assert CodeUnit(f"{D}/ci").test_command() == ("make", "test-ci")
+    assert CodeUnit(f"{D}/go", "go").test_command() == ("go", "test", "./...")
 
 def test_lifecycle_config_layering():
     """config.lifecycle()：default 全空（opt-in），repo 级 .devloop/config.json 覆盖该 repo 的相位。"""
