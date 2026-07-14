@@ -1,0 +1,29 @@
+devloop/AGENTS.md
+  s_87c49950a78f75::t_1761d4715976e8 59
+devloop/hooks/lib/context/__init__.py
+  s_87c49950a78f75::t_83f8367c219b51 50
+devloop/hooks/lib/context/session.py
+  s_87c49950a78f75::t_cb8d8581bba609 45-67,71
+devloop/hooks/userprompt_inject.py
+  s_87c49950a78f75::t_bc5c91fbe50649 22,71-76,79
+devloop/tests/test_context.py
+  s_87c49950a78f75::t_f103c2a40abee4 624-647,650-651,667
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3cf2a7fa6dd011393c53b3bc093d8e27e2e48fe8",
+  "prompts": {},
+  "sessions": {
+    "s_87c49950a78f75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e970edb-23ad-492e-8411-f946c6b542e7",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
