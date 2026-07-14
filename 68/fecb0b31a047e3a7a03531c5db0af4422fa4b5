@@ -1,0 +1,29 @@
+devloop/hooks/lib/context/base.py
+  s_87c49950a78f75::t_24dd26f1bc972d 49-51,79-111
+devloop/hooks/lib/context/prstate.py
+  s_87c49950a78f75::t_eeaaedd169df88 96,99-103,105,113
+devloop/hooks/lib/context/repo.py
+  s_87c49950a78f75::t_a4bf0b4875c3e6 37,44,181-183,191,208,254,447-455,458-461,619-621
+devloop/hooks/lib/review_feedback.py
+  s_87c49950a78f75::t_3af537b828a41e 19,77-88
+devloop/tests/test_review.py
+  s_87c49950a78f75::t_0443fae30d93c7 98-132,312,331-337
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "68fecb0b31a047e3a7a03531c5db0af4422fa4b5",
+  "prompts": {},
+  "sessions": {
+    "s_87c49950a78f75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e970edb-23ad-492e-8411-f946c6b542e7",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
