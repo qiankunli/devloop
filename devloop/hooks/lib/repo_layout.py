@@ -148,6 +148,14 @@ def discover_code_units(git_root: str | Path, *, max_depth: int = 4) -> list[Cod
                 walk(child, depth + 1)
 
     walk(root, 1)
+    # 根自身若是 unit（根级强 marker，如 go.mod / pyproject），补进来——否则「根有 marker + 子目录
+    # 也有 unit」时根会被漏：walk 只收子目录，而 `not units` 那条 fallback 又因子 unit 存在而哑火。
+    # 用 default_code_unit 探测（server > backend > root）并去重，避免与已收集的子 unit（如 doctor 的
+    # server）重复；default 兜底会返回无 marker 的仓根，故用 _has_code_markers 把关，不把纯编排目录当 unit。
+    seen = {u.path for u in units}
+    root_unit = default_code_unit(root)
+    if _has_code_markers(Path(root_unit.path)) and root_unit.path not in seen:
+        units.append(root_unit)
     if not units:
         # 单 unit 仓：没有更深的子 unit，仓根自身（或探测出的 server/backend）即唯一 unit
         units.append(default_code_unit(root))

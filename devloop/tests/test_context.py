@@ -310,6 +310,19 @@ def test_select_units_by_change():
     Path(f"{repo}/server/mod.py").write_text("x = 1\n")
     assert names(repo_resolve.select_units(repo)) == ["cli", "server"]
 
+def test_discover_root_and_sub_units():
+    """repo-wide 枚举不漏根 unit：根有强 marker（go.mod）+ 子目录也有独立 unit 时，两者都在，
+    根不被子 unit 挤掉（回归 PR #81 review finding）。"""
+    from lib import repo_layout
+    R = "/tmp/dlut_discover"
+    shutil.rmtree(R, ignore_errors=True)
+    repo = f"{R}/repo"
+    os.makedirs(f"{repo}/tools", exist_ok=True)
+    _git(repo, "init", "-q")
+    Path(f"{repo}/go.mod").write_text("module x\n")
+    Path(f"{repo}/tools/pyproject.toml").write_text("[project]\n")
+    assert sorted(Path(u.path).name for u in repo_layout.discover_code_units(repo)) == ["repo", "tools"]
+
 def test_active_repo_first_entry_symlink_workspace():
     """P1 回归:首次进入(尚无 context.json)+ symlink 子仓,record_active_repo 也要落
     active.json——workspace_for_repo 缺 context 时自刷新(解析 AGENTS.md 子项目表)。"""
