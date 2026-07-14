@@ -16,7 +16,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hooks"))
 
-from lib import cli  # noqa: E402
+from lib import cli, repo_resolve  # noqa: E402
 from lib.context import record_active_repo  # noqa: E402
 from lib.lifecycle import checks  # noqa: E402
 
@@ -27,17 +27,21 @@ def main(argv: list[str]) -> int:
     ns = ap.parse_args(argv)
     resolved, how = cli.resolve_repo_or_exit(ns, "run_fixlint")
     repo = resolved.git_root
-    unit = resolved.code_unit
+    ws = repo_resolve.select_units(repo, explicit=resolved.target_path)
     if how != "cwd":
         print(f"run_fixlint: repo = {repo} ({how})")
-    if unit.path != repo:   # 多代码目录仓：点明落在哪个 unit
-        print(f"run_fixlint: code unit = {unit.path} ({unit.language or '?'})")
+    # 每次执行前自述本轮 unit 与选择原因——目标选错要一眼可见。
+    names = ", ".join(Path(u.path).name for u in ws.units)
+    print(f"run_fixlint: units = {names}  [{ws.reason}]")
     record_active_repo(repo)
 
-    # 用解析到的 unit（按操作目标选出），不让 checks 从 git_root 重探默认 unit 盖掉它。
-    res = checks.lint(repo, capture=False, unit=unit)   # capture=False：make 实时走到终端
-    print(("✓ " if res.ok else "✗ ") + res.summary)
-    return 0 if res.ok else 1
+    # 对本轮命中的每个 unit 各跑各的 fix + lint，不让 checks 从 git_root 重探默认 unit 盖掉选择。
+    ok = True
+    for unit in ws.units:
+        res = checks.lint(repo, capture=False, unit=unit)   # capture=False：实时走终端
+        print(("✓ " if res.ok else "✗ ") + res.summary)
+        ok = ok and res.ok
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

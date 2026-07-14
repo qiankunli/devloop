@@ -110,6 +110,58 @@ def enclosing_code_unit(target: str | Path, git_root: str | Path) -> CodeUnit:
     return default_code_unit(git_root)
 
 
+# repo-wide 验证（clean tree 从仓根发起、无具体改动可依据）枚举全部 unit 时跳过的目录：
+# VCS / 依赖 / 虚拟环境 / 构建产物 / 各类缓存——不含独立工具链，进去只会拖慢扫描。
+_DISCOVER_SKIP = {
+    ".git", "node_modules", ".venv", "venv", "env", ".tox",
+    "dist", "build", "target", "__pycache__", ".mypy_cache", ".pytest_cache",
+    ".ruff_cache", ".idea", ".vscode", "vendor",
+}
+
+
+def discover_code_units(git_root: str | Path, *, max_depth: int = 4) -> list[CodeUnit]:
+    """枚举 repo 内**全部**独立 code unit（带工具链 marker 的目录），供 repo-wide 验证用。
+
+    遇到一个 unit 就收下、**不再下钻它内部**（unit 内的嵌套 marker 不算独立 unit）；跳过 VCS /
+    依赖 / 构建产物目录，并限制递归深度。多代码目录仓（`server/` + `cli/`）因此返回全部 unit；
+    单 unit 仓（Go/TS 根即 unit，或探测出的 `server/`）找不到子 unit 时回落 `default_code_unit`。
+
+    存在的意义是「绝不静默选 server」：clean tree 从仓根跑验证时要全跑（或让用户显式选），
+    绝不退回单值默认 unit——所以这里返回「全部」而非「某一个」。"""
+    root = Path(git_root).resolve()
+    units: list[CodeUnit] = []
+
+    def walk(d: Path, depth: int) -> None:
+        if depth > max_depth:
+            return
+        try:
+            children = sorted(d.iterdir())
+        except OSError:
+            return
+        for child in children:
+            if not child.is_dir() or child.name in _DISCOVER_SKIP or child.name.startswith("."):
+                continue
+            if _has_code_markers(child):
+                units.append(CodeUnit(str(child), detect_language(str(child))))
+                # 命中即止：不下钻，unit 内部的子 marker（如 packages 内嵌）不当独立 unit
+            else:
+                walk(child, depth + 1)
+
+    walk(root, 1)
+    # 根自身若是 unit（根级强 marker，如 go.mod / pyproject），补进来——否则「根有 marker + 子目录
+    # 也有 unit」时根会被漏：walk 只收子目录，而 `not units` 那条 fallback 又因子 unit 存在而哑火。
+    # 用 default_code_unit 探测（server > backend > root）并去重，避免与已收集的子 unit（如 doctor 的
+    # server）重复；default 兜底会返回无 marker 的仓根，故用 _has_code_markers 把关，不把纯编排目录当 unit。
+    seen = {u.path for u in units}
+    root_unit = default_code_unit(root)
+    if _has_code_markers(Path(root_unit.path)) and root_unit.path not in seen:
+        units.append(root_unit)
+    if not units:
+        # 单 unit 仓：没有更深的子 unit，仓根自身（或探测出的 server/backend）即唯一 unit
+        units.append(default_code_unit(root))
+    return units
+
+
 def _has_code_markers(path: Path) -> bool:
     markers = ("pyproject.toml", "go.mod", "package.json", "Makefile", "setup.py", "requirements.txt")
     return any((path / m).exists() for m in markers)
