@@ -1,0 +1,33 @@
+devloop/hooks/lib/forge/base.py
+  s_87c49950a78f75::t_17979824c4e4ce 269-286
+devloop/hooks/lib/forge/github.py
+  s_87c49950a78f75::t_1fdbdc3fafbf39 162-164,171-179
+devloop/hooks/lib/forge/gitlab.py
+  s_87c49950a78f75::t_8b921bd0c0fba6 188,193-205
+devloop/scripts/run_review.py
+  s_87c49950a78f75::t_738e116010d689 66,68-73,91-99
+devloop/tests/_testkit.py
+  s_87c49950a78f75::t_40990bedc99ff1 87,89
+devloop/tests/test_forge.py
+  s_87c49950a78f75::t_8145e4139c9b87 342-357
+devloop/tests/test_review.py
+  s_87c49950a78f75::t_5b919750327f71 205,208,216-236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "094da922d35d1daf33475e43a5ceecad8c4abc5a",
+  "prompts": {},
+  "sessions": {
+    "s_87c49950a78f75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e970edb-23ad-492e-8411-f946c6b542e7",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
