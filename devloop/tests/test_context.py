@@ -621,12 +621,34 @@ def test_inject_at_workspace_root_uses_active_repo():
     assert out and "Branch: feat/x" in out                 # active repo's turn context reached the prompt
 
 
-def test_inject_recorded_to_session_ledger():
+def test_session_log_is_append_only_and_kind_discriminated():
+    """`<repo>/.devloop/sessions/<sid>.jsonl` 是 devloop 自己的 append-only 日志，`kind` 区分
+    记录类型——新类型直接落**同一个文件**，读者按 kind 过滤，不破坏既有行、也不用另开文件。
+    `inject` 只是第一种。纯 exhaust：devloop 从不读回，删了不影响任何行为。"""
+    import json as _json
+    from lib.context import record_session_event
+    R = "/tmp/dlut_seslog"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+
+    record_session_event(R, "s1", "inject", text="block A")
+    record_session_event(R, "s1", "gate_blocked", gate="precommit", reason="lint")   # 未来的某种记录
+    rows = [_json.loads(ln) for ln in
+            (Path(R) / ".devloop/sessions/s1.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [r["kind"] for r in rows] == ["inject", "gate_blocked"]      # 共存，不互相破坏
+    assert rows[0]["text"] == "block A" and rows[1]["gate"] == "precommit"
+    assert all(r["ts"] > 0 for r in rows)
+    # 只 append，不覆写（对照 save_segment）
+    record_session_event(R, "s1", "inject", text="block B")
+    assert len((Path(R) / ".devloop/sessions/s1.jsonl").read_text().splitlines()) == 3
+
+
+def test_inject_recorded_to_session_log():
     """注入本来是 write-only 的——每轮拼好、在模型 context 里花掉、就没了；能读到构造它的代码，
     读不到某一轮它实际说了什么，而后者才是判断「这行值不值它的 token」的依据。
-    `<repo>/.devloop/sessions/<sid>.jsonl` 把发出去的那一份留下，纯 exhaust：devloop 自己从不
-    读回，删了也不影响任何行为。只记 devloop 注入的文本，不记用户 prompt（那在 CLI transcript
-    里，再存一份等于多一处没人审的留存）。"""
+    只记 devloop 注入的文本，不记用户 prompt（那在 CLI transcript 里，再存一份等于多一处没人
+    审的留存）。"""
     import json as _json
     from lib.context import RepoContext
     ui = _load_hook("userprompt_inject")
@@ -642,6 +664,7 @@ def test_inject_recorded_to_session_ledger():
     p = Path(R) / ".devloop" / "sessions" / "sess-A.jsonl"
     rows = [_json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 1
+    assert rows[0]["kind"] == "inject"
     assert rows[0]["text"] == out and rows[0]["ts"] > 0      # 记的正是发出去的那一份
 
     # cadence 压掉这轮（状态没变）→ 什么都没注入 → 不记：ledger 是「模型看见了什么」的账，

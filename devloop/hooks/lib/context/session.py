@@ -42,28 +42,33 @@ def _session_key(session_id: str | None) -> str:
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "") or os.environ.get("CODEX_SESSION_ID", "") or ""
 
 
-# ── injection log ──────────────────────────────────────────────────────────────
-def record_injection(repo_dir: str | Path, session_id: str | None, text: str) -> None:
-    """Append what devloop injected into this prompt → `<repo>/.devloop/sessions/<sid>.jsonl`.
+# ── session log ────────────────────────────────────────────────────────────────
+def record_session_event(repo_dir: str | Path, session_id: str | None,
+                         kind: str, **fields) -> None:
+    """Append one record to `<repo>/.devloop/sessions/<sid>.jsonl` — devloop's own append-only
+    log of what it did during one CLI session.
 
-    An OBSERVABILITY ledger, read by humans, never by devloop: nothing loads this back, so it
-    can be deleted at any time. It exists because the injection is otherwise write-only — it's
-    assembled per turn, spent inside the model's context, and gone. You can read the code that
-    builds it, but not what it actually said on a given turn, which is what you need to judge
-    whether a line earned its tokens.
+    OBSERVABILITY ONLY, read by humans, never by devloop: nothing loads this back, so it can be
+    truncated or deleted at any time and no behavior changes. That's the line to hold — the
+    moment code reads it, it stops being exhaust and becomes state, and it has none of the
+    durability guarantees state needs.
 
-    Records ONLY devloop's own injected text, not the user's prompt: the value is in reviewing
-    what WE emit, and the user's words are already in the CLI's transcript. Recording them here
-    would duplicate that into a second, unaudited place.
+    `kind` discriminates record types so new ones can land in the SAME file without breaking
+    readers (filter on kind) — `inject` is merely the first, added because the injected block
+    was otherwise write-only: assembled per turn, spent in the model's context, gone. You could
+    read the code that builds it but not what it actually said on a given turn, which is what
+    tells you whether a line earned its tokens.
 
-    Not to be confused with `requirements/<id>/session.jsonl` — that's a REQUIREMENT's lifecycle
-    ledger keyed by its first branch, and devloop does read it back. This one is keyed by CLI
+    `ts` / `kind` are reserved; a same-named entry in `fields` would clobber them (same shape as
+    `run_review._append_history`). Best-effort — `append_jsonl` swallows I/O errors, because an
+    observability write must never cost the caller's real work.
+
+    Not to be confused with `requirements/<id>/session.jsonl`: that's a REQUIREMENT's lifecycle
+    ledger keyed by its first branch, and devloop DOES read it back. This one is keyed by CLI
     session and is pure exhaust.
     """
-    if not text:
-        return
     store.append_jsonl(repo_dir, f"sessions/{_session_name(session_id)}",
-                       {"ts": round(base.now(), 1), "text": text})
+                       {"ts": round(base.now(), 1), "kind": kind, **fields})
 
 
 # ── active-repo binding ────────────────────────────────────────────────────────

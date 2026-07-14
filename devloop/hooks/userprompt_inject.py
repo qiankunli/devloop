@@ -19,7 +19,7 @@ from lib.context import (  # noqa: E402
     WorkspaceContext,
     load_active_repo,
     load_active_repo_lenient,
-    record_injection,
+    record_session_event,
 )
 
 
@@ -68,13 +68,15 @@ def produce(inp: hook_io.HookInput) -> str | None:
             ctx.mark_turn_emitted(t)
 
     text = "\n\n".join(parts) if parts else None
-    # Log what actually went out (see session.record_injection). Placed here, not around each
-    # emit, because what's worth reviewing is the ASSEMBLED block the model saw. Needs
-    # git_root: the ledger is repo-domain, and a workspace-only turn has no repo to file it
-    # under. Fail-open — an observability write must never cost the injection itself.
+    # Log what actually went out (session.record_session_event). Placed here, not around each
+    # emit, because what's worth reviewing is the ASSEMBLED block the model saw. `text` only —
+    # NOT the user's prompt: the point is reviewing what WE emit, and the user's words are
+    # already in the CLI transcript, so copying them would duplicate them into a second,
+    # unaudited place. Needs git_root: the log is repo-domain, and a workspace-only turn has no
+    # repo to file it under. Fail-open — observability must never cost the injection itself.
     if git_root and text:
         try:
-            record_injection(git_root, inp.session_id, text)
+            record_session_event(git_root, inp.session_id, "inject", text=text)
         except Exception:
             pass
     return text

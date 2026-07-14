@@ -56,7 +56,7 @@ devloop/
 │   │   │   └── review.py          #     code-review signal handler（任意相位；审全量 diff，分支有开放 MR 时机会性发评论）
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
 │   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
-│   │   └── context/               #   .devloop/ 状态总线，五族分模块：store(磁盘原语/三域) + base(共享词汇) / repo+workspace(视图) / gate+prstate(真相接缝) / session(运行态+owner锁+注入账 `sessions/<sid>.jsonl`——纯 exhaust,devloop 自己不读回,给人 review 注入质量)
+│   │   └── context/               #   .devloop/ 状态总线，五族分模块：store(磁盘原语/三域) + base(共享词汇) / repo+workspace(视图) / gate+prstate(真相接缝) / session(运行态+owner锁+session 日志 `sessions/<sid>.jsonl`——devloop 自己干了什么的 append-only 账,`kind` 分类(首个 `inject`),纯 exhaust、从不读回)
 │   │       └── loopstate/         #     经验沉淀 ledger 半（loop-state / requirement-first，见 workspace docs/）：friction(guard deny→friction.jsonl，per-repo) + requirement(域落 dev root——workspace 根、单仓退化 repo 根；单 spine 跨仓、事件带 repo；turn_line 派生任务视图；monitor reconcile 收口)
 │   ├── cwdchanged_enter.py        # Claude CwdChanged：自动 enter
 │   ├── posttool_codex_refresh.py  # Codex PostToolUse：补 cwd/state 刷新
