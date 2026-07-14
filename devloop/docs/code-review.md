@@ -13,6 +13,12 @@ smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https:/
   `post_mr` 都行）。相位只决定**何时触发**;动作本身不变。
 - **通用交付 = surface 给 session**:无论哪个相位,都写 review.json → 下一轮经状态总线注入
   浮现 `Review:` 行（pull）。
+- **Review 行是事件,不是状态,所以只讲一次**:同一个 review 结果讲一遍就闭嘴,重跑出新结果
+  （status/sha/计数变了）才再讲。turn `Cadence` 顶不了这件事——它按**整块** hash 去重,随便
+  哪行状态一动（HEAD sha、PR 状态）就整块重发,事件行被反复重投,agent 于是反复 triage 同一批
+  已处理的 findings。同理 **PostCompact 不复活它**:compaction 掉的是「说过的话」,状态必须
+  重说（否则 agent 拿着已不成立的分支/PR 图像动手）,事件重投则是让人重做已做的事。
+  待打标 nudge 同理,只是 cap=3 而非 1(见 `context/base.py` 的 `Nudge`)。
 - **post_mr 的额外能力 = MR 评论**:relay 在 git 动作后跑时,查分支是否有开放 MR;有就
   发评论（典型是 `post_mr`——MR 刚建好;或往在途 MR 追加提交时也会命中）。
   没有 MR 就只落 review.json。所以 **MR 评论是机会性的,不是 phase 硬绑**。

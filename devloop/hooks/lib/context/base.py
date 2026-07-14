@@ -49,6 +49,9 @@ DEFAULT_BRANCH_TTL_SEC = 86400  # repo default branch is near-immutable → only
 LABEL_NUDGE_CAP = 3           # times to ask for a verdict on the SAME pending finding set, then
                               # go quiet — see Nudge. Not ignoring you: 3 asks is enough to have
                               # been heard, and labeling is advisory (ground truth, never a blocker).
+REVIEW_NUDGE_CAP = 1          # times to report the SAME review result. One: it's an event, not
+                              # state — re-telling it makes the agent re-triage findings it已
+                              # 处理过。A re-run (new sha/status/counts) is a new event → tells again.
 
 # ── leaf dataclasses ─────────────────────────────────────────────────────────
 @dataclass

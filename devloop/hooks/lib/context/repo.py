@@ -36,6 +36,7 @@ from .base import (
     DEFAULT_BRANCH_TTL_SEC,
     LABEL_NUDGE_CAP,
     REPO_STALE_SEC,
+    REVIEW_NUDGE_CAP,
     SESSION_TTL_SEC,
     TURN_TTL_SEC,
     AgentsMd,
@@ -174,13 +175,28 @@ class Validation:
         )
 
 
+def _review_key(rv: dict) -> str:
+    """Identity of a review RESULT — what makes it a different thing worth telling again.
+
+    status + the sha it ran against + its counts. A re-run over new code, or the same run
+    finishing (running → success), is new; the same result re-read every turn is not. Empty
+    for `skipped` / no review — nothing to tell.
+    """
+    status = rv.get("status")
+    if not status or status == "skipped":
+        return ""
+    return f"{status}:{rv.get('reviewed_sha') or ''}:{rv.get('count', 0)}:{rv.get('failed', 0)}"
+
+
 @dataclass
 class Injection:
     turn: Cadence = field(default_factory=Cadence)
     session: Cadence = field(default_factory=Cadence)
-    # Chore nudges decay independently of the turn cadence — Cadence hashes the whole block,
-    # so an unrelated line moving would re-ask forever. See base.Nudge.
+    # Event/chore delivery ledgers, decaying independently of the turn cadence — Cadence
+    # hashes the whole block, so an unrelated line moving would re-deliver forever. Also NOT
+    # cleared by PostCompact, unlike the cadences: see clear_injection_dedup. base.Nudge.
     label_nudge: Nudge = field(default_factory=Nudge)
+    review_nudge: Nudge = field(default_factory=Nudge)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Injection":
@@ -189,6 +205,7 @@ class Injection:
             turn=Cadence.from_dict(d.get("turn") or {}),
             session=Cadence.from_dict(d.get("session") or {}),
             label_nudge=Nudge.from_dict(d.get("label_nudge") or {}),
+            review_nudge=Nudge.from_dict(d.get("review_nudge") or {}),
         )
 
 
@@ -453,12 +470,22 @@ class RepoContext:
         return bool(self.label_pending) and self.injection.label_nudge.due(
             self.label_pending_key, cap=LABEL_NUDGE_CAP)
 
+    def review_nudge_due(self, rv: dict) -> bool:
+        """Whether this review RESULT still needs telling. Same emit/mark pairing as
+        `label_nudge_due`; `rv` is the freshly-read review segment (the formatter reads it
+        live because an external process writes it, so it can't come off `self`)."""
+        return bool(_review_key(rv)) and self.injection.review_nudge.due(
+            _review_key(rv), cap=REVIEW_NUDGE_CAP)
+
     def mark_turn_emitted(self, text: str) -> None:
         self.injection.turn.mark(text, now=base.now())
-        # Only reached when `text` actually went out (see userprompt_inject), so this counts
-        # asks the agent really saw — not ones the block-level dedup swallowed.
+        # Only reached when `text` actually went out (see userprompt_inject), so these count
+        # deliveries the agent really saw — not ones the block-level dedup swallowed.
         if self.label_nudge_due:
             self.injection.label_nudge.bump(self.label_pending_key)
+        rv = store.load_segment(self._root(), self._branch_seg("review")) or {}
+        if self.review_nudge_due(rv):
+            self.injection.review_nudge.bump(_review_key(rv))
         self._save_injection()
 
     def mark_session_emitted(self, text: str) -> None:
@@ -474,7 +501,15 @@ class RepoContext:
         self._save_injection()
 
     def clear_injection_dedup(self) -> None:
-        """PostCompact: drop both cadences' stamps so state re-injects next turn."""
+        """PostCompact: drop both cadences' stamps so STATE re-injects next turn.
+
+        Deliberately does NOT touch the nudges. Compaction drops what was said, so state must
+        be re-said — an agent acting on a branch/PR picture it no longer holds is the failure
+        this prevents. Events and chores are the opposite: re-delivering a review result makes
+        the agent re-triage findings it already handled, and re-asking for verdicts the user
+        declined three times re-litigates a decision compaction didn't undo. Their ledgers
+        record "this was delivered", which stays true across a compaction.
+        """
         self.injection.turn.clear()
         self.injection.session.clear()
         self._save_injection()
@@ -589,9 +624,12 @@ def _format_turn(ctx: "RepoContext") -> str:
     _rv = store.load_segment(ctx.repo.repo_dir,
                             store.branch_segment(ctx.branch.local.name or None, "review")) or {}
     _rs, _sha = _rv.get("status"), (_rv.get("reviewed_sha") or "")[:9]
-    # staleness 兜底：detach 的 run_review 不归 harness 跟踪，若中途被杀（休眠 / OOM / kill）就
-    # 没机会写终态，review.json 会永远卡在 "running"。running 超过 REVIEW_STALE_SEC 即按 stale 报，
-    # 不永远显示 running。
+    # Review 是**事件**,不是状态——「这次 review 出了什么」讲一遍就讲完了,它不描述「你现在
+    # 在哪」。所以按 review 身份（status+sha+计数）报一次就闭嘴,而不是每轮跟着整块重发:
+    # turn Cadence 按整块 hash 去重,随便哪行一动就整块重发,事件行会被反复重投,agent 于是
+    # 反复 triage 同一批已经处理过的 findings。同理它不该被 PostCompact 复活（见 Nudge）。
+    if not ctx.review_nudge_due(_rv):
+        _rs = None
     if _rs == "running" and (base.now() - (_rv.get("generated_at") or 0)) > base.REVIEW_STALE_SEC:
         lines.append(f"Review: stale on {_sha} — 疑似中途中断（见 .devloop/review.json）；下次 gcampr/commit 会重跑")
     elif _rs == "running":

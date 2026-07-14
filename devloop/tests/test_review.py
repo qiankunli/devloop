@@ -65,6 +65,46 @@ def test_review_injection_line():
     seg(status="error", count=0); assert "Review: review errored on abcdef123" in ctx.turn_text()
 
 
+def test_review_line_told_once_per_result():
+    """Review 是**事件**不是状态：同一个结果讲一遍就闭嘴（否则 agent 会反复 triage 同一批
+    已处理的 findings），重跑出新结果（sha/status/计数变了）才再讲。且 PostCompact 不复活它
+    ——compaction 掉的是「说过的话」，state 必须重说，事件重投则是让人重做已做的事。"""
+    from lib.context import RepoContext, base, store
+    G = "/tmp/dlut_revonce"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
+    _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
+    Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
+    ctx = RepoContext.refresh_all(G)
+    R, branch = ctx.repo.repo_dir, ctx.branch.local.name
+    _rseg = store.branch_segment(branch, "review")
+
+    def seg(**kw): store.save_segment(R, _rseg, {"comments": [], "generated_at": 1.0, **kw})
+    def tell() -> bool:
+        c = RepoContext.load(R)
+        said = "Review:" in c.turn_text()
+        c.mark_turn_emitted(c.turn_text())
+        return said
+
+    seg(status="success", count=2, reviewed_sha="abcdef1234567")
+    assert tell() is True                       # 第一次：讲
+    assert tell() is False and tell() is False  # 同一个结果：不再讲
+
+    seg(status="success", count=2, reviewed_sha="9999999999999")   # 重跑（新 sha）→ 新事件
+    assert tell() is True and tell() is False
+
+    seg(status="success", count=5, reviewed_sha="9999999999999")   # 同 sha 但结果不同 → 新事件
+    assert tell() is True
+
+    # running → success 是状态推进，也是新事件，各讲一次
+    seg(status="running", count=0, reviewed_sha="aaaaaaaaaaaaa", generated_at=base.now())
+    assert tell() is True and tell() is False
+    seg(status="success", count=1, reviewed_sha="aaaaaaaaaaaaa")
+    assert tell() is True
+
+    # PostCompact 清 cadence 让 state 重注入，但不复活已投递的事件
+    c = RepoContext.load(R); c.clear_injection_dedup()
+    assert tell() is False
+
+
 def test_label_pending_nudge_is_forge_derived():
     """待打标 nudge 的数来自 pr.json（forge 派生的 pending），不是 review.json 的 finding 数。
     两个关键性质：(1) review.json 说有 2 条 finding、但都标完了(pending=0) → 不再喊;
