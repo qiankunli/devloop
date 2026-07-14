@@ -14,6 +14,47 @@ from _testkit import _git, _hook_input, _load_hook, run_main  # noqa: E402  (boo
 from lib.context import PullRequest  # noqa: E402
 
 
+def test_turn_block_stable_across_clock_when_state_unchanged():
+    """整块 hash 去重（Cadence）赖以成立的前提：状态没变时 `turn_text()` 必须**逐字**相同。
+
+    block 的去重粒度被它**最吵的一行**支配——只要有任何一行渲染相对时间（"3 分钟前"）或每轮
+    自增的计数，整块 hash 就每轮都变，于是**所有**行每轮重发，Cadence 静默失效。那种退化不会
+    让任何别的测试变红（每行内容都还是对的），所以这条测试就是那个前提的守卫。
+    `base.fmt_ts` 故意渲染绝对时间戳而非"N 分钟前"，正是为此。
+
+    时钟**允许**驱动的只有阈值跃迁（running→stale @REVIEW_STALE_SEC、requirement idle
+    @REQUIREMENT_STALE_SEC）——那是真状态变了，本就该重发。跨不过任何阈值的时间流逝必须零变化。
+    """
+    from lib.context import RepoContext, base, store
+    R = "/tmp/dlut_blockstable"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    Path(f"{R}/dirty").write_text("y")            # 让 Workspace 行也有内容
+    ctx = RepoContext.refresh_all(R)
+    G, branch = ctx.repo.repo_dir, ctx.branch.local.name
+
+    # 把带时间语义的行都摆上：review(running,未到 stale 阈值) + 待打标 nudge + validation
+    store.save_segment(G, store.branch_segment(branch, "review"),
+                       {"status": "running", "count": 0, "reviewed_sha": "abcdef1234567",
+                        "generated_at": base.now(), "comments": []})
+    store.save_segment(G, "pr", {"branch": branch, "provider": "github",
+                                 "label_pending": 2, "label_pending_key": "setA"})
+    RepoContext.load(G).mark_lint_passed()        # Validation: lint=<绝对时间戳>
+
+    t1 = RepoContext.load(G).turn_text()
+    assert "Review: running" in t1 and "待打标" in t1 and "lint=" in t1   # 别测了个空 block
+
+    orig_now = base.now
+    base.now = lambda: orig_now() + 600           # 10 分钟后，什么都没做，跨不过任何阈值
+    try:
+        t2 = RepoContext.load(G).turn_text()
+    finally:
+        base.now = orig_now
+    assert t2 == t1, f"时间流逝改变了 turn block —— 整块去重已失效:\n---\n{t1}\n---\n{t2}\n---"
+
+
 def test_turn_text_merge_blocked_hint():
     """An open MR with an actionable readiness blocker surfaces a MERGE-BLOCKED nag in the turn
     banner; READY / the async UNKNOWN stay quiet (no clutter while still checking)."""

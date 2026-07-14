@@ -157,6 +157,13 @@ def now() -> float:
 
 
 def fmt_ts(ts: float | None) -> str:
+    """An ABSOLUTE timestamp — deliberately not "5m ago", however much friendlier that reads.
+
+    These render into the turn block, whose dedup (`Cadence`) hashes the WHOLE block: one
+    clock-relative string would re-hash it every turn, so EVERY line would re-inject forever
+    and the dedup would be silently dead — each line still correct, nothing failing. That
+    invariant is pinned by test_turn_block_stable_across_clock_when_state_unchanged.
+    """
     if not ts:
         return "never"
     try:
