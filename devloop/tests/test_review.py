@@ -95,6 +95,41 @@ def test_label_pending_nudge_is_forge_derived():
     prseg(label_pending=3); store.save_segment(R, "pr", {"branch": "other", "label_pending": 3})
     assert "待打标" not in RepoContext.load(R).turn_text()
 
+
+def test_label_nudge_decays_then_reopens_on_new_findings():
+    """待打标是**要人干活**的行，不是状态行：同一批 finding 问满 LABEL_NUDGE_CAP 次就闭嘴
+    （不理也是一种回答）；来了新的一批（pending set 变了）才重新开口。turn Cadence 顶不了
+    这件事——它按整块 hash 去重，随便哪行状态一动就整块重发，chore 行会永远跟着喊。"""
+    from lib.context import RepoContext, store
+    from lib.context.base import LABEL_NUDGE_CAP
+    G = "/tmp/dlut_nudgedecay"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
+    _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
+    Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
+    ctx = RepoContext.refresh_all(G)
+    R, branch = ctx.repo.repo_dir, ctx.branch.local.name
+
+    def prseg(**kw): store.save_segment(R, "pr", {"branch": branch, "provider": "github", **kw})
+
+    def ask() -> bool:
+        """一个 emit→mark 回合，返回这轮有没有喊。"""
+        c = RepoContext.load(R)
+        said = "待打标" in c.turn_text()
+        c.mark_turn_emitted(c.turn_text())   # 真发出去了才记账（见 userprompt_inject）
+        return said
+
+    prseg(label_pending=3, label_pending_key="setA")
+    assert [ask() for _ in range(LABEL_NUDGE_CAP)] == [True] * LABEL_NUDGE_CAP   # 问满 cap
+    assert ask() is False and ask() is False                                     # 之后闭嘴
+
+    # 新一轮 review 带来新 finding → set 变了 → 重新开口，且计数重来
+    prseg(label_pending=5, label_pending_key="setB")
+    assert [ask() for _ in range(LABEL_NUDGE_CAP)] == [True] * LABEL_NUDGE_CAP
+    assert ask() is False
+
+    # 标掉一条 → set 又变了 → 继续喊：agent 在推进，值得跟；闭嘴只针对「原地不动」
+    prseg(label_pending=4, label_pending_key="setC")
+    assert ask() is True
+
 def test_launch_background_relays():
     """detach 起后台 relay：不抛、写 PLAN 行；空列表 no-op。"""
     sgo = _load_script("smart_git_ops")
@@ -274,7 +309,7 @@ def test_review_feedback_joins_fp_to_label():
     起来——join 键在 body 里、锚在 forge 上，不依赖任何本地状态。汇总 note 里也有 ccr:fp
     （每条回落 finding 一个），但它没锚点、没 thread，回不进去也就标不了，必须排除。"""
     from lib.forge.base import Comment
-    from lib.review_feedback import findings, pending
+    from lib.review_feedback import Finding, findings, pending
 
     cs = [
         # 汇总 note：无 thread，body 里有多个 ccr:fp → 不是 published finding
@@ -292,6 +327,13 @@ def test_review_feedback_joins_fp_to_label():
     typo = [Comment(id="40", thread_id="40", body="x <sub>ccr:fp=fp3</sub>"),
             Comment(id="41", thread_id="40", reply_to="40", body="ccr:label=importnat — oops")]
     assert [f.fp for f in pending(typo)] == ["fp3"]
+
+    # pending_key 认 fp 集合、不认条数：标掉一条又新来一条 → 数没变但活变了 → key 必须变
+    from lib.review_feedback import pending_key
+    def _fs(*fps): return [Finding(fp=f, comment=Comment(id=f, thread_id=f)) for f in fps]
+    assert pending_key(_fs("a", "b")) == pending_key(_fs("b", "a"))   # 顺序无关（两个面交织）
+    assert pending_key(_fs("a", "b")) != pending_key(_fs("a", "c"))   # 同为 2 条,活不同
+    assert pending_key([]) == ""
 
     # 带 ccr:label 但不是回复（thread 根自己提了一嘴）→ 不算 verdict
     selfref = [Comment(id="50", thread_id="50", body="讲讲 ccr:label=wrong 的用法 <sub>ccr:fp=fp4</sub>")]

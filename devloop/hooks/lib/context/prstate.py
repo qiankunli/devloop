@@ -93,12 +93,16 @@ def poll_pr(repo: str) -> dict | None:
     # cached number. Safe to cache precisely because review_feedback can always re-derive it
     # from comment bodies — losing this segment costs a stale count, never the join itself.
     # Own guard: a comments() failure degrades to "unknown", it must not cost us the window.
-    label_pending = None
+    label_pending, label_pending_key = None, ""
     if branch_pr and branch_pr.is_open:
         try:
-            label_pending = len(review_feedback.pending(forge.comments(anchor)))
+            _pend = review_feedback.pending(forge.comments(anchor))
+            label_pending = len(_pend)
+            # Set identity, not just the count — the nudge decays per SITUATION, and a count
+            # can't distinguish "same findings, still unlabeled" from new work.
+            label_pending_key = review_feedback.pending_key(_pend)
         except ForgeError:
-            label_pending = None
+            label_pending, label_pending_key = None, ""
     return {
         "branch": branch,
         "head_sha": head,          # provenance: the HEAD this window was selected against
@@ -106,6 +110,7 @@ def poll_pr(repo: str) -> dict | None:
         "pr_number": anchor,
         "merge_readiness": readiness,   # current branch's open MR; None when no open MR / unknown
         "label_pending": label_pending,  # current branch's open MR; None when no open MR / unknown
+        "label_pending_key": label_pending_key,   # pending-set identity; drives nudge decay
         "prs": [asdict(p) for p in window],
     }
 

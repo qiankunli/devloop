@@ -34,12 +34,14 @@ from ..forge import ForgeError, forge_for_repo
 from . import base, store
 from .base import (
     DEFAULT_BRANCH_TTL_SEC,
+    LABEL_NUDGE_CAP,
     REPO_STALE_SEC,
     SESSION_TTL_SEC,
     TURN_TTL_SEC,
     AgentsMd,
     Cadence,
     MergeReadiness,
+    Nudge,
     PullRequest,
     Reference,
     pr_label,
@@ -176,6 +178,9 @@ class Validation:
 class Injection:
     turn: Cadence = field(default_factory=Cadence)
     session: Cadence = field(default_factory=Cadence)
+    # Chore nudges decay independently of the turn cadence — Cadence hashes the whole block,
+    # so an unrelated line moving would re-ask forever. See base.Nudge.
+    label_nudge: Nudge = field(default_factory=Nudge)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Injection":
@@ -183,6 +188,7 @@ class Injection:
         return cls(
             turn=Cadence.from_dict(d.get("turn") or {}),
             session=Cadence.from_dict(d.get("session") or {}),
+            label_nudge=Nudge.from_dict(d.get("label_nudge") or {}),
         )
 
 
@@ -199,6 +205,7 @@ class RepoContext:
                                          # (MergeReadiness value); re-checked live before a merge
     label_pending: int | None = None     # open MR's findings still awaiting a ccr:label verdict
                                          # — a pr.json hint; None = no open MR / poll failed
+    label_pending_key: str = ""          # identity of that pending set — nudge decay key
     updated_at: float = 0.0
 
     # ── load (merge segments) ──────────────────────────────────────────────────
@@ -244,6 +251,7 @@ class RepoContext:
             provider=pr.get("provider", ""),
             merge_readiness=(pr.get("merge_readiness") if on_branch else None),
             label_pending=(pr.get("label_pending") if on_branch else None),
+            label_pending_key=((pr.get("label_pending_key") or "") if on_branch else ""),
             updated_at=float(meta.get("updated_at", 0) or 0),
         )
         if not ctx.repo.repo_dir:
@@ -436,8 +444,21 @@ class RepoContext:
         text = self.session_text()
         return text if self.injection.session.should_emit(text, now=base.now(), ttl=SESSION_TTL_SEC) else ""
 
+    @property
+    def label_nudge_due(self) -> bool:
+        """Whether the待打标 nudge should speak this turn. ONE predicate, read by both
+        `_format_turn` (to decide whether to say it) and `mark_turn_emitted` (to count that it
+        was said) — the two are separate calls over the same unchanged ctx, so a single
+        definition is what keeps them from drifting into counting asks that never went out."""
+        return bool(self.label_pending) and self.injection.label_nudge.due(
+            self.label_pending_key, cap=LABEL_NUDGE_CAP)
+
     def mark_turn_emitted(self, text: str) -> None:
         self.injection.turn.mark(text, now=base.now())
+        # Only reached when `text` actually went out (see userprompt_inject), so this counts
+        # asks the agent really saw — not ones the block-level dedup swallowed.
+        if self.label_nudge_due:
+            self.injection.label_nudge.bump(self.label_pending_key)
         self._save_injection()
 
     def mark_session_emitted(self, text: str) -> None:
@@ -595,7 +616,9 @@ def _format_turn(ctx: "RepoContext") -> str:
     # 几条没标」——标完了它照喊，review.json 被下轮覆盖 / 换机器 / worktree 删了它就没了，
     # 而 MR 上没标的 finding 还挂着。pending 锚在 forge 上，跟本地状态无关。
     # 独立于上面的 Review 行:review.json 没了不影响它，两者是不同的事实源。
-    if ctx.label_pending:
+    # `label_nudge_due` 而非 `label_pending`:这是**要人干活**的行,不是状态行——同一批 finding
+    # 问满 LABEL_NUDGE_CAP 次就闭嘴（不理也是一种回答),来了新的才重新开口。
+    if ctx.label_nudge_due:
         lines.append(f"Review findings: {ctx.label_pending} 条待打标 — 逐条求证后回复 "
                      f"`ccr:label=`（label-review skill）")
 

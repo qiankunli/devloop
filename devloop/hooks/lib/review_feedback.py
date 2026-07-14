@@ -16,6 +16,7 @@ the poll boundary and makes this testable without HTTP.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 
@@ -73,3 +74,15 @@ def findings(comments: list[Comment]) -> list[Finding]:
 def pending(comments: list[Comment]) -> list[Finding]:
     """Published findings still awaiting a verdict — the nudge's source of truth."""
     return [f for f in findings(comments) if f.pending]
+
+
+def pending_key(found: list[Finding]) -> str:
+    """Identity of a pending SET, for nudge decay (`context.base.Nudge`).
+
+    Hashes the sorted fps, not the count: a count can't tell "the same 3 findings you've
+    already been asked about" from "one got labeled and a new round added another" — same
+    number, different work. Sorted so comment order (two forge surfaces, interleaved by time)
+    can't churn the key and silently reset the decay.
+    """
+    fps = sorted(f.fp for f in found)
+    return hashlib.sha256("\n".join(fps).encode()).hexdigest()[:12] if fps else ""
