@@ -1,0 +1,27 @@
+devloop/hooks/lib/forge/base.py
+  s_87c49950a78f75::t_778d25f03dbf3a 116-127,130-134,252-262,279-290
+devloop/hooks/lib/forge/github.py
+  s_87c49950a78f75::t_bac7170cb4ebaf 120-148,151-152,155-161
+devloop/hooks/lib/forge/gitlab.py
+  s_87c49950a78f75::t_e94031277e95a5 143-146,150,155-177,181-187
+devloop/tests/test_forge.py
+  s_87c49950a78f75::t_6e3b225c9cdeb1 356-442
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "825c73e82fc13c5a82993d49c066e9df83736520",
+  "prompts": {},
+  "sessions": {
+    "s_87c49950a78f75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e970edb-23ad-492e-8411-f946c6b542e7",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
