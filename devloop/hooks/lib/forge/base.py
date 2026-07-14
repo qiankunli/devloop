@@ -113,8 +113,25 @@ class PullRequest:
 
 @dataclass
 class Comment:
+    """A comment on a PR/MR — neutral across forges, and across both comment surfaces
+    (plain conversation note + diff-anchored note; see `Forge.comments`).
+
+    `id` / `thread_id` are OPAQUE: each adapter picks values its own `reply` understands
+    (GitLab discussion id, GitHub top-level review-comment id), so callers never branch on
+    provider. Grouping into threads is the caller's job — `thread_id` equality is the only
+    contract, deliberately instead of a nested tree type (no caller needs one yet).
+
+    Carries no label/finding vocabulary: a `ccr:fp=` / `ccr:label=` footer is just body text
+    the review layer writes and greps. The forge is the join's source of truth, which is why
+    nothing here is persisted locally — see `comments()`.
+    """
     author: str = ""
     body: str = ""
+    id: str = ""                # opaque, adapter-scoped; "" when the adapter can't supply one
+    thread_id: str = ""         # same value for every comment in one thread; "" = standalone
+    reply_to: str = ""          # `id` of the comment this replies to; "" = thread root
+    path: str = ""              # diff anchor (new side); "" for plain conversation comments
+    line: int | None = None
 
 
 @dataclass
@@ -232,22 +249,54 @@ class Forge(abc.ABC):
         increment and to bound the 'changes since last release' notes draft."""
 
     @abc.abstractmethod
-    def comments(self, number: int) -> list[Comment]: ...
+    def comments(self, number: int) -> list[Comment]:
+        """Every human-visible comment on PR/MR `number` — BOTH surfaces: plain conversation
+        notes and the diff-anchored ones `diff_comment` writes. The union is the point: a
+        caller that wants to find what review posted must not have to know which surface it
+        landed on (GitHub splits them across two endpoints; GitLab merges them into one).
+        System/bot activity notes are excluded — they aren't comments anyone wrote.
+
+        Carries `id`/`thread_id`, so a caller that reads then replies gets the reply target
+        from this same call. That's why devloop persists no local comment refs: the forge is
+        the durable store, and a ref cached elsewhere would only be a staler copy of this.
+        """
 
     @abc.abstractmethod
     def comment(self, number: int, body: str) -> None:
         """Post a new comment on PR/MR `number` (GitHub issue comment / GitLab MR note).
         Write primitive — used to attach code-review history to the MR."""
 
-    def diff_comment(self, number: int, body: str, path: str, line: int) -> None:
-        """Post a comment anchored to `path:line` on the NEW side of PR/MR `number`'s diff.
-        The anchor is what buys the forge's native comment lifecycle: when a later push
-        changes those lines, the forge marks the comment outdated and folds it — so each
-        review round's findings age out with the code instead of piling up as plain notes.
-        Raises ForgeError when the anchor can't land (e.g. the line isn't part of the
-        current diff). Concrete-with-default (peer of merge_readiness): an adapter without
-        a line-anchored surface raises too, and callers degrade to the plain summary note."""
+    def diff_comment(self, number: int, body: str, path: str, line: int | None = None) -> None:
+        """Post a comment anchored to `path:line` on the NEW side of PR/MR `number`'s diff,
+        or to `path` as a whole when `line` is None. The anchor is what buys the forge's
+        native comment lifecycle: when a later push changes those lines, the forge marks the
+        comment outdated and folds it — so each review round's findings age out with the code
+        instead of piling up as plain notes.
+
+        `line=None` is a granularity knob on ONE surface, not a second surface — same endpoint,
+        same lifecycle, same failure mode, one field dropped (GitHub `subject_type=file`,
+        GitLab `position_type=file`). That's why it's a parameter here, whereas `comment` stays
+        a separate method: that one is a different endpoint with a different lifecycle.
+        File-level anchoring is the rung between a line anchor and the plain summary note —
+        it still gets an id and a thread, so a finding posted this way is still replyable.
+
+        Raises ForgeError when the anchor can't land (the line isn't in the current diff; the
+        file isn't in it either; GitLab older than 16.4 has no file position type). Callers are
+        expected to degrade — line → file → summary note. Concrete-with-default (peer of
+        merge_readiness): an adapter with no anchored surface at all raises too."""
         raise ForgeError(f"{self.provider or 'forge'}: diff comments not supported")
+
+    def reply(self, number: int, target: Comment, body: str) -> None:
+        """Post `body` into `target`'s thread on PR/MR `number`. `target` must have come from
+        THIS forge's `comments()` — its `id`/`thread_id` are adapter-private values.
+
+        Raises ForgeError when `target` isn't threadable (`thread_id` == ""), rather than
+        silently degrading to a standalone comment: a reply that lands detached from what it
+        answers is a worse outcome than an error the caller can handle. Only the diff-anchored
+        surface threads — uniformly across forges by construction, see `GitLabForge._to_comment`.
+        Same raise-and-let-the-caller-degrade contract as `diff_comment`.
+        """
+        raise ForgeError(f"{self.provider or 'forge'}: replies not supported")
 
     def merge_readiness(self, number: int) -> MergeReadiness:
         """Why MR/PR `number` can't merge yet (CONFLICT / DISCUSSIONS_UNRESOLVED / …), or READY.

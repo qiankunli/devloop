@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from .. import git_state
+from .. import git_state, review_feedback
 from ..forge import ForgeError, build_window, forge_for_repo
 from . import base, store
 
@@ -87,12 +87,30 @@ def poll_pr(repo: str) -> dict | None:
             readiness = forge.merge_readiness(anchor).value
         except ForgeError:
             readiness = None
+    # Findings still awaiting a `ccr:label` verdict — a peer of readiness: derived from the
+    # forge, cached here, never authoritative. It's computed at the POLL boundary (not per
+    # turn) because that's where the forge round-trip already is; the turn context reads the
+    # cached number. Safe to cache precisely because review_feedback can always re-derive it
+    # from comment bodies — losing this segment costs a stale count, never the join itself.
+    # Own guard: a comments() failure degrades to "unknown", it must not cost us the window.
+    label_pending, label_pending_key = None, ""
+    if branch_pr and branch_pr.is_open:
+        try:
+            _pend = review_feedback.pending(forge.comments(anchor))
+            label_pending = len(_pend)
+            # Set identity, not just the count — the nudge decays per SITUATION, and a count
+            # can't distinguish "same findings, still unlabeled" from new work.
+            label_pending_key = review_feedback.pending_key(_pend)
+        except ForgeError:
+            label_pending, label_pending_key = None, ""
     return {
         "branch": branch,
         "head_sha": head,          # provenance: the HEAD this window was selected against
         "provider": forge.provider,
         "pr_number": anchor,
         "merge_readiness": readiness,   # current branch's open MR; None when no open MR / unknown
+        "label_pending": label_pending,  # current branch's open MR; None when no open MR / unknown
+        "label_pending_key": label_pending_key,   # pending-set identity; drives nudge decay
         "prs": [asdict(p) for p in window],
     }
 

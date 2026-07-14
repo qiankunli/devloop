@@ -34,12 +34,15 @@ from ..forge import ForgeError, forge_for_repo
 from . import base, store
 from .base import (
     DEFAULT_BRANCH_TTL_SEC,
+    LABEL_NUDGE_CAP,
     REPO_STALE_SEC,
+    REVIEW_NUDGE_CAP,
     SESSION_TTL_SEC,
     TURN_TTL_SEC,
     AgentsMd,
     Cadence,
     MergeReadiness,
+    Nudge,
     PullRequest,
     Reference,
     pr_label,
@@ -172,10 +175,45 @@ class Validation:
         )
 
 
+def _review_status(rv: dict) -> str:
+    """The review status as DISPLAYED, which is not always the one stored.
+
+    `stale` is DERIVED, never written: a detached run_review that got killed (sleep / OOM /
+    kill) never wrote a terminal status, so review.json sits at `running` forever — past
+    REVIEW_STALE_SEC that reads as stale. "" for skipped / no review (no signal, pure noise).
+
+    Shared by the renderer and `_review_key` on purpose: keying on the STORED status would
+    make running and stale the same event, so a review told once while running could never
+    report that it died — the exact case the staleness backstop exists for.
+    """
+    status = rv.get("status")
+    if not status or status == "skipped":
+        return ""
+    if status == "running" and (base.now() - (rv.get("generated_at") or 0)) > base.REVIEW_STALE_SEC:
+        return "stale"
+    return status
+
+
+def _review_key(rv: dict) -> str:
+    """Identity of a review RESULT — what makes it a different thing worth telling again.
+
+    Displayed status + the sha it ran against + its counts. A re-run over new code, a run
+    finishing (running → success), or one dying (running → stale) is new; the same result
+    re-read every turn is not.
+    """
+    st = _review_status(rv)
+    return f"{st}:{rv.get('reviewed_sha') or ''}:{rv.get('count', 0)}:{rv.get('failed', 0)}" if st else ""
+
+
 @dataclass
 class Injection:
     turn: Cadence = field(default_factory=Cadence)
     session: Cadence = field(default_factory=Cadence)
+    # Event/chore delivery ledgers, decaying independently of the turn cadence — Cadence
+    # hashes the whole block, so an unrelated line moving would re-deliver forever. Also NOT
+    # cleared by PostCompact, unlike the cadences: see clear_injection_dedup. base.Nudge.
+    label_nudge: Nudge = field(default_factory=Nudge)
+    review_nudge: Nudge = field(default_factory=Nudge)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Injection":
@@ -183,6 +221,8 @@ class Injection:
         return cls(
             turn=Cadence.from_dict(d.get("turn") or {}),
             session=Cadence.from_dict(d.get("session") or {}),
+            label_nudge=Nudge.from_dict(d.get("label_nudge") or {}),
+            review_nudge=Nudge.from_dict(d.get("review_nudge") or {}),
         )
 
 
@@ -197,6 +237,9 @@ class RepoContext:
     provider: str = ""   # repo-level forge ("github"/"gitlab"); drives display vocabulary
     merge_readiness: str | None = None   # current branch's open-MR readiness — a pr.json hint
                                          # (MergeReadiness value); re-checked live before a merge
+    label_pending: int | None = None     # open MR's findings still awaiting a ccr:label verdict
+                                         # — a pr.json hint; None = no open MR / poll failed
+    label_pending_key: str = ""          # identity of that pending set — nudge decay key
     updated_at: float = 0.0
 
     # ── load (merge segments) ──────────────────────────────────────────────────
@@ -241,6 +284,8 @@ class RepoContext:
             prs=[PullRequest.from_dict(p) for p in (pr.get("prs") or []) if p.get("number") is not None],
             provider=pr.get("provider", ""),
             merge_readiness=(pr.get("merge_readiness") if on_branch else None),
+            label_pending=(pr.get("label_pending") if on_branch else None),
+            label_pending_key=((pr.get("label_pending_key") or "") if on_branch else ""),
             updated_at=float(meta.get("updated_at", 0) or 0),
         )
         if not ctx.repo.repo_dir:
@@ -433,8 +478,31 @@ class RepoContext:
         text = self.session_text()
         return text if self.injection.session.should_emit(text, now=base.now(), ttl=SESSION_TTL_SEC) else ""
 
+    @property
+    def label_nudge_due(self) -> bool:
+        """Whether the待打标 nudge should speak this turn. ONE predicate, read by both
+        `_format_turn` (to decide whether to say it) and `mark_turn_emitted` (to count that it
+        was said) — the two are separate calls over the same unchanged ctx, so a single
+        definition is what keeps them from drifting into counting asks that never went out."""
+        return bool(self.label_pending) and self.injection.label_nudge.due(
+            self.label_pending_key, cap=LABEL_NUDGE_CAP)
+
+    def review_nudge_due(self, rv: dict) -> bool:
+        """Whether this review RESULT still needs telling. Same emit/mark pairing as
+        `label_nudge_due`; `rv` is the freshly-read review segment (the formatter reads it
+        live because an external process writes it, so it can't come off `self`)."""
+        return bool(_review_key(rv)) and self.injection.review_nudge.due(
+            _review_key(rv), cap=REVIEW_NUDGE_CAP)
+
     def mark_turn_emitted(self, text: str) -> None:
         self.injection.turn.mark(text, now=base.now())
+        # Only reached when `text` actually went out (see userprompt_inject), so these count
+        # deliveries the agent really saw — not ones the block-level dedup swallowed.
+        if self.label_nudge_due:
+            self.injection.label_nudge.bump(self.label_pending_key)
+        rv = store.load_segment(self._root(), self._branch_seg("review")) or {}
+        if self.review_nudge_due(rv):
+            self.injection.review_nudge.bump(_review_key(rv))
         self._save_injection()
 
     def mark_session_emitted(self, text: str) -> None:
@@ -450,7 +518,15 @@ class RepoContext:
         self._save_injection()
 
     def clear_injection_dedup(self) -> None:
-        """PostCompact: drop both cadences' stamps so state re-injects next turn."""
+        """PostCompact: drop both cadences' stamps so STATE re-injects next turn.
+
+        Deliberately does NOT touch the nudges. Compaction drops what was said, so state must
+        be re-said — an agent acting on a branch/PR picture it no longer holds is the failure
+        this prevents. Events and chores are the opposite: re-delivering a review result makes
+        the agent re-triage findings it already handled, and re-asking for verdicts the user
+        declined three times re-litigates a decision compaction didn't undo. Their ledgers
+        record "this was delivered", which stays true across a compaction.
+        """
         self.injection.turn.clear()
         self.injection.session.clear()
         self._save_injection()
@@ -564,15 +640,18 @@ def _format_turn(ctx: "RepoContext") -> str:
     # 经 channel 或 waiter（scripts/notify.py）在 review 出终态时主动唤醒 idle 会话并带上 findings——pull 是兜底。
     _rv = store.load_segment(ctx.repo.repo_dir,
                             store.branch_segment(ctx.branch.local.name or None, "review")) or {}
-    _rs, _sha = _rv.get("status"), (_rv.get("reviewed_sha") or "")[:9]
-    # staleness 兜底：detach 的 run_review 不归 harness 跟踪，若中途被杀（休眠 / OOM / kill）就
-    # 没机会写终态，review.json 会永远卡在 "running"。running 超过 REVIEW_STALE_SEC 即按 stale 报，
-    # 不永远显示 running。
-    if _rs == "running" and (base.now() - (_rv.get("generated_at") or 0)) > base.REVIEW_STALE_SEC:
+    _sha = (_rv.get("reviewed_sha") or "")[:9]
+    # Review 是**事件**,不是状态——「这次 review 出了什么」讲一遍就讲完了,它不描述「你现在
+    # 在哪」。所以按 review 身份（status+sha+计数）报一次就闭嘴,而不是每轮跟着整块重发:
+    # turn Cadence 按整块 hash 去重,随便哪行一动就整块重发,事件行会被反复重投,agent 于是
+    # 反复 triage 同一批已经处理过的 findings。同理它不该被 PostCompact 复活（见 Nudge）。
+    # 状态取 `_review_status`（与 key 同源）:stale 是推导出来的,不在段里。
+    _rs = _review_status(_rv) if ctx.review_nudge_due(_rv) else ""
+    if _rs == "stale":
         lines.append(f"Review: stale on {_sha} — 疑似中途中断（见 .devloop/review.json）；下次 gcampr/commit 会重跑")
     elif _rs == "running":
         lines.append(f"Review: running on {_sha} (.devloop/review.json)")
-    elif _rs and _rs != "skipped":   # success / completed_with_(warnings|errors) / error；skipped 不出（噪声）
+    elif _rs:   # success / completed_with_(warnings|errors) / error；skipped 已被 _review_status 滤掉
         _n, _failed = _rv.get("count", 0), _rv.get("failed", 0)
         # 诚实呈现：findings 与「N 文件 review 失败」分别报；都没有才是 clean。
         # 关键修正：completed_with_errors+0 评论曾被误报成 clean——失败要看得见。
@@ -584,10 +663,19 @@ def _format_turn(ctx: "RepoContext") -> str:
         if _rs == "error":
             parts.append("review errored")
         summary = ", ".join(parts) if parts else "clean (no findings)"
-        # findings 处理后要逐条打 ccr:label（ground truth 双向积累）——nudge 挂在
-        # 有 finding 的行上，让所有 session/agent（含 Codex）都收到，不依赖个体记忆。
-        hint = "; 处理后逐条打标（label-review skill）" if _n else ""
-        lines.append(f"Review: {summary} on {_sha} — see .devloop/review.json{hint}")
+        lines.append(f"Review: {summary} on {_sha} — see .devloop/review.json")
+
+    # 待打标 nudge（ground truth 双向积累）——让所有 session/agent（含 Codex）都收到，
+    # 不依赖个体记忆。数来自 pr.json（forge 派生:有 ccr:fp 却没有 ccr:label 回复的 finding
+    # comment），刻意不用 review.json 的 finding 数:那是「上次 review 出了几条」,不是「还剩
+    # 几条没标」——标完了它照喊，review.json 被下轮覆盖 / 换机器 / worktree 删了它就没了，
+    # 而 MR 上没标的 finding 还挂着。pending 锚在 forge 上，跟本地状态无关。
+    # 独立于上面的 Review 行:review.json 没了不影响它，两者是不同的事实源。
+    # `label_nudge_due` 而非 `label_pending`:这是**要人干活**的行,不是状态行——同一批 finding
+    # 问满 LABEL_NUDGE_CAP 次就闭嘴（不理也是一种回答),来了新的才重新开口。
+    if ctx.label_nudge_due:
+        lines.append(f"Review findings: {ctx.label_pending} 条待打标 — 逐条求证后回复 "
+                     f"`ccr:label=`（label-review skill）")
 
     if ctx.prs:
         noun, sigil = vocab(ctx.provider)

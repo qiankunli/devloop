@@ -47,6 +47,7 @@ from .session import (
     load_active_repo,
     load_active_repo_lenient,
     record_active_repo,
+    record_session_event,
 )
 from .workspace import (
     Subproject,

@@ -46,6 +46,12 @@ REQUIREMENT_STALE_SEC = 1209600  # requirement idle this long with no close (~14
 REQ_VIEW_PRS_CAP = 8          # requirement turn-line PR list cap (a requirement rarely has more in flight)
 DEFAULT_BRANCH_TTL_SEC = 86400  # repo default branch is near-immutable → only re-fetch from the forge
                                 # once a day (refresh_all runs far more often; this gates the network call)
+LABEL_NUDGE_CAP = 3           # times to ask for a verdict on the SAME pending finding set, then
+                              # go quiet — see Nudge. Not ignoring you: 3 asks is enough to have
+                              # been heard, and labeling is advisory (ground truth, never a blocker).
+REVIEW_NUDGE_CAP = 1          # times to report the SAME review result. One: it's an event, not
+                              # state — re-telling it makes the agent re-triage findings it已
+                              # 处理过。A re-run (new sha/status/counts) is a new event → tells again.
 
 # ── leaf dataclasses ─────────────────────────────────────────────────────────
 @dataclass
@@ -71,6 +77,39 @@ class AgentsMd:
             path=d.get("path"),
             references=[Reference.from_dict(r) for r in (d.get("references") or [])],
         )
+
+
+@dataclass
+class Nudge:
+    """A bounded chore reminder: ask `cap` times per situation, then go quiet until the
+    situation actually changes.
+
+    `Cadence` can't express this, which is why this exists alongside it. Cadence dedups on the
+    WHOLE turn block's hash, so any unrelated line moving (HEAD sha, PR state) re-emits
+    everything inside it — during active work that's every turn. That's right for state lines
+    (they describe where you ARE, and a stale one would mislead) and wrong for a chore line (it
+    asks you to DO something; the 4th ask carries nothing the 3rd didn't, and not acting is
+    itself an answer).
+
+    `key` identifies the situation. A new key = genuinely new work → count resets and it speaks
+    up again; an unchanged key decays to silence. Level-triggered display, edge-triggered voice.
+    """
+    key: str = ""
+    count: int = 0
+
+    def due(self, key: str, *, cap: int) -> bool:
+        """Should the nudge speak? New situation → yes; same one → only until `cap` asks."""
+        return key != self.key or self.count < cap
+
+    def bump(self, key: str) -> None:
+        """Record one ask. A key change restarts the count at 1 (not 0 — this IS an ask)."""
+        self.count = self.count + 1 if key == self.key else 1
+        self.key = key
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "Nudge":
+        d = d or {}
+        return cls(key=str(d.get("key") or ""), count=int(d.get("count", 0) or 0))
 
 
 @dataclass
@@ -118,6 +157,13 @@ def now() -> float:
 
 
 def fmt_ts(ts: float | None) -> str:
+    """An ABSOLUTE timestamp — deliberately not "5m ago", however much friendlier that reads.
+
+    These render into the turn block, whose dedup (`Cadence`) hashes the WHOLE block: one
+    clock-relative string would re-hash it every turn, so EVERY line would re-inject forever
+    and the dedup would be silently dead — each line still correct, nothing failing. That
+    invariant is pinned by test_turn_block_stable_across_clock_when_state_unchanged.
+    """
     if not ts:
         return "never"
     try:

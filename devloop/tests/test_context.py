@@ -14,6 +14,47 @@ from _testkit import _git, _hook_input, _load_hook, run_main  # noqa: E402  (boo
 from lib.context import PullRequest  # noqa: E402
 
 
+def test_turn_block_stable_across_clock_when_state_unchanged():
+    """整块 hash 去重（Cadence）赖以成立的前提：状态没变时 `turn_text()` 必须**逐字**相同。
+
+    block 的去重粒度被它**最吵的一行**支配——只要有任何一行渲染相对时间（"3 分钟前"）或每轮
+    自增的计数，整块 hash 就每轮都变，于是**所有**行每轮重发，Cadence 静默失效。那种退化不会
+    让任何别的测试变红（每行内容都还是对的），所以这条测试就是那个前提的守卫。
+    `base.fmt_ts` 故意渲染绝对时间戳而非"N 分钟前"，正是为此。
+
+    时钟**允许**驱动的只有阈值跃迁（running→stale @REVIEW_STALE_SEC、requirement idle
+    @REQUIREMENT_STALE_SEC）——那是真状态变了，本就该重发。跨不过任何阈值的时间流逝必须零变化。
+    """
+    from lib.context import RepoContext, base, store
+    R = "/tmp/dlut_blockstable"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    Path(f"{R}/dirty").write_text("y")            # 让 Workspace 行也有内容
+    ctx = RepoContext.refresh_all(R)
+    G, branch = ctx.repo.repo_dir, ctx.branch.local.name
+
+    # 把带时间语义的行都摆上：review(running,未到 stale 阈值) + 待打标 nudge + validation
+    store.save_segment(G, store.branch_segment(branch, "review"),
+                       {"status": "running", "count": 0, "reviewed_sha": "abcdef1234567",
+                        "generated_at": base.now(), "comments": []})
+    store.save_segment(G, "pr", {"branch": branch, "provider": "github",
+                                 "label_pending": 2, "label_pending_key": "setA"})
+    RepoContext.load(G).mark_lint_passed()        # Validation: lint=<绝对时间戳>
+
+    t1 = RepoContext.load(G).turn_text()
+    assert "Review: running" in t1 and "待打标" in t1 and "lint=" in t1   # 别测了个空 block
+
+    orig_now = base.now
+    base.now = lambda: orig_now() + 600           # 10 分钟后，什么都没做，跨不过任何阈值
+    try:
+        t2 = RepoContext.load(G).turn_text()
+    finally:
+        base.now = orig_now
+    assert t2 == t1, f"时间流逝改变了 turn block —— 整块去重已失效:\n---\n{t1}\n---\n{t2}\n---"
+
+
 def test_turn_text_merge_blocked_hint():
     """An open MR with an actionable readiness blocker surfaces a MERGE-BLOCKED nag in the turn
     banner; READY / the async UNKNOWN stay quiet (no clutter while still checking)."""
@@ -578,6 +619,67 @@ def test_inject_at_workspace_root_uses_active_repo():
         ui.repo_layout, ui.workspace, ui.WorkspaceContext, ui.RepoContext, ui.load_active_repo = saved
     assert seen.get("active_arg") == "/ws"                 # fell back via the workspace root
     assert out and "Branch: feat/x" in out                 # active repo's turn context reached the prompt
+
+
+def test_session_log_is_append_only_and_kind_discriminated():
+    """`<repo>/.devloop/sessions/<sid>.jsonl` 是 devloop 自己的 append-only 日志，`kind` 区分
+    记录类型——新类型直接落**同一个文件**，读者按 kind 过滤，不破坏既有行、也不用另开文件。
+    `inject` 只是第一种。纯 exhaust：devloop 从不读回，删了不影响任何行为。"""
+    import json as _json
+    from lib.context import record_session_event
+    R = "/tmp/dlut_seslog"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+
+    record_session_event(R, "s1", "inject", text="block A")
+    record_session_event(R, "s1", "gate_blocked", gate="precommit", reason="lint")   # 未来的某种记录
+    rows = [_json.loads(ln) for ln in
+            (Path(R) / ".devloop/sessions/s1.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [r["kind"] for r in rows] == ["inject", "gate_blocked"]      # 共存，不互相破坏
+    assert rows[0]["text"] == "block A" and rows[1]["gate"] == "precommit"
+    assert all(r["ts"] > 0 for r in rows)
+    # 只 append，不覆写（对照 save_segment）
+    record_session_event(R, "s1", "inject", text="block B")
+    assert len((Path(R) / ".devloop/sessions/s1.jsonl").read_text().splitlines()) == 3
+
+
+def test_inject_recorded_to_session_log():
+    """注入本来是 write-only 的——每轮拼好、在模型 context 里花掉、就没了；能读到构造它的代码，
+    读不到某一轮它实际说了什么，而后者才是判断「这行值不值它的 token」的依据。
+    只记 devloop 注入的文本，不记用户 prompt（那在 CLI transcript 里，再存一份等于多一处没人
+    审的留存）。"""
+    import json as _json
+    from lib.context import RepoContext
+    ui = _load_hook("userprompt_inject")
+    R = "/tmp/dlut_injlog"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+
+    out = ui.produce(_hook_input("UserPromptSubmit", {"cwd": R, "session_id": "sess-A"}))
+    assert out and "Branch: feat/a" in out
+    p = Path(R) / ".devloop" / "sessions" / "sess-A.jsonl"
+    rows = [_json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "inject"
+    assert rows[0]["text"] == out and rows[0]["ts"] > 0      # 记的正是发出去的那一份
+
+    # cadence 压掉这轮（状态没变）→ 什么都没注入 → 不记：ledger 是「模型看见了什么」的账，
+    # 不是「hook 跑了几次」的账，记空行只会稀释它。
+    assert ui.produce(_hook_input("UserPromptSubmit", {"cwd": R, "session_id": "sess-A"})) is None
+    assert len(p.read_text(encoding="utf-8").splitlines()) == 1
+
+    # 另一个 session 各记各的；session id 里的路径分隔符必须消毒掉，不能写穿出目录
+    Path(f"{R}/dirty").write_text("y")     # 让 turn block 变化，否则会被 cadence 压掉
+    out2 = ui.produce(_hook_input("UserPromptSubmit", {"cwd": R, "session_id": "a/../../evil"}))
+    assert out2
+    sess_dir = Path(R) / ".devloop" / "sessions"
+    assert (sess_dir / "a-..-..-evil.jsonl").exists()             # `/` 消毒成 `-`，写不穿出去
+    assert sorted(x.name for x in sess_dir.iterdir()) == ["a-..-..-evil.jsonl", "sess-A.jsonl"]
+    assert len(p.read_text(encoding="utf-8").splitlines()) == 1   # sess-A 的账没被串写
 
 
 def test_append_jsonl_ledger():

@@ -140,33 +140,69 @@ class GitLabForge(Forge):
         return self._to_release(rels[0]) if rels else None
 
     def comments(self, number: int) -> list[Comment]:
+        # One endpoint covers both surfaces: /discussions returns plain notes (as
+        # single-note, `individual_note` discussions) AND positioned ones — so unlike
+        # GitHub this needs no second fetch. `system` notes are GitLab's activity log
+        # ("changed the description"), not comments.
         out = self.c.get(f"merge_requests/{number}/discussions", per_page=50)
         discussions = out if isinstance(out, list) else []
         return [
-            Comment(author=(n.get("author") or {}).get("username", "?"), body=n.get("body") or "")
+            self._to_comment(d, n)
             for d in discussions for n in d.get("notes", [])
             if not n.get("system")
         ]
 
+    @staticmethod
+    def _to_comment(discussion: dict, note: dict) -> Comment:
+        # An individual_note discussion wraps a plain note. GitLab would actually let us reply
+        # into one (POST .../notes promotes it to a thread), but the port reports thread_id=""
+        # anyway: GitHub CAN'T reply to its plain-comment surface, and a port whose reply
+        # threads on one provider and raises on the other forces callers to branch on provider
+        # — the exact thing this port exists to prevent. Findings are diff-anchored, so the
+        # real reply path never lands here.
+        threaded = not discussion.get("individual_note")
+        notes = [n for n in discussion.get("notes", []) if not n.get("system")]
+        root = notes[0] if notes else {}
+        pos = note.get("position") or {}
+        return Comment(
+            author=(note.get("author") or {}).get("username", "?"),
+            body=note.get("body") or "",
+            id=str(note.get("id") or ""),
+            thread_id=str(discussion.get("id") or "") if threaded else "",
+            # GitLab has no per-note parent — every note in a discussion answers its root.
+            reply_to=str(root.get("id") or "") if threaded and note.get("id") != root.get("id") else "",
+            path=pos.get("new_path") or "",
+            line=pos.get("new_line"),
+        )
+
     def comment(self, number: int, body: str) -> None:
         self.c.post(f"merge_requests/{number}/notes", {"body": body})
 
-    def diff_comment(self, number: int, body: str, path: str, line: int) -> None:
+    def reply(self, number: int, target: Comment, body: str) -> None:
+        if not target.thread_id:
+            raise ForgeError(f"MR !{number}: comment {target.id or '?'} is a plain note — "
+                             "GitLab can only reply inside a discussion")
+        self.c.post(f"merge_requests/{number}/discussions/{target.thread_id}/notes",
+                    {"body": body})
+
+    def diff_comment(self, number: int, body: str, path: str, line: int | None = None) -> None:
         # Positioned discussion — GitLab re-anchors it on every push and folds it as
         # "outdated" once the lines change; with the project setting
         # `resolve_outdated_diff_discussions` it even auto-resolves then.
         refs = self._diff_refs(number)
-        self.c.post(f"merge_requests/{number}/discussions", {
-            "body": body,
-            "position": {
-                "position_type": "text",
-                "base_sha": refs.get("base_sha"),
-                "start_sha": refs.get("start_sha"),
-                "head_sha": refs.get("head_sha"),
-                "new_path": path,
-                "new_line": line,
-            },
-        })
+        pos = {
+            # `file` was introduced in GitLab 16.4, so an older self-managed instance is
+            # expected to reject it. Not version-probed: the caller already degrades past a
+            # ForgeError, which costs one wasted request instead of one per-instance GET.
+            "position_type": "file" if line is None else "text",
+            "base_sha": refs.get("base_sha"),
+            "start_sha": refs.get("start_sha"),
+            "head_sha": refs.get("head_sha"),
+            "new_path": path,
+        }
+        if line is not None:
+            pos["new_line"] = line
+        self.c.post(f"merge_requests/{number}/discussions", {"body": body, "position": pos})
 
     def _diff_refs(self, number: int) -> dict:
         """The MR's current diff version (base/start/head sha) a position anchors against.

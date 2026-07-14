@@ -13,17 +13,34 @@ smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https:/
   `post_mr` 都行）。相位只决定**何时触发**;动作本身不变。
 - **通用交付 = surface 给 session**:无论哪个相位,都写 review.json → 下一轮经状态总线注入
   浮现 `Review:` 行（pull）。
+- **Review 行是事件,不是状态,所以只讲一次**:同一个 review 结果讲一遍就闭嘴,重跑出新结果
+  （status/sha/计数变了）才再讲。turn `Cadence` 顶不了这件事——它按**整块** hash 去重,随便
+  哪行状态一动（HEAD sha、PR 状态）就整块重发,事件行被反复重投,agent 于是反复 triage 同一批
+  已处理的 findings。同理 **PostCompact 不复活它**:compaction 掉的是「说过的话」,状态必须
+  重说（否则 agent 拿着已不成立的分支/PR 图像动手）,事件重投则是让人重做已做的事。
+  待打标 nudge 同理,只是 cap=3 而非 1(见 `context/base.py` 的 `Nudge`)。
 - **post_mr 的额外能力 = MR 评论**:relay 在 git 动作后跑时,查分支是否有开放 MR;有就
   发评论（典型是 `post_mr`——MR 刚建好;或往在途 MR 追加提交时也会命中）。
   没有 MR 就只落 review.json。所以 **MR 评论是机会性的,不是 phase 硬绑**。
-- **findings 优先 inline（行锚点）,汇总 note 兜底**:每条 finding 先尝试发成 diff 行锚点评论
+- **findings 优先锚点,汇总 note 兜底**:每条 finding 先尝试发成 diff 锚点评论
   （`forge.diff_comment`,GitLab positioned discussion / GitHub review comment）——锚点换来
   forge **原生的 outdated 生命周期**:下一轮 AI 修完再 push,改到的行上的旧 finding 被 forge
   自动折叠成 outdated,不像普通 note 永远悬着（GitLab 项目开 `resolve_outdated_diff_discussions`
-  还能 push 时自动 resolve）。锚不上的（无行号 / 行不在当前 diff / forge 不支持）回落到那条
-  汇总评论里列出;汇总评论承载 review 级身份（models / cost / 引擎版本）与历史对比,但只在有
-  finding 或有文件审失败时才发——clean 不发评论(结论留 review.json / 下轮注入),避免往在途 MR
-  反复 push 时攒出一串无信息量的 clean 刷屏。
+  还能 push 时自动 resolve）。汇总评论承载 review 级身份（models / cost / 引擎版本）与历史
+  对比,但只在有 finding 或有文件审失败时才发——clean 不发评论(结论留 review.json / 下轮注入),
+  避免往在途 MR 反复 push 时攒出一串无信息量的 clean 刷屏。
+- **finding 有 line-level 和 file-level 两级**:带行号的是 line-level（"这行漏判空"）,不带的
+  是 file-level（"这文件缺测试"）——后者不是信息缺失,本来就没有哪一行可指,直接锚文件。
+  line-level 锚不上时（最常见:context 行 finding,行不在当前 diff 里）先退一级到文件锚,
+  两级都锚不上才进汇总。多这一级的理由是**可打标性**:只有锚点评论有线程、能被回复
+  `ccr:label=`,汇总里的 finding 只是一行文本、没有可回复的对象,等于退出 ground truth 回收。
+- **打标闭环锚在 forge 上,不落本地**:finding comment 带 `ccr:fp=` 指纹,verdict 以
+  `ccr:label=` 回复落在同一线程,两者由 `lib/review_feedback.py` 从 `forge.comments()` join
+  回来。join 键跟着持久对象（comment body）走,所以换机器 / 换 worktree / 换 session 都接得上;
+  本地存一份 fp→comment-id 表只会是这份数据的陈旧副本,丢了还会把 join 悄悄弄断。
+  待打标数（`Review findings: N 条待打标`）由此派生,刻意不用 review.json 的 finding 数——
+  那是「上次 review 出了几条」而非「还剩几条没标」:标完了它照喊,review.json 一被下轮覆盖
+  它就没了,而 MR 上没标的 finding 还挂着。
 - **signal hook,不挡 commit**:review 跑得久,且写码 AI 与 review AI 同源——结论仅供参考、
   **merge 必须人拍**。故不像 lint/test 那样 inline 挡。
 - **detach、不靠 agent 起后台**:dispatch(subprocess)不能起「跑完唤醒 session」的 harness 后台
@@ -39,9 +56,17 @@ gcampr → … → commit → publish（建/复用 MR）→ post_mr relay
 run_review（后台、独立进程）：先写 status=running
    → 自动拼 --background（业务上下文）：本次提交说明（git log）+ MR 标题/描述（forge）
    → <engine> review --from origin/<target> --to HEAD --background <ctx> --format json   # engine=ccr(默认)/ocr
-   → 写 .devloop/review.json（通用）+ 若分支有开放 MR：逐条 findings 尝试 inline（diff_comment）
-     → 锚不上的回落进汇总评论（forge.comment）
+   → 写 .devloop/review.json（通用）+ 若分支有开放 MR：逐条 findings 尝试锚点（diff_comment）
+     → line-level 行锚 →（失败）文件锚；file-level 直接文件锚 →（都失败）回落汇总评论（forge.comment）
 下一轮：userprompt 注入读 review.json → 上下文出现 `Review: …`（含 mr_comment 状态）
+
+打标（异步、人/agent 触发，见 `skills/label-review`）：
+```
+poll_pr（monitor / gcampr）→ forge.comments(n) → review_feedback.pending → pr.json.label_pending
+下一轮注入：`Review findings: N 条待打标`
+agent：pr findings <n> --pending → 逐条对照真实 diff 求证 → pr reply <n> <id> 'ccr:label=…'
+后续集中采集：查 API join「ccr:fp 的 finding comment ← ccr:label 的回复」→ ground truth
+```
 ```
 
 **给引擎喂上下文以提准**（`--background`，注入到每个文件的 review prompt）：run_review 自动从
@@ -52,7 +77,9 @@ run_review（后台、独立进程）：先写 status=running
 关键对象（锚点）：`lib/lifecycle/review.py`（`review` handler，返回 relay）、`smart_git_ops`
 （`launch_background_relays`，各相位 git 动作后 detach 起）、`scripts/run_review.py`（后台执行体：
 审全量 diff + 机会性发评论，经 `lib/review_engine.py` 协议调引擎）、`lib/review_engine.py`（**review
-tool 协议** `ReviewEngine` + `ReviewResult` + ocr/ccr adapter）、`forge.comment`（写评论原语，gitlab notes / github issue comment）、
+tool 协议** `ReviewEngine` + `ReviewResult` + ocr/ccr adapter）、`lib/review_feedback.py`（fp↔label
+join，纯函数、无 HTTP）、`scripts/pr.py`（`pr findings` / `pr reply`：打标闭环的读写两半）、
+`forge.comment`（写评论原语，gitlab notes / github issue comment）、
 `.devloop/review.json`（结果段）、`context/repo.py` 的 `Review:` 注入行（pull）。
 
 ## 启用

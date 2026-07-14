@@ -42,6 +42,41 @@ def _session_key(session_id: str | None) -> str:
     return os.environ.get("CLAUDE_CODE_SESSION_ID", "") or os.environ.get("CODEX_SESSION_ID", "") or ""
 
 
+# ── session log ────────────────────────────────────────────────────────────────
+def record_session_event(repo_dir: str | Path, session_id: str | None,
+                         kind: str, **fields) -> None:
+    """Append one record to `<repo>/.devloop/sessions/<sid>.jsonl` — devloop's own append-only
+    log of what it did during one CLI session.
+
+    OBSERVABILITY ONLY, read by humans, never by devloop: nothing loads this back, so it can be
+    truncated or deleted at any time and no behavior changes. That's the line to hold — the
+    moment code reads it, it stops being exhaust and becomes state, and it has none of the
+    durability guarantees state needs.
+
+    `kind` discriminates record types so new ones can land in the SAME file without breaking
+    readers (filter on kind) — `inject` is merely the first, added because the injected block
+    was otherwise write-only: assembled per turn, spent in the model's context, gone. You could
+    read the code that builds it but not what it actually said on a given turn, which is what
+    tells you whether a line earned its tokens.
+
+    `ts` / `kind` are reserved; a same-named entry in `fields` would clobber them (same shape as
+    `run_review._append_history`). Best-effort — `append_jsonl` swallows I/O errors, because an
+    observability write must never cost the caller's real work.
+
+    Which ledgers do NOT belong here, and why the `kind` field doesn't make them fit:
+    - `requirements/<id>/session.jsonl` — a REQUIREMENT's lifecycle, keyed by its first branch,
+      and devloop reads it back.
+    - `review-history.jsonl` — a PR's review rounds, read back by `run_review` to feed the next
+      review (`ccr --history`). Keyed by pr_number because review→fix→re-review spans SESSIONS
+      by nature (review in one, fix in the next); re-keying it per session would cut that join.
+      Its writer is also a detached process with no session id at all.
+    The test isn't "is it append-only jsonl" — it's WHO OWNS the lifetime, and whether anything
+    reads it. A ledger devloop consumes cannot live somewhere callers are told to truncate freely.
+    """
+    store.append_jsonl(repo_dir, f"sessions/{_session_name(session_id)}",
+                       {"ts": round(base.now(), 1), "kind": kind, **fields})
+
+
 # ── active-repo binding ────────────────────────────────────────────────────────
 # One file per session, owner = that session, so the one-file-one-owner rule holds
 # with zero exceptions: no cross-session read-modify-write exists at all. A
@@ -55,10 +90,14 @@ def _session_key(session_id: str | None) -> str:
 # sessions never ran SessionEnd) are pruned opportunistically on write.
 
 
+def _session_name(session_id: str | None) -> str:
+    """A session id as a safe path component. A CLI that provides no session id degrades to
+    one shared "anon" slot — sessions merge there rather than the state going nowhere."""
+    return re.sub(r"[^A-Za-z0-9._-]", "-", _session_key(session_id)) or "anon"
+
+
 def _session_file(ws_root: str | Path, session_id: str | None) -> Path:
-    # a CLI that provides no session id degrades to one shared "anon" slot
-    name = re.sub(r"[^A-Za-z0-9._-]", "-", _session_key(session_id)) or "anon"
-    return store.state_dir(ws_root) / "active" / f"{name}.json"
+    return store.state_dir(ws_root) / "active" / f"{_session_name(session_id)}.json"
 
 
 def _live_binding(path: Path) -> str | None:

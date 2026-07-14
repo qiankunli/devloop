@@ -84,9 +84,9 @@ class _FakeForge(Forge):
         self.posted = getattr(self, "posted", [])
         self.posted.append((number, body))
 
-    def diff_comment(self, number, body, path, line):
+    def diff_comment(self, number, body, path, line=None):
         self.diff_posted = getattr(self, "diff_posted", [])
-        self.diff_posted.append((number, path, line, body))
+        self.diff_posted.append((number, path, line, body))   # line=None → 文件级锚点
 
     def default_branch(self):
         return "main"

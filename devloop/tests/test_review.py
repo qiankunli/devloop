@@ -64,6 +64,123 @@ def test_review_injection_line():
     assert "2 finding(s)" in t and "1 file(s) failed" in t
     seg(status="error", count=0); assert "Review: review errored on abcdef123" in ctx.turn_text()
 
+
+def test_review_line_told_once_per_result():
+    """Review 是**事件**不是状态：同一个结果讲一遍就闭嘴（否则 agent 会反复 triage 同一批
+    已处理的 findings），重跑出新结果（sha/status/计数变了）才再讲。且 PostCompact 不复活它
+    ——compaction 掉的是「说过的话」，state 必须重说，事件重投则是让人重做已做的事。"""
+    from lib.context import RepoContext, base, store
+    G = "/tmp/dlut_revonce"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
+    _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
+    Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
+    ctx = RepoContext.refresh_all(G)
+    R, branch = ctx.repo.repo_dir, ctx.branch.local.name
+    _rseg = store.branch_segment(branch, "review")
+
+    def seg(**kw): store.save_segment(R, _rseg, {"comments": [], "generated_at": 1.0, **kw})
+    def tell() -> bool:
+        c = RepoContext.load(R)
+        said = "Review:" in c.turn_text()
+        c.mark_turn_emitted(c.turn_text())
+        return said
+
+    seg(status="success", count=2, reviewed_sha="abcdef1234567")
+    assert tell() is True                       # 第一次：讲
+    assert tell() is False and tell() is False  # 同一个结果：不再讲
+
+    seg(status="success", count=2, reviewed_sha="9999999999999")   # 重跑（新 sha）→ 新事件
+    assert tell() is True and tell() is False
+
+    seg(status="success", count=5, reviewed_sha="9999999999999")   # 同 sha 但结果不同 → 新事件
+    assert tell() is True
+
+    # running → success 是状态推进，也是新事件，各讲一次
+    seg(status="running", count=0, reviewed_sha="aaaaaaaaaaaaa", generated_at=base.now())
+    assert tell() is True and tell() is False
+    seg(status="success", count=1, reviewed_sha="aaaaaaaaaaaaa")
+    assert tell() is True
+
+    # PostCompact 清 cadence 让 state 重注入，但不复活已投递的事件
+    c = RepoContext.load(R); c.clear_injection_dedup()
+    assert tell() is False
+
+    # running → stale 必须还能讲：stale 是 *推导* 的（running 超时），段里的 status 一直是
+    # running。若 key 认存的 status，这条「review 半路死了」就永远发不出来——而那正是
+    # staleness 兜底存在的唯一理由。
+    seg(status="running", count=0, reviewed_sha="bbbbbbbbbbbbb", generated_at=base.now())
+    assert tell() is True and tell() is False                  # running 讲一次
+    seg(status="running", count=0, reviewed_sha="bbbbbbbbbbbbb", generated_at=1.0)   # 超时 → stale
+    c = RepoContext.load(R)
+    assert "Review: stale" in c.turn_text()                    # 同一 status，但事件变了
+    c.mark_turn_emitted(c.turn_text())
+    assert tell() is False                                     # stale 也只讲一次
+
+
+def test_label_pending_nudge_is_forge_derived():
+    """待打标 nudge 的数来自 pr.json（forge 派生的 pending），不是 review.json 的 finding 数。
+    两个关键性质：(1) review.json 说有 2 条 finding、但都标完了(pending=0) → 不再喊;
+    (2) review.json 整个没了 / 被下轮覆盖 → nudge 照样在,因为 pending 锚在 forge 上。"""
+    from lib.context import RepoContext, store
+    G = "/tmp/dlut_labelnudge"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
+    _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
+    Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
+    ctx = RepoContext.refresh_all(G)
+    R, branch = ctx.repo.repo_dir, ctx.branch.local.name
+
+    def prseg(**kw): store.save_segment(R, "pr", {"branch": branch, "provider": "github", **kw})
+    _rseg = store.branch_segment(branch, "review")
+    def revseg(**kw): store.save_segment(R, _rseg, {"reviewed_sha": "abcdef1234567", "comments": [],
+                                                    "generated_at": 1.0, **kw})
+
+    revseg(status="success", count=2)
+    prseg(label_pending=2); assert "2 条待打标" in RepoContext.load(R).turn_text()
+    prseg(label_pending=0); assert "待打标" not in RepoContext.load(R).turn_text()   # 标完 → 不喊
+    prseg(label_pending=None); assert "待打标" not in RepoContext.load(R).turn_text()  # 无开着的 MR / poll 失败
+
+    # review.json 没了（下轮覆盖 / 换机器 / worktree 删了）→ nudge 仍在：MR 上没标的还挂着
+    store.save_segment(R, _rseg, {})
+    prseg(label_pending=3); t = RepoContext.load(R).turn_text()
+    assert "3 条待打标" in t and "Review:" not in t
+
+    # pr.json 是 branch-keyed：切走后不认（与 pr_number / merge_readiness 同一条约定）
+    prseg(label_pending=3); store.save_segment(R, "pr", {"branch": "other", "label_pending": 3})
+    assert "待打标" not in RepoContext.load(R).turn_text()
+
+
+def test_label_nudge_decays_then_reopens_on_new_findings():
+    """待打标是**要人干活**的行，不是状态行：同一批 finding 问满 LABEL_NUDGE_CAP 次就闭嘴
+    （不理也是一种回答）；来了新的一批（pending set 变了）才重新开口。turn Cadence 顶不了
+    这件事——它按整块 hash 去重，随便哪行状态一动就整块重发，chore 行会永远跟着喊。"""
+    from lib.context import RepoContext, store
+    from lib.context.base import LABEL_NUDGE_CAP
+    G = "/tmp/dlut_nudgedecay"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
+    _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
+    Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
+    ctx = RepoContext.refresh_all(G)
+    R, branch = ctx.repo.repo_dir, ctx.branch.local.name
+
+    def prseg(**kw): store.save_segment(R, "pr", {"branch": branch, "provider": "github", **kw})
+
+    def ask() -> bool:
+        """一个 emit→mark 回合，返回这轮有没有喊。"""
+        c = RepoContext.load(R)
+        said = "待打标" in c.turn_text()
+        c.mark_turn_emitted(c.turn_text())   # 真发出去了才记账（见 userprompt_inject）
+        return said
+
+    prseg(label_pending=3, label_pending_key="setA")
+    assert [ask() for _ in range(LABEL_NUDGE_CAP)] == [True] * LABEL_NUDGE_CAP   # 问满 cap
+    assert ask() is False and ask() is False                                     # 之后闭嘴
+
+    # 新一轮 review 带来新 finding → set 变了 → 重新开口，且计数重来
+    prseg(label_pending=5, label_pending_key="setB")
+    assert [ask() for _ in range(LABEL_NUDGE_CAP)] == [True] * LABEL_NUDGE_CAP
+    assert ask() is False
+
+    # 标掉一条 → set 又变了 → 继续喊：agent 在推进，值得跟；闭嘴只针对「原地不动」
+    prseg(label_pending=4, label_pending_key="setC")
+    assert ask() is True
+
 def test_launch_background_relays():
     """detach 起后台 relay：不抛、写 PLAN 行；空列表 no-op。"""
     sgo = _load_script("smart_git_ops")
@@ -189,35 +306,99 @@ def test_format_comment_shows_cost_and_tool():
 
 
 def test_post_inline_findings():
-    """findings 优先发成 diff 行锚点评论（换取 forge 原生 outdated 生命周期）：锚得上的逐条
-    inline、锚在末行；无行号的、forge 拒绝的（行不在 diff / 不支持）回落汇总；无 MR 原样回落。"""
+    """findings 逐条发成 diff 锚点评论（换取 forge 原生 outdated 生命周期）：finding 自带粒度
+    ——带行号的锚在末行，不带的（file-level finding）锚在文件上；连文件都没有的、forge 全拒的
+    回落汇总；无 MR 原样回落。"""
     rr = _load_script("run_review")
     fake = _FakeForge([PullRequest(number=7, state="open")])
     pr = fake.get(7)
     comments = [
         {"path": "a.py", "start_line": 3, "end_line": 5, "alias": "m1", "content": "bug"},
-        {"path": "b.py", "content": "no line info"},
+        {"path": "b.py", "content": "file-level: 缺测试"},      # 无行号 → 本就是 file-level
+        {"content": "no path at all"},                          # 无锚可锚 → 汇总
     ]
     n, fb = rr._post_inline(fake, pr, comments)
-    assert n == 1 and [c.get("path") for c in fb] == ["b.py"]
-    assert fake.diff_posted[0][:3] == (7, "a.py", 5)            # 锚在 end_line
+    assert n == 2 and [c.get("content") for c in fb] == ["no path at all"]
+    assert fake.diff_posted[0][:3] == (7, "a.py", 5)            # line-level：锚在 end_line
     assert "m1" in fake.diff_posted[0][3] and "bug" in fake.diff_posted[0][3]
+    assert fake.diff_posted[1][:3] == (7, "b.py", None)         # file-level：直接锚文件
+    assert len(fake.diff_posted) == 2                           # 行锚成功 → 不会再补一条文件锚
 
     class Refusing(_FakeForge):
-        def diff_comment(self, *a):
+        def diff_comment(self, *a, **kw):
             raise ForgeError("no anchor")
     rf = Refusing([PullRequest(number=7, state="open")])
     n2, fb2 = rr._post_inline(rf, rf.get(7), comments)
-    assert n2 == 0 and len(fb2) == 2                            # 全部回落，单条失败不致命
+    assert n2 == 0 and len(fb2) == 3                            # 全部回落，单条失败不致命
     assert rr._post_inline(None, None, comments) == (0, comments)   # 无 MR → 原样回落
 
 
+def test_post_inline_degrades_line_to_file_anchor():
+    """line-level finding 的行锚不上（context 行 finding：行不在当前 diff 里）→ 先退一级到
+    文件锚,而不是直接掉进汇总。理由是可打标性:锚点评论才有 thread、能被回复 `ccr:label=`,
+    汇总里只是一行文本。"""
+    rr = _load_script("run_review")
+
+    class LineRefusing(_FakeForge):
+        """收文件锚、拒行锚——GitLab「行不在 diff」/ GitHub 422 的形状。"""
+        def diff_comment(self, number, body, path, line=None):
+            if line is not None:
+                raise ForgeError("line not in diff")
+            super().diff_comment(number, body, path, None)
+
+    f = LineRefusing([PullRequest(number=7, state="open")])
+    comments = [{"path": "a.py", "start_line": 3, "end_line": 5,
+                 "content": "bug", "fingerprint": "fp1"}]
+    n, fb = rr._post_inline(f, f.get(7), comments)
+    assert (n, fb) == (1, [])                          # 没掉进汇总
+    assert f.diff_posted[0][:3] == (7, "a.py", None)   # 退到文件级锚点
+    assert "ccr:fp=fp1" in f.diff_posted[0][3]         # 指纹仍在 → 仍 join 得回 finding
+
+
+def test_review_feedback_joins_fp_to_label():
+    """review_feedback 把 finding comment（`ccr:fp=`）和它线程里的 `ccr:label=` 回复 join
+    起来——join 键在 body 里、锚在 forge 上，不依赖任何本地状态。汇总 note 里也有 ccr:fp
+    （每条回落 finding 一个），但它没锚点、没 thread，回不进去也就标不了，必须排除。"""
+    from lib.forge.base import Comment
+    from lib.review_feedback import Finding, findings, pending
+
+    cs = [
+        # 汇总 note：无 thread，body 里有多个 ccr:fp → 不是 published finding
+        Comment(id="1", thread_id="", body="2 finding(s)\n- `a.py` `ccr:fp=aaa`\n- `b.py` `ccr:fp=bbb`"),
+        Comment(id="20", thread_id="20", path="a.py", line=5, body="漏判空 <sub>ccr:fp=fp1</sub>"),
+        Comment(id="21", thread_id="20", reply_to="20", body="ccr:label=wrong — 该路径走不到 #textbook"),
+        Comment(id="30", thread_id="30", path="b.py", body="缺测试 <sub>ccr:fp=fp2</sub>"),   # file-level
+    ]
+    fs = findings(cs)
+    assert [(f.fp, f.label) for f in fs] == [("fp1", "wrong"), ("fp2", "")]   # 汇总 note 未入列
+    assert [f.fp for f in pending(cs)] == ["fp2"]
+    assert fs[1].comment.path == "b.py" and fs[1].comment.line is None
+
+    # 词表外的 verdict 视为未标——打错字必须显示成还没标,不能污染 ground truth
+    typo = [Comment(id="40", thread_id="40", body="x <sub>ccr:fp=fp3</sub>"),
+            Comment(id="41", thread_id="40", reply_to="40", body="ccr:label=importnat — oops")]
+    assert [f.fp for f in pending(typo)] == ["fp3"]
+
+    # pending_key 认 fp 集合、不认条数：标掉一条又新来一条 → 数没变但活变了 → key 必须变
+    from lib.review_feedback import pending_key
+    def _fs(*fps): return [Finding(fp=f, comment=Comment(id=f, thread_id=f)) for f in fps]
+    assert pending_key(_fs("a", "b")) == pending_key(_fs("b", "a"))   # 顺序无关（两个面交织）
+    assert pending_key(_fs("a", "b")) != pending_key(_fs("a", "c"))   # 同为 2 条,活不同
+    assert pending_key([]) == ""
+
+    # 带 ccr:label 但不是回复（thread 根自己提了一嘴）→ 不算 verdict
+    selfref = [Comment(id="50", thread_id="50", body="讲讲 ccr:label=wrong 的用法 <sub>ccr:fp=fp4</sub>")]
+    assert [f.fp for f in pending(selfref)] == ["fp4"]
+
+
 def test_format_comment_counts_inline():
-    """汇总评论只列回落的 findings；总数 = 回落 + inline，并标注 inline 条数。"""
+    """汇总评论只列回落的 findings；总数 = 回落 + 锚上的，并标注锚上条数。回落项没有行号
+    （file-level finding）时只渲染 path，不拼空的 `:0-0`。"""
     rr = _load_script("run_review")
     body = rr._format_comment([{"path": "b.py", "content": "left"}], 0, "r", "s", {}, 0, "",
                               inline_posted=2)
-    assert "**3 finding(s)**" in body and "2 条已内联" in body and "b.py" in body
+    assert "**3 finding(s)**" in body and "2 条已锚到 diff" in body and "b.py" in body
+    assert "b.py:" not in body                  # 无行号 → 不拼 `:0-0`
     assert "clean" in rr._format_comment([], 0, "r", "s", {}, 0, "", inline_posted=0)
 
 

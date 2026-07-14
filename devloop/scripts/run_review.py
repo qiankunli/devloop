@@ -63,10 +63,18 @@ def _append_history(repo: str, started: float, **fields) -> None:
 
 
 def _post_inline(forge, pr, comments: list) -> tuple[int, list]:
-    """把 findings 逐条发成 diff 行锚点评论（GitLab positioned discussion / GitHub review
+    """把 findings 逐条发成 diff 锚点评论（GitLab positioned discussion / GitHub review
     comment）——锚点让 forge 原生管理生命周期:后续 push 改了对应行,评论自动折叠成 outdated,
-    不像普通 note 永远悬着。返回 (inline 成功数, 回落列表);锚不上的(无行号 / 行不在当前
-    diff / forge 不支持)回落到汇总评论里列出,单条失败不影响其余。"""
+    不像普通 note 永远悬着。
+
+    finding 自带粒度:带行号的是 **line-level**（"这行漏判空"）,不带的是 **file-level**
+    （"这文件缺测试"）——后者不是信息缺失,而是本来就没有哪一行可指。所以 file-level 直接
+    锚文件,line-level 才有「行锚不上退文件锚」这一级(最常见是 context 行 finding:行不在
+    当前 diff 里)。两者都锚不上才进汇总。
+
+    之所以尽量别掉进汇总:只有锚点评论才有 thread、才能被回复打标（`ccr:label=`),而汇总里
+    的 finding 只是一条 note 里的一行文本,没有可回复的对象,等于退出了 ground truth 回收。
+    返回 (锚点成功数, 回落列表),单条失败不影响其余。"""
     if forge is None or pr is None:
         return 0, comments
     posted, fallback = 0, []
@@ -75,7 +83,7 @@ def _post_inline(forge, pr, comments: list) -> tuple[int, list]:
         line = c.get("end_line") or c.get("start_line") or 0   # 多行 finding 锚在末行
         body = (c.get("content") or "").strip()
         alias = (c.get("alias") or "").strip()
-        if not (path and line and body):
+        if not (path and body):        # 连文件都没有 → 无锚可锚
             fallback.append(c)
             continue
         head = "🤖 **devloop code-review**" + (f" · {alias}" if alias else "")
@@ -84,11 +92,16 @@ def _post_inline(forge, pr, comments: list) -> tuple[int, list]:
         # 回收约定见 ccr 仓 eval/README「人工标注统一约定」。
         fp = (c.get("fingerprint") or "").strip()
         foot = f"\n\n<sub>ccr:fp={fp}</sub>" if fp else ""
-        try:
-            forge.diff_comment(pr.number, f"{head}\n\n{body}{foot}", path, int(line))
-            posted += 1
-        except ForgeError:
-            fallback.append(c)   # 常见:行不在 diff 里(context 行 finding)→ 留在汇总
+        # None = 文件级锚点。line-level 先试行锚、退文件锚;file-level 只有文件锚这一级。
+        for anchor in ((int(line), None) if line else (None,)):
+            try:
+                forge.diff_comment(pr.number, f"{head}\n\n{body}{foot}", path, anchor)
+                posted += 1
+                break
+            except ForgeError:
+                continue
+        else:
+            fallback.append(c)   # 文件也锚不上(文件不在 diff / GitLab < 16.4)→ 留在汇总
     fallback += comments[_MAX_COMMENT_FINDINGS:]
     return posted, fallback
 
@@ -97,7 +110,8 @@ def _format_comment(comments: list, failed: int, range_label: str, sha: str, mod
                     cost_sec: int = 0, tool_label: str = "", inline_posted: int = 0) -> str:
     """把引擎结果格式化成一条 MR 评论(markdown)。run_review 自主发,无 agent 参与,故在此成文;
     优先级分级是 agent 在会话里做的事,这条历史评论只如实列出引擎的原始 findings。
-    `comments` 是没能 inline 的回落部分;inline 成功的只计数(`inline_posted`),内容在 diff 行上。"""
+    `comments` 是没能锚上的回落部分;锚上的只计数(`inline_posted`),内容在 diff 里。
+    回落项没有行号时(file-level finding)只渲染 path,不拼空的 `:0-0`。"""
     head = f"🤖 **devloop code-review** · `{range_label}` · `{sha[:9]}`"
     if models:  # 这次 review 实际跑过的 model（routing alias×次数，去重）——review 级身份，clean 也打
         head += " · models: " + ", ".join(f"{a}×{n}" for a, n in sorted(models.items()))
@@ -112,7 +126,7 @@ def _format_comment(comments: list, failed: int, range_label: str, sha: str, mod
     if total:
         seg = f"**{total} finding(s)**"
         if inline_posted:
-            seg += f"（{inline_posted} 条已内联到 diff 行）"
+            seg += f"（{inline_posted} 条已锚到 diff）"   # 行级或文件级,此处不细分
         bits.append(seg)
     if failed:
         bits.append(f"⚠️ {failed} 个文件未能 review(LLM 超时 / token 超限等)")
