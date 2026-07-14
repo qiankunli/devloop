@@ -1,0 +1,27 @@
+devloop/docs/code-review.md
+  s_87c49950a78f75::t_39c80b25905108 16-21
+devloop/hooks/lib/context/base.py
+  s_87c49950a78f75::t_57373c4de66023 52-54
+devloop/hooks/lib/context/repo.py
+  s_87c49950a78f75::t_d192234a04bd81 39,178-190,195-197,199,208,473-479,482-483,486-488,504-512,627-632
+devloop/tests/test_review.py
+  s_87c49950a78f75::t_1640421d08a0ff 68-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9bf1d4ce255cd6570d3a6ca0cf85f0f4b68dd3f7",
+  "prompts": {},
+  "sessions": {
+    "s_87c49950a78f75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e970edb-23ad-492e-8411-f946c6b542e7",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
