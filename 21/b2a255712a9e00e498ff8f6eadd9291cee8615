@@ -1,0 +1,37 @@
+devloop/docs/code-review.md
+  s_87c49950a78f75::t_ce9d52743d5b89 19,23-37,53-54,56-63,74-76
+devloop/hooks/lib/context/prstate.py
+  s_87c49950a78f75::t_60282acddcc878 18,90-101,108
+devloop/hooks/lib/context/repo.py
+  s_87c49950a78f75::t_09b0def07e5c5f 200-201,246,590-600
+devloop/hooks/lib/review_feedback.py
+  s_87c49950a78f75::t_675ec1946ec0d6 1-75
+devloop/scripts/pr.py
+  s_87c49950a78f75::t_70ad388e3150c3 10-15,29,137-182,214-226
+devloop/skills/git-ops/SKILL.md
+  s_87c49950a78f75::t_ed6c642d412a96 101-106,109-111
+devloop/skills/label-review/SKILL.md
+  s_87c49950a78f75::t_d58b5a3bfc4bc9 3,6-12,16-28,30-32,36-43,48,50,52-55,60-71
+devloop/tests/test_forge.py
+  s_87c49950a78f75::t_c54f0f21c25b2e 141-179
+devloop/tests/test_review.py
+  s_87c49950a78f75::t_df580156830707 67-97,272-300
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "21b2a255712a9e00e498ff8f6eadd9291cee8615",
+  "prompts": {},
+  "sessions": {
+    "s_87c49950a78f75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e970edb-23ad-492e-8411-f946c6b542e7",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
