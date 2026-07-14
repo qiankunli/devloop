@@ -63,9 +63,15 @@ def record_session_event(repo_dir: str | Path, session_id: str | None,
     `run_review._append_history`). Best-effort — `append_jsonl` swallows I/O errors, because an
     observability write must never cost the caller's real work.
 
-    Not to be confused with `requirements/<id>/session.jsonl`: that's a REQUIREMENT's lifecycle
-    ledger keyed by its first branch, and devloop DOES read it back. This one is keyed by CLI
-    session and is pure exhaust.
+    Which ledgers do NOT belong here, and why the `kind` field doesn't make them fit:
+    - `requirements/<id>/session.jsonl` — a REQUIREMENT's lifecycle, keyed by its first branch,
+      and devloop reads it back.
+    - `review-history.jsonl` — a PR's review rounds, read back by `run_review` to feed the next
+      review (`ccr --history`). Keyed by pr_number because review→fix→re-review spans SESSIONS
+      by nature (review in one, fix in the next); re-keying it per session would cut that join.
+      Its writer is also a detached process with no session id at all.
+    The test isn't "is it append-only jsonl" — it's WHO OWNS the lifetime, and whether anything
+    reads it. A ledger devloop consumes cannot live somewhere callers are told to truncate freely.
     """
     store.append_jsonl(repo_dir, f"sessions/{_session_name(session_id)}",
                        {"ts": round(base.now(), 1), "kind": kind, **fields})
