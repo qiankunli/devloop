@@ -1,0 +1,23 @@
+devloop/hooks/lib/context/repo.py
+  s_87c49950a78f75::t_d63dd185106fc0 178-183,185-187,192-205,643,648-650,654
+devloop/tests/test_review.py
+  s_87c49950a78f75::t_970c206c0bf793 107-117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "50785fe8487ee8ee86c8d11904edb7a96a329396",
+  "prompts": {},
+  "sessions": {
+    "s_87c49950a78f75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e970edb-23ad-492e-8411-f946c6b542e7",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
