@@ -71,11 +71,11 @@ class WorkSet:
     「对它们跑什么 check」——那是消费方各自的事，别塞进来（塞了就从「选范围」滑向「验证专属」）。
 
     - `units`:  0..N 个 CodeUnit；多代码目录仓一次改动可命中多个，并行处理
-    - `how`:    'explicit' / 'dirty' / 'repo-wide'——这批 unit 怎么来的（选择透明，选错一眼可见）
-    - `reason`: 面向人的一句自述，进命令输出 / PLAN
+    - `reason`: 面向人的一句自述（含来源：explicit / 改动投影 / repo-wide），进命令输出 / PLAN，
+      让「选错 unit」执行前一眼可见。承载的是**只有 select_units 内部知道的「为什么这么选」**，
+      消费方从 units 推不出，故导出成字段——而不是再加一个当前无人消费的来源枚举。
     """
     units: tuple[repo_layout.CodeUnit, ...]
-    how: str
     reason: str
 
 
@@ -117,15 +117,15 @@ def select_units(git_root: str | Path, *, explicit: str | Path | None = None) ->
         ep = Path(explicit).resolve()
         if ep != root and root in ep.parents:
             u = repo_layout.enclosing_code_unit(ep, git_root)
-            return WorkSet((u,), "explicit", f"explicit target {ep.name} → unit {Path(u.path).name}")
+            return WorkSet((u,), f"explicit target {ep.name} → unit {Path(u.path).name}")
         # ep == 仓根：没有具体目标，落到 dirty（不走 enclosing → default → server）
     dirty = _dirty_units(git_root)
     if dirty:
         names = ", ".join(Path(u.path).name for u in dirty)
-        return WorkSet(tuple(dirty), "dirty", f"changed files under: {names}")
+        return WorkSet(tuple(dirty), f"changed files under: {names}")
     allu = repo_layout.discover_code_units(git_root)
     names = ", ".join(Path(u.path).name for u in allu)
-    return WorkSet(tuple(allu), "repo-wide", f"clean tree, all units: {names}")
+    return WorkSet(tuple(allu), f"clean tree, all units: {names}")
 
 
 def _resolved(git_root: str, source: str, target_path: str | Path | None = None) -> tuple[ResolvedRepo, str]:

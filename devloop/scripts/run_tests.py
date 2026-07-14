@@ -38,7 +38,7 @@ def main(argv: list[str]) -> int:
         print(f"run_tests: repo = {repo} ({how})")
     # 每次执行前自述本轮 unit 与选择原因——目标选错要一眼可见，不用等错测试跑完再猜。
     names = ", ".join(Path(u.path).name for u in ws.units)
-    print(f"run_tests: units = {names}  [{ws.how}: {ws.reason}]")
+    print(f"run_tests: units = {names}  [{ws.reason}]")
     record_active_repo(repo)
 
     # 对本轮命中的每个 unit 各跑各的 test（多代码目录仓可能多个），不让 checks 从 git_root

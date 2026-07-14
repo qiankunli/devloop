@@ -272,7 +272,7 @@ def test_code_unit_multi_dir():
     # 解析边界不再挂 unit：显式路径带出 target_path，选哪个 unit 交给 select_units（explicit 信号）
     r, _ = repo_resolve.resolve_repo_dir(f"{R}/repo/cli", "/")
     ws = repo_resolve.select_units(r.git_root, explicit=r.target_path)
-    assert ws.how == "explicit" and [Path(u.path).name for u in ws.units] == ["cli"]
+    assert [Path(u.path).name for u in ws.units] == ["cli"] and "explicit" in ws.reason
     assert ws.units[0].language == "typescript"
     r, _ = repo_resolve.resolve_repo_dir(None, f"{R}/repo/cli")   # cwd 在 cli 下
     ws = repo_resolve.select_units(r.git_root, explicit=r.target_path)
@@ -299,11 +299,11 @@ def test_select_units_by_change():
     assert sorted(Path(u.path).name for u in repo_layout.discover_code_units(repo)) == ["cli", "server"]
     # clean tree：repo-wide 全选（绝不静默 server-only）
     ws = repo_resolve.select_units(repo)
-    assert ws.how == "repo-wide" and names(ws) == ["cli", "server"]
+    assert names(ws) == ["cli", "server"] and "all units" in ws.reason
     # 只改 cli → dirty 只投影 cli（核心：改 cli 不跑 server）
     Path(f"{repo}/cli/app.ts").write_text("export const x = 1\n")
     ws = repo_resolve.select_units(repo)
-    assert ws.how == "dirty" and names(ws) == ["cli"]
+    assert names(ws) == ["cli"] and "changed files" in ws.reason
     # explicit == 仓根：不静默回 server，落回 dirty(cli)
     assert names(repo_resolve.select_units(repo, explicit=repo)) == ["cli"]
     # 两个 unit 都改 → 都进 WorkSet

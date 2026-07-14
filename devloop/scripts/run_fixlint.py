@@ -32,7 +32,7 @@ def main(argv: list[str]) -> int:
         print(f"run_fixlint: repo = {repo} ({how})")
     # 每次执行前自述本轮 unit 与选择原因——目标选错要一眼可见。
     names = ", ".join(Path(u.path).name for u in ws.units)
-    print(f"run_fixlint: units = {names}  [{ws.how}: {ws.reason}]")
+    print(f"run_fixlint: units = {names}  [{ws.reason}]")
     record_active_repo(repo)
 
     # 对本轮命中的每个 unit 各跑各的 fix + lint，不让 checks 从 git_root 重探默认 unit 盖掉选择。
