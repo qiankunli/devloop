@@ -1,0 +1,23 @@
+devloop/scripts/run_review.py
+  s_87c49950a78f75::t_2840270da989c2 70-77,86,95-96,113-114,129
+devloop/tests/test_review.py
+  s_87c49950a78f75::t_b3010e15d79ef8 192-194,200-201,204-205,207-208,215,220-222,242-243,247-248
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "29224a055afbd444fd9103d47021d48b11f8f778",
+  "prompts": {},
+  "sessions": {
+    "s_87c49950a78f75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e970edb-23ad-492e-8411-f946c6b542e7",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
