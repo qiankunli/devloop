@@ -59,6 +59,16 @@ class CodeUnit:
                 return t
         return None
 
+    def test_command(self) -> tuple[str, ...] | None:
+        """本 unit 的 canonical test 命令。Makefile target 优先；纯 Go module 回落
+        `go test ./...`，避免多 unit 仓已正确识别 Go unit 却因没有 Makefile 被误跳过。"""
+        target = self.test_target()
+        if target is not None:
+            return ("make", target)
+        if (Path(self.path) / "go.mod").exists():
+            return ("go", "test", "./...")
+        return None
+
 
 def find_git_root(cwd: str | Path) -> str | None:
     """Find git root by walking up. Returns absolute path or None if not in a git repo."""
@@ -139,7 +149,10 @@ def discover_code_units(git_root: str | Path, *, max_depth: int = 4) -> list[Cod
         except OSError:
             return
         for child in children:
-            if not child.is_dir() or child.name in _DISCOVER_SKIP or child.name.startswith("."):
+            # code unit 只属于当前 repo：不跟随仓内软链（可能自指/指向仓外），
+            # 也不进嵌套 repo/worktree（.git 可为目录或 worktree 的文件）。
+            if (child.name in _DISCOVER_SKIP or child.name.startswith(".") or
+                    child.is_symlink() or not child.is_dir() or (child / ".git").exists()):
                 continue
             if _has_code_markers(child):
                 units.append(CodeUnit(str(child), detect_language(str(child))))

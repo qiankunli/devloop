@@ -6,7 +6,7 @@ devloop 内多个 skill / 脚本共用的术语。架构理念见 [`AGENTS.md`](
 
 - **subproject**：聚合工作区直接子项中「是 / 指向 git 仓」的那些目录——存在性由**文件系统自发现**判定（`hooks/lib/context/workspace.py::discover_subproject_names`，判据：子目录含 `.git`），而非手写表格。workspace `AGENTS.md` 的子项目表是**可选润色**，按目录名 join 补 `aliases` / `role`（`language` 缺省自动探测，表格显式值覆盖）；表格里有、文件系统没有但目录尚存的行仍保留，渐进收敛。
 - **`repo_dir`**：子项目目录入口（可能是软链接）。用前 `realpath` 确认真实路径。
-- **`code unit`**（`repo_layout.CodeUnit`）：仓库内一个自带工具链、可独立 `make` / `uv` build/lint/test 的目录，`make` / `uv` 的 workdir。一个 git 仓可含**多个** unit（`server/` + `cli/`、`packages/*`、`cmd/*`）——所以「操作落在哪个 unit」由**操作目标路径**决定（`enclosing_code_unit`：从目标向上找最近的工具链目录，止于仓根），不是 repo 的单值属性；这正是过去单值 `repo_code_dir` 在多代码目录仓上选错目录的根因。unit 在解析边界一次算清 path+language 随 `ResolvedRepo` 下传，消费方不再各自 `detect_language` 重推。unit 还**拥有自己的工具链动作**（`has_target` / `lint_target` / `test_target`）：一个 unit「能不能 / 该跑哪个 lint/test 目标」是它自己的事实，checks / gate rules 直接问 unit，不再各自拿 `str` 路径去重解析 Makefile。
+- **`code unit`**（`repo_layout.CodeUnit`）：仓库内一个自带工具链、可独立 build/lint/test 的目录，也是该 unit 工具命令的 workdir。一个 git 仓可含**多个** unit（`server/` + `cli/`、`packages/*`、`cmd/*`）——所以「操作落在哪个 unit」由**操作目标路径**决定（`enclosing_code_unit`：从目标向上找最近的工具链目录，止于仓根），不是 repo 的单值属性；这正是过去单值 `repo_code_dir` 在多代码目录仓上选错目录的根因。unit 在解析边界一次算清 path+language 随 `ResolvedRepo` 下传，消费方不再各自 `detect_language` 重推。unit 还**拥有自己的工具链动作**（`has_target` / `lint_target` / `test_command`）：一个 unit「能不能 / 该跑哪个 lint/test 命令」是它自己的事实，checks / gate rules 直接问 unit，不再各自拿 `str` 路径去重解析 Makefile 或 Go module。
 - **`repo_code_dir`** / **default unit**：repo 级**默认** unit——没有更具体目标路径时用（按名字 `/enter` 一个仓、cwd 就是仓根）。探测规则 `server/` > `backend/` > `repo_dir`（`repo_layout.find_repo_code_dir` / `default_code_unit`）；Go / TS 单 unit 仓通常就是 `repo_dir`。子项目 `AGENTS.md` 一定在默认 unit 下面。
 
 ## 保护分支

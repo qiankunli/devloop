@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""run-test skill 的 CLI 入口：解析 repo，跑 `make test`，通过则盖 test 戳。
+"""run-test skill 的 CLI 入口：解析 repo/code units，跑各 unit 的 canonical test 命令，通过则盖 test 戳。
 
 test 逻辑见 `lib.lifecycle.checks.test`（与 lifecycle 的 pre_commit / pre_mr gate 是同一段）。
 本脚本只做 repo 解析 + 实时输出 + 退出码，并把 `--` 之后的额外参数透传给 make 以手动收窄
@@ -28,7 +28,7 @@ def main(argv: list[str]) -> int:
         i = argv.index("--")
         extra = argv[i + 1:]
         argv = argv[:i]
-    ap = cli.ArgParser(prog="run_tests.py", description="make test; stamp on pass.")
+    ap = cli.ArgParser(prog="run_tests.py", description="run code-unit tests; stamp on pass.")
     cli.add_repo_arg(ap)
     ns = ap.parse_args(argv)
     resolved, how = cli.resolve_repo_or_exit(ns, "run_tests")
