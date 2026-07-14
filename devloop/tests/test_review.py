@@ -202,14 +202,36 @@ def test_post_inline_findings():
     assert n == 1 and [c.get("path") for c in fb] == ["b.py"]
     assert fake.diff_posted[0][:3] == (7, "a.py", 5)            # 锚在 end_line
     assert "m1" in fake.diff_posted[0][3] and "bug" in fake.diff_posted[0][3]
+    assert len(fake.diff_posted) == 1                           # 行锚成功 → 不再试文件锚
 
     class Refusing(_FakeForge):
-        def diff_comment(self, *a):
+        def diff_comment(self, *a, **kw):
             raise ForgeError("no anchor")
     rf = Refusing([PullRequest(number=7, state="open")])
     n2, fb2 = rr._post_inline(rf, rf.get(7), comments)
     assert n2 == 0 and len(fb2) == 2                            # 全部回落，单条失败不致命
     assert rr._post_inline(None, None, comments) == (0, comments)   # 无 MR → 原样回落
+
+
+def test_post_inline_degrades_line_to_file_anchor():
+    """行锚不上（context 行 finding：行不在当前 diff 里）→ 先退一级到文件锚,而不是直接掉进
+    汇总。理由是可打标性:锚点评论才有 thread、能被回复 `ccr:label=`,汇总里只是一行文本。"""
+    rr = _load_script("run_review")
+
+    class LineRefusing(_FakeForge):
+        """收文件锚、拒行锚——GitLab「行不在 diff」/ GitHub 422 的形状。"""
+        def diff_comment(self, number, body, path, line=None):
+            if line is not None:
+                raise ForgeError("line not in diff")
+            super().diff_comment(number, body, path, None)
+
+    f = LineRefusing([PullRequest(number=7, state="open")])
+    comments = [{"path": "a.py", "start_line": 3, "end_line": 5,
+                 "content": "bug", "fingerprint": "fp1"}]
+    n, fb = rr._post_inline(f, f.get(7), comments)
+    assert (n, fb) == (1, [])                          # 没掉进汇总
+    assert f.diff_posted[0][:3] == (7, "a.py", None)   # 退到文件级锚点
+    assert "ccr:fp=fp1" in f.diff_posted[0][3]         # 指纹仍在 → 仍 join 得回 finding
 
 
 def test_format_comment_counts_inline():

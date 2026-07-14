@@ -266,14 +266,24 @@ class Forge(abc.ABC):
         """Post a new comment on PR/MR `number` (GitHub issue comment / GitLab MR note).
         Write primitive — used to attach code-review history to the MR."""
 
-    def diff_comment(self, number: int, body: str, path: str, line: int) -> None:
-        """Post a comment anchored to `path:line` on the NEW side of PR/MR `number`'s diff.
-        The anchor is what buys the forge's native comment lifecycle: when a later push
-        changes those lines, the forge marks the comment outdated and folds it — so each
-        review round's findings age out with the code instead of piling up as plain notes.
-        Raises ForgeError when the anchor can't land (e.g. the line isn't part of the
-        current diff). Concrete-with-default (peer of merge_readiness): an adapter without
-        a line-anchored surface raises too, and callers degrade to the plain summary note."""
+    def diff_comment(self, number: int, body: str, path: str, line: int | None = None) -> None:
+        """Post a comment anchored to `path:line` on the NEW side of PR/MR `number`'s diff,
+        or to `path` as a whole when `line` is None. The anchor is what buys the forge's
+        native comment lifecycle: when a later push changes those lines, the forge marks the
+        comment outdated and folds it — so each review round's findings age out with the code
+        instead of piling up as plain notes.
+
+        `line=None` is a granularity knob on ONE surface, not a second surface — same endpoint,
+        same lifecycle, same failure mode, one field dropped (GitHub `subject_type=file`,
+        GitLab `position_type=file`). That's why it's a parameter here, whereas `comment` stays
+        a separate method: that one is a different endpoint with a different lifecycle.
+        File-level anchoring is the rung between a line anchor and the plain summary note —
+        it still gets an id and a thread, so a finding posted this way is still replyable.
+
+        Raises ForgeError when the anchor can't land (the line isn't in the current diff; the
+        file isn't in it either; GitLab older than 16.4 has no file position type). Callers are
+        expected to degrade — line → file → summary note. Concrete-with-default (peer of
+        merge_readiness): an adapter with no anchored surface at all raises too."""
         raise ForgeError(f"{self.provider or 'forge'}: diff comments not supported")
 
     def reply(self, number: int, target: Comment, body: str) -> None:

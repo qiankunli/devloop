@@ -339,6 +339,22 @@ def test_forge_diff_comment_endpoint():
     assert gh.c.calls[0] == ("pulls/7/comments",
                              {"body": "hi", "commit_id": "abc", "path": "a.py", "line": 5, "side": "RIGHT"})
 
+    # line=None → 文件级锚点：同一端点少一个字段（gitlab position_type=file / github
+    # subject_type=file）。github 侧 line/side 必须整个省掉,给 null 会 422。
+    gl3 = GitLabForge("h", "o/r", "t")
+    gl3.c = _Cap({"diff_refs": {"base_sha": "b", "start_sha": "s", "head_sha": "h"}})
+    gl3.diff_comment(7, "hi", "a.py")
+    pos = gl3.c.calls[0][1]["position"]
+    assert pos["position_type"] == "file" and pos["new_path"] == "a.py"
+    assert "new_line" not in pos
+
+    gh3 = GitHubForge("api.github.com", "o", "r", "t")
+    gh3.c = _Cap({"head": {"sha": "abc"}})
+    gh3.diff_comment(7, "hi", "a.py")
+    assert gh3.c.calls[0] == ("pulls/7/comments",
+                              {"body": "hi", "commit_id": "abc", "path": "a.py",
+                               "subject_type": "file"})
+
     try:                                                         # 端口默认：不支持 → raise
         Forge.diff_comment(gl, 7, "x", "a.py", 1)
         raise AssertionError("default diff_comment should raise")

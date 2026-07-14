@@ -63,10 +63,14 @@ def _append_history(repo: str, started: float, **fields) -> None:
 
 
 def _post_inline(forge, pr, comments: list) -> tuple[int, list]:
-    """把 findings 逐条发成 diff 行锚点评论（GitLab positioned discussion / GitHub review
+    """把 findings 逐条发成 diff 锚点评论（GitLab positioned discussion / GitHub review
     comment）——锚点让 forge 原生管理生命周期:后续 push 改了对应行,评论自动折叠成 outdated,
-    不像普通 note 永远悬着。返回 (inline 成功数, 回落列表);锚不上的(无行号 / 行不在当前
-    diff / forge 不支持)回落到汇总评论里列出,单条失败不影响其余。"""
+    不像普通 note 永远悬着。
+
+    行锚不上时先退一级到文件锚,再退汇总。多这一级是因为:只有锚点评论才有 thread、才能被
+    回复打标（`ccr:label=`),而汇总里的 finding 只是一条 note 里的一行文本,没有可回复的
+    对象,等于退出了 ground truth 回收。行锚不上最常见的是 context 行 finding（行不在
+    diff 里),这类退到文件锚后依然可打标。返回 (锚点成功数, 回落列表),单条失败不影响其余。"""
     if forge is None or pr is None:
         return 0, comments
     posted, fallback = 0, []
@@ -84,11 +88,15 @@ def _post_inline(forge, pr, comments: list) -> tuple[int, list]:
         # 回收约定见 ccr 仓 eval/README「人工标注统一约定」。
         fp = (c.get("fingerprint") or "").strip()
         foot = f"\n\n<sub>ccr:fp={fp}</sub>" if fp else ""
-        try:
-            forge.diff_comment(pr.number, f"{head}\n\n{body}{foot}", path, int(line))
-            posted += 1
-        except ForgeError:
-            fallback.append(c)   # 常见:行不在 diff 里(context 行 finding)→ 留在汇总
+        for anchor in (int(line), None):     # None = 文件级(同一端点,少一个字段)
+            try:
+                forge.diff_comment(pr.number, f"{head}\n\n{body}{foot}", path, anchor)
+                posted += 1
+                break
+            except ForgeError:
+                continue
+        else:
+            fallback.append(c)   # 文件也锚不上(文件不在 diff / GitLab < 16.4)→ 留在汇总
     fallback += comments[_MAX_COMMENT_FINDINGS:]
     return posted, fallback
 

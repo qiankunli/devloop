@@ -159,19 +159,21 @@ class GitHubForge(Forge):
         # thread_id is the root review comment id — exactly what /replies anchors to.
         self.c.post(f"pulls/{number}/comments/{target.thread_id}/replies", {"body": body})
 
-    def diff_comment(self, number: int, body: str, path: str, line: int) -> None:
-        # Line-anchored review comment — GitHub collapses it as outdated once a later
-        # push changes the anchored lines. Needs the PR's current head sha as commit_id;
+    def diff_comment(self, number: int, body: str, path: str, line: int | None = None) -> None:
+        # Anchored review comment — GitHub collapses it as outdated once a later push
+        # changes the anchored lines. Needs the PR's current head sha as commit_id;
         # memoized per PR (one review round posts N findings against the same head).
         if number not in self._head_sha_memo:
             sha = (self.c.get(f"pulls/{number}").get("head") or {}).get("sha") or ""
             if not sha:
                 raise ForgeError(f"PR #{number} has no head sha — cannot anchor a diff comment")
             self._head_sha_memo[number] = sha
-        self.c.post(f"pulls/{number}/comments", {
-            "body": body,
-            "commit_id": self._head_sha_memo[number],
-            "path": path,
-            "line": line,
-            "side": "RIGHT",
-        })
+        req = {"body": body, "commit_id": self._head_sha_memo[number], "path": path}
+        if line is None:
+            # File-level. `line`/`side` are omitted rather than nulled: the docs only say
+            # line is "required unless using subject_type:file", so a null is untested
+            # ground — sending no key is the shape the documented contract describes.
+            req["subject_type"] = "file"
+        else:
+            req |= {"line": line, "side": "RIGHT"}
+        self.c.post(f"pulls/{number}/comments", req)

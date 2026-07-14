@@ -185,22 +185,24 @@ class GitLabForge(Forge):
         self.c.post(f"merge_requests/{number}/discussions/{target.thread_id}/notes",
                     {"body": body})
 
-    def diff_comment(self, number: int, body: str, path: str, line: int) -> None:
+    def diff_comment(self, number: int, body: str, path: str, line: int | None = None) -> None:
         # Positioned discussion — GitLab re-anchors it on every push and folds it as
         # "outdated" once the lines change; with the project setting
         # `resolve_outdated_diff_discussions` it even auto-resolves then.
         refs = self._diff_refs(number)
-        self.c.post(f"merge_requests/{number}/discussions", {
-            "body": body,
-            "position": {
-                "position_type": "text",
-                "base_sha": refs.get("base_sha"),
-                "start_sha": refs.get("start_sha"),
-                "head_sha": refs.get("head_sha"),
-                "new_path": path,
-                "new_line": line,
-            },
-        })
+        pos = {
+            # `file` was introduced in GitLab 16.4, so an older self-managed instance is
+            # expected to reject it. Not version-probed: the caller already degrades past a
+            # ForgeError, which costs one wasted request instead of one per-instance GET.
+            "position_type": "file" if line is None else "text",
+            "base_sha": refs.get("base_sha"),
+            "start_sha": refs.get("start_sha"),
+            "head_sha": refs.get("head_sha"),
+            "new_path": path,
+        }
+        if line is not None:
+            pos["new_line"] = line
+        self.c.post(f"merge_requests/{number}/discussions", {"body": body, "position": pos})
 
     def _diff_refs(self, number: int) -> dict:
         """The MR's current diff version (base/start/head sha) a position anchors against.
