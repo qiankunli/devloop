@@ -12,6 +12,7 @@ import functools
 from pathlib import Path
 
 from lib import config, repo_layout
+from lib.core.domain import FileChange, Target
 
 
 class PolicyContext:
@@ -31,6 +32,17 @@ class PolicyContext:
     @property
     def cwd(self) -> str:
         return self._cwd
+
+    def for_target(self, target: Target) -> PolicyContext:
+        """Return the policy view anchored to the target being evaluated.
+
+        A single ``apply_patch`` can contain files below an aggregate workspace or even span
+        repositories. Repo-scoped rules must therefore resolve ownership from each file target,
+        not from the session cwd or one call-level anchor.
+        """
+        if isinstance(target, FileChange):
+            return PolicyContext(self._cwd, anchor_path=target.path, session_id=self.session_id)
+        return self
 
     @property
     def anchor_abspath(self) -> str:

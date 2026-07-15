@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse (Edit/Write/MultiEdit/NotebookEdit): 编辑侧策略引擎入口。
+"""PreToolUse (Edit/Write/MultiEdit/NotebookEdit/apply_patch): 编辑侧策略引擎入口。
 
 把这次文件改动投影成 `FileChange`，跑 FILE_CHANGE 规则（checkout 占有、分支失活、
 requirements.txt、层级依赖 lint），deny 则在落盘前拦下。
@@ -16,14 +16,11 @@ from lib.context.loopstate import friction  # noqa: E402
 from lib.core import engine  # noqa: E402
 from lib.core.context import PolicyContext  # noqa: E402
 
-_FILE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
-
-
 def decide(inp: hook_io.HookInput) -> str | None:
-    if not inp.is_tool(*_FILE_TOOLS):
-        return None
     change = engine.project(inp)
-    ctx = PolicyContext(inp.cwd, anchor_path=inp.file_path, session_id=inp.session_id)
+    if not change.targets:
+        return None
+    ctx = PolicyContext(inp.cwd, session_id=inp.session_id)
     decision = engine.evaluate(change, ctx, rules.REGISTRY)
     if not decision.blocked:
         return None
