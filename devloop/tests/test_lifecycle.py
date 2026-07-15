@@ -289,6 +289,47 @@ def test_lint_passport_is_bound_to_content_not_to_edit_events():
     assert repo_resolve.unit_fingerprint("/tmp/definitely-not-a-repo-xyz", unit) is None
 
 
+def test_precommit_gate_scopes_to_files_being_committed():
+    """`--files` 划定的就是 pre_commit 的验证范围：只验你真要提交的那些 unit。
+
+    红过的样子：pre_commit 的范围是「工作树里所有脏文件」——那是 `--files` 的**超集**。于是
+    `gcam --files cli/a.py` 会连带把你压根不打算提交的 `legacy/` 也拖进 gate，它有存量 lint
+    错误就直接拦掉你的 commit（与 test_phase_scope_survives_a_clean_tree 同一类失败，只是换了
+    扇门：那次是 clean tree 退化成全仓，这次是 --files 没被当成范围）。副作用还有一条：lint 的
+    `make fix` 会去改 legacy/ 的文件，改完又不进本次 commit，凭空搅脏工作树。
+    """
+    from lib.lifecycle import checks
+    sgo = _load_script("smart_git_ops")
+
+    R = str(Path("/tmp/dlut_files_scope").resolve())
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/cli"); os.makedirs(f"{R}/legacy")
+    _git(R, "init", "-q", "-b", "main")
+    _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
+    Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\n")            # 你要提交的 unit：干净
+    Path(f"{R}/legacy/pyproject.toml").write_text("[project]\nname = 'legacy'\nversion = '0'\n")
+    Path(f"{R}/legacy/Makefile").write_text("lint:\n\tfalse\n")        # 没打算提交：存量坏 lint
+    _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
+
+    # 两个 unit 都脏，但本次只提交 cli/a.py
+    Path(f"{R}/cli/a.py").write_text("x = 1\n")
+    Path(f"{R}/legacy/b.py").write_text("y = 1\n")
+
+    intent = sgo.GitIntent(mode="commit", message="m", title="m", requested_branch=None,
+                           target="main", base="origin/main", explicit_base=False,
+                           files=["cli/a.py"], repo=R, source="test", invoke_cwd=R)
+    assert sgo.phase_paths(intent, "pre_commit") == ["cli/a.py"]
+    res = checks.lint(R, paths=sgo.phase_paths(intent, "pre_commit"))
+    assert res.ok, f"legacy 不在 --files 里，不该拦下你的 commit：{res.summary}"
+    assert "changed files under: cli" in res.summary and "legacy" not in res.summary
+
+    # 对照：范围丢失（老行为 = 工作树全部脏文件）→ 被没打算提交的 legacy 拦下
+    degraded = checks.lint(R, paths=None)
+    assert not degraded.ok, "老行为下 legacy 会把 commit 拦掉——这正是本条要防的"
+    assert "legacy" in degraded.summary
+
+
 def test_dispatch_reaches_the_real_lint_handler():
     """dispatch 必须能真的调到**内置** lint/test handler，而不只是调到测试用的假 registry。
 
@@ -357,8 +398,15 @@ def test_phase_scope_survives_a_clean_tree():
     # 相位边界各自算出的范围：post_commit=刚落地那个 commit；pre_mr=整条分支 vs target
     assert repo_resolve.committed_paths(R) == ["cli/a.py"]
     assert repo_resolve.range_paths(R, "main") == ["cli/a.py"]
-    assert sgo.phase_paths(R, "pre_commit", "main") is None            # pre_commit：工作树即答案
-    assert sgo.phase_paths(R, "post_commit", "main") == ["cli/a.py"]
+    def intent(target="main", files=None):
+        return sgo.GitIntent(mode="commit", message="m", title="m", requested_branch=None,
+                             target=target, base=f"origin/{target}", explicit_base=False,
+                             files=files or [], repo=R, source="test", invoke_cwd=R)
+    assert sgo.phase_paths(intent(), "pre_commit") is None             # 无 --files → 工作树即答案
+    assert sgo.phase_paths(intent(), "post_commit") == ["cli/a.py"]
+    # `--files` 给了就是 pre_commit 的范围：只验你真要提交的那些，不把工作树里其它脏 unit
+    # 拖进 gate（它有存量 lint 错误就会拦掉你的 commit——与本文件上面那条同一类失败）
+    assert sgo.phase_paths(intent(files=["cli/a.py"]), "pre_commit") == ["cli/a.py"]
 
     # 有范围 → 只跑 cli，legacy 的存量坏 lint 拦不到你
     res = checks.lint(R, paths=["cli/a.py"])
@@ -377,7 +425,7 @@ def test_phase_scope_survives_a_clean_tree():
     # 两者原始输出都是空；读成 [] 就等于 origin/<target> 没 fetch 时静默跳过整个 lint gate。
     assert repo_resolve.range_paths(R, "origin/nope-not-fetched") is None
     assert repo_resolve.committed_paths(R, "deadbeef") is None
-    assert sgo.phase_paths(R, "pre_mr", "nope-not-fetched") is None    # → handler 回落全跑，不放行
+    assert sgo.phase_paths(intent(target="nope-not-fetched"), "pre_mr") is None   # → handler 回落全跑，不放行
 
 
 def test_lifecycle_checks_follow_changed_code_unit():
