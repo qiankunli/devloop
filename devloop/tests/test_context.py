@@ -34,6 +34,18 @@ def test_python_launcher_skips_old_name_and_uses_supported_fallback():
     out = subprocess.run([launcher, "-c", "ignored"], env=env, capture_output=True, text=True)
     assert out.returncode == 0 and out.stdout == "python-fallback"
 
+    # A versioned-only installation is discovered from PATH, including future names that
+    # were not known when this launcher was written.
+    good.unlink()
+    versioned = root / "python3.99"
+    versioned.write_text(
+        "#!/bin/sh\ncase \"$2\" in *version_info*) exit 0;; esac\nprintf versioned-fallback\n",
+        encoding="utf-8",
+    )
+    versioned.chmod(0o755)
+    out = subprocess.run([launcher, "-c", "ignored"], env=env, capture_output=True, text=True)
+    assert out.returncode == 0 and out.stdout == "versioned-fallback"
+
     # Explicit override is authoritative: a bad requested interpreter reports itself instead
     # of silently switching to another binary and hiding a configuration mistake.
     env["DEVLOOP_PYTHON"] = "python3"

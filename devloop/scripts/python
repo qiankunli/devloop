@@ -17,9 +17,22 @@ if [ -n "${DEVLOOP_PYTHON:-}" ]; then
     exit 127
 fi
 
-for py in python3 python python3.14 python3.13 python3.12 python3.11 python3.10; do
+for py in python3 python; do
     run_if_supported "$py" "$@"
 done
 
-echo "devloop: Python 3.10+ not found (tried python3, python, python3.14..python3.10)" >&2
+# Some installations expose only a versioned binary. Discover those names from PATH so
+# this keeps working for future Python releases without extending a hard-coded list.
+old_ifs=$IFS
+IFS=:
+for dir in ${PATH:-}; do
+    [ -n "$dir" ] || dir=.
+    for py in "$dir"/python3.*; do
+        [ -x "$py" ] || continue
+        run_if_supported "$py" "$@"
+    done
+done
+IFS=$old_ifs
+
+echo "devloop: Python 3.10+ not found (tried python3, python, and python3.* on PATH)" >&2
 exit 127
