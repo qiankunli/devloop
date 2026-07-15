@@ -11,6 +11,9 @@ __pycache__/
 # Claude Code local settings
 .claude/
 
+# Agent-local learnings (self-improving-agent skill) — 本机经验记录，不是项目资产
+.learnings/
+
 # macOS
 .DS_Store
 
