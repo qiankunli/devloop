@@ -1,6 +1,6 @@
 ---
 name: label-review
-description: 逐条评价 review 已发布到 GitLab/GitHub PR/MR 的 finding comments，并通过 devloop plugin 回复 ccr:label 标注，供后续 API 集中采集 ground truth。Use when the user asks to 看/处理/评价 review comments or findings, when a "Review findings: N 条待打标" context line surfaces, or when the user says 打标 / label findings.
+description: '逐条评价 review 已发布到 GitLab/GitHub PR/MR 的 finding comments，并通过 devloop plugin 回复 ccr:label 标注，供后续 API 集中采集 ground truth。Use when the user asks to 看/处理/评价 review comments or findings, when a "Review findings: N 条待打标" context line surfaces, or when the user says 打标 / label findings.'
 ---
 
 review 把每条 finding 发布成 PR/MR 上的**锚点 comment**（带 `ccr:fp=` 指纹）；Codex/Claude
