@@ -138,8 +138,11 @@ def unit_fingerprint(git_root: str | Path, unit: repo_layout.CodeUnit) -> str | 
     h = hashlib.sha256()
     h.update(unit.id.encode())          # 拌进 unit 身份：空改动集在不同 unit 上不该撞同一个指纹
     try:
+        # 按**归属**过滤：不属于任何 unit 的共享路径（仓根 README / docs/ / .github/）不进任何
+        # unit 的指纹——它们不在 unit 的项目边界内，改它们不该让谁的 lint 通行证作废。
         for rel in sorted(p for p in paths
-                          if repo_layout.enclosing_code_unit(root / p, git_root).id == unit.id):
+                          if (owner := repo_layout.owning_code_unit(root / p, git_root)) is not None
+                          and owner.id == unit.id):
             h.update(b"\0path\0" + rel.encode())
             p = root / rel
             if p.is_symlink():
@@ -191,12 +194,26 @@ def range_paths(git_root: str | Path, base: str, head: str = "HEAD") -> list[str
 
 
 def _project_units(git_root: str | Path, paths: list[str]) -> list[repo_layout.CodeUnit]:
-    """一组仓相对路径各自归属的 code unit，去重。这是「变更决定验证目标」的核心：
-    改了 cli/** 就只投影出 cli，不受解析来源是否带路径影响。"""
+    """一组仓相对路径**归属**的 code unit，去重。这是「变更决定验证目标」的核心：
+    改了 cli/** 就只投影出 cli，不受解析来源是否带路径影响。
+
+    **不属于任何 unit 的路径不贡献 unit**（也不减少）：仓根的 `README.md` / `docs/` /
+    `.github/` 不在任何 unit 的项目边界内，拿谁的 lint 去验它都说不通。此前它们走
+    `enclosing_code_unit` → `default_code_unit` → `server`，于是纯文档改动会去跑 server 的
+    lint——server 有存量错就把你的文档 PR 拦了，而「为什么是 server 不是 cli」没有任何理由。
+    那是**选择**启发式在答**归属**问题（#88 的同一个混淆，这是它最后残留的一处）。
+
+    **刻意不做「共享路径 → 全部 unit」**：看着更保守，实际是拿最常见的情况（改文档 / CI 配置）
+    去付最罕见情况的账——每个纯文档 PR 都跑全仓 lint，任一 unit 有存量错就拦住你，正是
+    `phase_paths` 那套范围收敛要消灭的失败。代价是根级 tooling 配置（`ruff.toml` /
+    `.golangci.yml`）改动不触发验证：它会在下一次任何 lint 里立刻暴露，且 CI 兜底——比每天为它
+    付全仓的账划算。真要覆盖，该是一份显式的「这些根文件影响全部 unit」清单，而不是把「没有
+    owner」一律当成「影响所有人」。"""
     seen: dict[str, repo_layout.CodeUnit] = {}
     for p in paths:
-        u = repo_layout.enclosing_code_unit(Path(git_root) / p, git_root)
-        seen.setdefault(u.path, u)
+        u = repo_layout.owning_code_unit(Path(git_root) / p, git_root)
+        if u is not None:
+            seen.setdefault(u.id, u)
     return list(seen.values())
 
 

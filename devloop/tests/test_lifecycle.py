@@ -289,6 +289,54 @@ def test_lint_passport_is_bound_to_content_not_to_edit_events():
     assert repo_resolve.unit_fingerprint("/tmp/definitely-not-a-repo-xyz", unit) is None
 
 
+def test_shared_paths_own_no_unit_so_a_docs_change_validates_nothing():
+    """不属于任何 unit 的路径（仓根 README / docs/ / .github/）**不贡献 unit**。
+
+    红过的样子：它们走 `enclosing_code_unit` → 回落 `default_code_unit` → `server`。于是纯文档
+    改动去跑 server 的 lint——server 有存量错就把你的文档 PR 拦了，而「为什么是 server 不是 cli」
+    没有任何理由：那是**选择**启发式（server > backend > 根）在答**归属**问题（#88 消灭的同一个
+    混淆，这是它最后残留的一处）。
+
+    也刻意**不是**「共享路径 → 全部 unit」：那看着保守，实际是让每个纯文档 PR 都跑全仓 lint，
+    任一 unit 有存量错就拦你——正是 phase_paths 那套范围收敛要消灭的失败，换扇门又回来。
+    """
+    from lib import repo_resolve
+    from lib.lifecycle import checks
+
+    R = str(Path("/tmp/dlut_shared_paths").resolve())
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/server"); os.makedirs(f"{R}/cli"); os.makedirs(f"{R}/docs")
+    _git(R, "init", "-q", "-b", "main")
+    _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    # server 是「探测出的默认 unit」且有存量坏 lint —— 旧行为下它会接住所有根文件
+    Path(f"{R}/server/pyproject.toml").write_text("[project]\nname = 'server'\nversion = '0'\n")
+    Path(f"{R}/server/Makefile").write_text("lint:\n\tfalse\n")
+    Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
+    Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\n")
+    _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
+
+    ids = lambda paths: sorted(u.id for u in repo_resolve.select_units(R, paths=paths).units)
+    assert ids(["README.md"]) == []                       # 纯文档 → 0 个 unit
+    assert ids(["docs/guide.md"]) == []
+    assert ids([".github/workflows/ci.yml"]) == []
+    assert ids(["README.md", "cli/a.py"]) == ["cli"]      # 共享路径不贡献，也不减少
+    assert ids(["server/x.py"]) == ["server"]             # 有主的照旧
+
+    # 端到端：纯文档改动不触发任何验证 → 不会被 server 的存量坏 lint 拦下
+    Path(f"{R}/README.md").write_text("# hi\n")
+    res = checks.lint(R, paths=["README.md"])
+    assert res.ok, f"纯文档改动被拦了：{res.summary}"
+    assert "no changed files in scope" in res.summary and "server" not in res.summary
+
+    # 根**是** unit 时，根文件有主 —— 仍归根，不是 None（catalog 与归属必须给同一个答案）
+    G = str(Path("/tmp/dlut_shared_rootunit").resolve())
+    shutil.rmtree(G, ignore_errors=True); os.makedirs(f"{G}/cli")
+    _git(G, "init", "-q")
+    Path(f"{G}/go.mod").write_text("module x\n")
+    Path(f"{G}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
+    assert sorted(u.id for u in repo_resolve.select_units(G, paths=["README.md"]).units) == ["."]
+
+
 def test_precommit_gate_scopes_to_files_being_committed():
     """`--files` 划定的就是 pre_commit 的验证范围：只验你真要提交的那些 unit。
 
