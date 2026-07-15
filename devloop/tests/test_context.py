@@ -371,6 +371,16 @@ def test_code_unit_multi_dir():
     assert Path(repo_layout.enclosing_code_unit(f"{R}/repo", f"{R}/repo").path).name == "server"
     assert Path(repo_layout.default_code_unit(f"{R}/repo").path).name == "server"
 
+    # 归属 vs 站位是**两个问题**，别混（`owning_` vs `enclosing_`）：
+    # 仓根的 README 在「根不是 unit」的仓里确实不属于任何 unit —— 归属答 None 才是事实。
+    # 硬派一个只能派 default_code_unit（server > backend > 根的**选择**启发式），得到的是
+    # 「改 README → 跑 server 的 lint」这种没理由的结论（为什么是 server 不是 cli？）。
+    assert repo_layout.owning_code_unit(f"{R}/repo/README.md", f"{R}/repo") is None
+    assert repo_layout.owning_code_unit(f"{R}/repo/.github/workflows/ci.yml", f"{R}/repo") is None
+    assert repo_layout.owning_code_unit(f"{R}/repo/cli/app.ts", f"{R}/repo").id == "cli"
+    # 站位仍必给答案：站在仓根跑命令，总得有个 unit 判 uv / make test（guard 用的就是这一支）
+    assert repo_layout.enclosing_code_unit(f"{R}/repo/README.md", f"{R}/repo").id == "server"
+
     # 解析边界不再挂 unit：显式路径带出 target_path，选哪个 unit 交给 select_units（explicit 信号）
     r, _ = repo_resolve.resolve_repo_dir(f"{R}/repo/cli", "/")
     ws = repo_resolve.select_units(r.git_root, explicit=r.target_path)

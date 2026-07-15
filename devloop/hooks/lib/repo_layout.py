@@ -128,16 +128,20 @@ def default_code_unit(git_root: str | Path) -> CodeUnit:
     return CodeUnit.at(find_repo_code_dir(git_root), git_root)
 
 
-def enclosing_code_unit(target: str | Path, git_root: str | Path) -> CodeUnit:
-    """操作目标 `target`（文件或目录）落在哪个 code unit：从 target 向上找**最近**的带项目清单
-    的目录（`_is_code_unit`），边界止于 `git_root`（不越出仓）。
+def owning_code_unit(target: str | Path, git_root: str | Path) -> CodeUnit | None:
+    """`target`（文件或目录）**属于**哪个 code unit——从它向上找最近的项目清单目录
+    （`_is_code_unit`），边界止于 `git_root`。**没有任何 unit 拥有它就是 `None`**。
 
-    走到仓根仍没命中更具体的 unit 时：**根自己是 unit 就是它**（判据同子目录、同
-    `discover_code_units`——catalog 说根是 unit，投影就不能把根的文件判给别人，否则同一个仓、
-    同一个文件，走 clean-tree 全量和走改动投影会得到两个不同的 unit）。根**不是** unit 时才回落
-    `default_code_unit` 的选择启发式（`server/` > `backend/` > 根）：那时根本没有「根这个 unit」
-    可选，「没有具体目标该选谁」才是真问题——`run_tests.py doctor` 走默认 `server/` 正是这一支
-    （doctor 根无任何项目清单），而 `run_tests.py doctor/cli` 精确命中 `cli/`。"""
+    `None` 是个**答案**，不是失败：仓根的 `README.md` / `docs/` / `.github/` 在「根不是 unit」
+    的仓（`server/` + `cli/`，doctor 就是）里，确实不落在任何 unit 的项目边界内。硬给它派一个
+    unit 就是编造归属——而唯一能派的 `default_code_unit` 是**选择**启发式（`server/` > `backend/`
+    > 根），它答的是「没有具体目标时该选谁」，不是「这个文件属于谁」。让它来答归属，得到的是
+    「改 README → 跑 server 的 lint」这种没有任何理由的结论（为什么是 server 不是 cli？）。
+
+    走到仓根时**根自己是 unit 就是它**（判据同子目录、同 `discover_code_units`）：catalog 说根
+    是 unit，归属就不能把根的文件判给别人，否则同一个文件走 clean-tree 全量和走改动投影会得到
+    两个不同的 unit。
+    """
     root = Path(git_root).resolve()
     p = Path(target).resolve()
     cur = p if p.is_dir() else p.parent
@@ -146,9 +150,23 @@ def enclosing_code_unit(target: str | Path, git_root: str | Path) -> CodeUnit:
         if _is_code_unit(cur):
             return CodeUnit.at(cur, git_root)
         cur = cur.parent
-    if _is_code_unit(root):
-        return CodeUnit.at(root, git_root)
-    return default_code_unit(git_root)
+    return CodeUnit.at(root, git_root) if _is_code_unit(root) else None
+
+
+def enclosing_code_unit(target: str | Path, git_root: str | Path) -> CodeUnit:
+    """站在 `target` 时**操作落在**哪个 code unit——必给一个答案：有 owner 就是它，没有则回落
+    `default_code_unit` 的选择启发式（`server/` > `backend/` > 根）。
+
+    与 `owning_code_unit` 的差别是**问的问题不同**，别混：
+
+    - **归属**（`owning_code_unit`，「这个文件属于谁」）：README 不属于任何 unit，这是事实，
+      答 `None` 才对。改动投影 / 指纹用它——凭空派个 unit 会让纯文档改动去跑那个 unit 的 lint。
+    - **站位**（本函数，「我在这儿干活，算哪个 unit」）：站在仓根跑 `pip install`，总得有个 unit
+      来判它是不是 uv 仓；`run_tests.py doctor` 走默认 `server/` 也是这一支。这时「没有具体目标
+      该选谁」**正是**要问的问题，default 的启发式是对的问题的对的答案。
+
+    命令侧 guard（`pip_install` / `pytest_naked`）与 `select_units(explicit=…)` 用本函数。"""
+    return owning_code_unit(target, git_root) or default_code_unit(git_root)
 
 
 # repo-wide 验证（clean tree 从仓根发起、无具体改动可依据）枚举全部 unit 时跳过的目录：
