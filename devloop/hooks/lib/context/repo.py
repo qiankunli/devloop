@@ -179,7 +179,7 @@ class UnitValidation:
 
 @dataclass
 class Validation:
-    """验证戳，**按 code unit 键**（key = `repo_layout.unit_id`，仓相对路径 `.` / `server`）。
+    """验证戳，**按 code unit 键**（key = `CodeUnit.id`，仓相对路径 `.` / `server`）。
 
     key 的粒度必须与**执行**的粒度一致：lint/test 本就按 unit 跑（一个仓可有 `server/` + `cli/`
     两套工具链、各自的 Makefile），repo 级单戳表达不了「A 过 B 挂」——unit A 通过盖下的戳会让

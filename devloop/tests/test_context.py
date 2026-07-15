@@ -1078,9 +1078,9 @@ def test_state_domains_worktree():
     # unit 同为 "."。用绝对路径当 key 会写成 <M>/.worktrees/wt——戳落在主仓 branches/feat/wt/ 里，
     # 却带着一个只在那个 worktree 成立的 key：worktree 删掉再在主 checkout 上 feat/wt，戳就查不到，
     # 白跑一遍 lint；且 key 随 worktree 增删无限累积。
-    from lib import repo_layout
-    assert repo_layout.unit_id(W, W) == repo_layout.unit_id(M, M) == "."
-    wt_ctx.mark_lint_passed(repo_layout.unit_id(W, W))
+    from lib.repo_layout import CodeUnit
+    assert CodeUnit.at(W, W).id == CodeUnit.at(M, M).id == "."
+    wt_ctx.mark_lint_passed(CodeUnit.at(W, W).id)
     RepoContext.refresh_all(M)
     assert (Path(M) / ".devloop/branches/feat/wt/validation.json").exists()
     assert (Path(M) / ".devloop/branches/feat/wt/branch.json").exists()

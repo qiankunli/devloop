@@ -38,7 +38,7 @@ class PrecommitGateRule(Rule):
         # gate 挡住了 gcampr，却给裸 `git commit` 发了通行证。正常路径与这条防绕过守卫必须是同一
         # 份策略，否则守卫拦不住它唯一要拦的东西。
         ws = repo_resolve.select_units(git_root)
-        required = [repo_layout.unit_id(u, git_root) for u in ws.units if u.lint_target() is not None]
+        required = [u.id for u in ws.units if u.lint_target() is not None]
         if not required:
             # 本轮没有任何带 lint target 的 unit：dispatch 的 lint 对它们本来就是干净跳过、永远
             # 盖不出戳，硬要戳等于把裸 commit 锁死（跑 fix-lint 也解不开）。与 checks.lint 对齐。

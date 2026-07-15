@@ -19,15 +19,43 @@ class CodeUnit:
 
     一个 git 仓可含多个 unit（`server/` + `cli/`、`packages/*`、`cmd/*`）；「操作落在哪个
     unit」由**操作目标路径**决定，不由 repo 的单值属性决定——这正是单值 `code_dir` 在多代码
-    目录仓上选错目录的根因。path+language 在解析边界一次算清、绑成一个值对象随解析结果下传，
-    消费方不再各自 `detect_language` 重推（与 `ResolvedRepo` 同动机，低一层）。
+    目录仓上选错目录的根因。path+id+language 在解析边界一次算清、绑成一个值对象随解析结果下传，
+    消费方不再各自重推（与 `ResolvedRepo` 同动机，低一层）。
+
+    unit 有**两个身份，别混**：
+    - `path`：绝对路径 = 执行事实「这次在哪跑 make」。随 checkout 变（worktree 里是
+      `<repo>/.worktrees/foo/server`）。
+    - `id`：仓相对路径（`.` / `server` / `cli`）= **持久化身份**，跨 checkout 稳定。落
+      `.devloop` 的一切 key 用它（见 `context/repo.Validation`）。用 `path` 当 key 会让同一个
+      unit 在 worktree 与主 checkout 下拿到不同 key——而 validation 段统一落**主仓**
+      `branches/<b>/`，于是 worktree 里 lint 过的戳回主 checkout 就查不到（白跑一遍），且 key
+      随 worktree 增删无限累积。
+
+    `id` **必填、且只由 `at()` 推**：给它默认值的话，生产路径漏传就是个静默的空 key（多个 unit
+    撞进同一个戳），比不设身份更糟；而让消费方自己算 id 就要各自再传一次 git_root，root 传错
+    （worktree 里传主仓根）算出的 key 是错的——绑在出生点上，这两类错都不可表达。
 
     unit 也拥有**自己的工具链动作**（`has_target` / `lint_target` / `test_target`）：一个
     unit「能不能 / 该怎么 lint/test」是它自己的事实，收在这里，消费方（checks / gate rules）
     直接问 unit，而不是各自拿 `str` 路径去重解析 Makefile（避免 str 路径当隐式协议、同一判断
     出现多份实现）。"""
     path: str
+    id: str
     language: str | None = None
+
+    @classmethod
+    def at(cls, path: str | Path, git_root: str | Path) -> "CodeUnit":
+        """在 `git_root` 这个 checkout 里、位于 `path` 的 unit——**唯一**的构造入口（生产侧）。
+        身份与语言在这里一次算清，之后谁都不用再碰 git_root。"""
+        p = Path(path).resolve()
+        root = Path(git_root).resolve()
+        try:
+            uid = p.relative_to(root).as_posix()
+        except ValueError:
+            # unit 落在仓外（不该发生）：退回绝对路径而不是抛——身份算不准最多让戳对不上
+            # （fail-closed，多跑一次 lint），把关路径上崩掉才是真事故。
+            uid = p.as_posix()
+        return cls(str(path), uid, detect_language(path))
 
     def has_target(self, name: str, *, suffix: bool = False) -> bool:
         """本 unit 的 Makefile 是否有名为 `name` 的 target。suffix=True 时 `name-ci` /
@@ -70,26 +98,6 @@ class CodeUnit:
         return None
 
 
-def unit_id(unit: CodeUnit | str | Path, git_root: str | Path) -> str:
-    """CodeUnit 的**持久化身份**：相对 checkout 根的 posix 路径（`.` / `server` / `cli`）。
-
-    `CodeUnit.path` 是绝对路径——那是「这次在哪跑 make」的事实，**不能**当 key 存进 `.devloop`：
-    - worktree 里的 `<repo>/.worktrees/foo/server` 与主 checkout 的 `<repo>/server` 是同一个
-      unit，而 validation 段统一落**主仓** `branches/<b>/`（见 `context/store` 三域布局）——
-      绝对路径会让同一 unit 在不同 checkout 下拿到不同 key：worktree 里 lint 过的戳回主
-      checkout 就查不到（fail-closed 白跑一遍），且 key 随 worktree 增删无限累积。
-    - 落盘的 key 还要给人看：`server` 比一串机器相关的绝对路径可读。
-    """
-    p = Path(unit.path if isinstance(unit, CodeUnit) else unit).resolve()
-    root = Path(git_root).resolve()
-    try:
-        return p.relative_to(root).as_posix()
-    except ValueError:
-        # unit 落在仓外（不该发生）：退回绝对路径而不是抛——身份算不准最多让戳对不上（fail-closed，
-        # 多跑一次 lint），把关路径上崩掉才是真事故。
-        return p.as_posix()
-
-
 def find_git_root(cwd: str | Path) -> str | None:
     """Find git root by walking up. Returns absolute path or None if not in a git repo."""
     r = gitcmd.git(cwd, "rev-parse", "--show-toplevel", timeout=3)
@@ -117,8 +125,7 @@ def find_repo_code_dir(repo_dir: str | Path) -> str:
 def default_code_unit(git_root: str | Path) -> CodeUnit:
     """repo 级默认 unit：没有更具体的操作目标路径时用（如按名字 /enter 一个仓、cwd 就是仓根）。
     探测规则同 `find_repo_code_dir`（`server/` > `backend/` > repo 根）。"""
-    code_dir = find_repo_code_dir(git_root)
-    return CodeUnit(code_dir, detect_language(code_dir))
+    return CodeUnit.at(find_repo_code_dir(git_root), git_root)
 
 
 def enclosing_code_unit(target: str | Path, git_root: str | Path) -> CodeUnit:
@@ -135,7 +142,7 @@ def enclosing_code_unit(target: str | Path, git_root: str | Path) -> CodeUnit:
     # 循环不进入，落到 default（仓根的探测优先级说了算，别被根级编排 Makefile 抢走）。
     while cur != root and root in cur.parents:
         if _has_code_markers(cur):
-            return CodeUnit(str(cur), detect_language(str(cur)))
+            return CodeUnit.at(cur, git_root)
         cur = cur.parent
     return default_code_unit(git_root)
 
@@ -175,7 +182,7 @@ def discover_code_units(git_root: str | Path, *, max_depth: int = 4) -> list[Cod
                     child.is_symlink() or not child.is_dir() or (child / ".git").exists()):
                 continue
             if _has_code_markers(child):
-                units.append(CodeUnit(str(child), detect_language(str(child))))
+                units.append(CodeUnit.at(child, root))
                 # 命中即止：不下钻，unit 内部的子 marker（如 packages 内嵌）不当独立 unit
             else:
                 walk(child, depth + 1)

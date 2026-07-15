@@ -171,11 +171,13 @@ def test_code_unit_test_target_detect_matches_execute():
     Path(f"{D}/plain/Makefile").write_text("test:\n\techo ok\ntest-local:\n\techo ok\n")
     Path(f"{D}/none/Makefile").write_text("build:\n\techo ok\n")
     Path(f"{D}/go/go.mod").write_text("module x\n")
-    assert CodeUnit(f"{D}/ci").test_target() == "test-ci"      # 判据==执行目标，不再错跑 make test
-    assert CodeUnit(f"{D}/plain").test_target() == "test"      # canonical `test` 优先
-    assert CodeUnit(f"{D}/none").test_target() is None         # 无 test 目标 → 跳过
-    assert CodeUnit(f"{D}/ci").test_command() == ("make", "test-ci")
-    assert CodeUnit(f"{D}/go", "go").test_command() == ("go", "test", "./...")
+    assert CodeUnit.at(f"{D}/ci", D).test_target() == "test-ci"   # 判据==执行目标，不再错跑 make test
+    assert CodeUnit.at(f"{D}/plain", D).test_target() == "test"   # canonical `test` 优先
+    assert CodeUnit.at(f"{D}/none", D).test_target() is None      # 无 test 目标 → 跳过
+    assert CodeUnit.at(f"{D}/ci", D).test_command() == ("make", "test-ci")
+    assert CodeUnit.at(f"{D}/go", D).test_command() == ("go", "test", "./...")
+    # 身份在出生点算清，消费方直接读 .id（不再各自拿 git_root 重推）
+    assert CodeUnit.at(f"{D}/ci", D).id == "ci" and CodeUnit.at(D, D).id == "."
 
 def test_lifecycle_checks_follow_changed_code_unit():
     """gcampr lifecycle 与 run-test 必须共用 WorkSet：只改 cli 时不得跑仓根 test。"""
