@@ -74,17 +74,6 @@
             "statusMessage": "Refreshing devloop state"
           }
         ]
-      },
-      {
-        "matcher": "Edit|Write|NotebookEdit|apply_patch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/python\" \"${CLAUDE_PLUGIN_ROOT}/hooks/posttool_track_edits.py\"",
-            "timeout": 5,
-            "statusMessage": "Tracking file edits"
-          }
-        ]
       }
     ]
   }

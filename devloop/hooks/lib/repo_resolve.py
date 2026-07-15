@@ -21,6 +21,7 @@ same thing everywhere.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,20 +80,21 @@ class WorkSet:
     reason: str
 
 
-def changed_paths(git_root: str | Path) -> list[str]:
-    """working tree 里有改动的文件（相对仓根的路径）：tracked 改动（staged + unstaged vs HEAD）
-    + untracked。**刻意不用 `status --porcelain`**——`gitcmd` 对输出整体 `strip()`，会吃掉
-    porcelain 首行的前导状态空格（` M path`）导致列错位；这两条命令输出纯路径、strip 无害。
+def _working_paths_or_unknown(git_root: str | Path) -> list[str] | None:
+    """working tree 里有改动的文件（仓相对），**任一 git 查询失败返回 `None`**（不知道）。
 
-    这是「本次改动」的**工作树答案**，只对「改动尚未提交」的语境成立（pre_commit / CLI）。
-    commit 之后工作树是干净的，那时的答案要问 git 历史（见 `committed_paths`）——用工作树去答
-    post_commit / pre_mr 会得到「什么都没改」，进而被误读成「不知道范围」。"""
-    paths: list[str] = []
+    与 `_paths_or_unknown` 同一条铁律：`gitcmd` failure-safe，「查不到」和「确实没改」的输出
+    长得一样；把失败读成 `[]` 就是把「不知道」伪装成 clean。用它的两个消费方对这个区分很敏感：
+    `unit_fingerprint` 靠 `None` 走 fail-closed，而 `changed_paths` 有意压平成 `[]`（见下）。
+
+    **刻意不用 `status --porcelain`**——`gitcmd` 对输出整体 `strip()`，会吃掉 porcelain 首行的
+    前导状态空格（` M path`）导致列错位；这两条命令输出纯路径、strip 无害。"""
     d = gitcmd.git(git_root, "diff", "--name-only", "HEAD")          # tracked: staged+unstaged
-    if d.ok and d.out:
-        paths += d.out.splitlines()
     o = gitcmd.git(git_root, "ls-files", "--others", "--exclude-standard")   # untracked
-    if o.ok and o.out:
+    if not d.ok or not o.ok:
+        return None
+    paths: list[str] = d.out.splitlines() if d.out else []
+    if o.out:
         root = Path(git_root)
         for raw in o.out.splitlines():
             p = raw.strip()
@@ -105,6 +107,55 @@ def changed_paths(git_root: str | Path) -> list[str]:
                 continue
             paths.append(p)
     return [p.strip() for p in paths if p.strip()]
+
+
+def changed_paths(git_root: str | Path) -> list[str]:
+    """working tree 里有改动的文件（仓相对）——「本次改动」的**工作树答案**，只对「改动尚未提交」
+    的语境成立（pre_commit / CLI）。commit 之后工作树是干净的，那时的答案要问 git 历史（见
+    `committed_paths`）——用工作树去答 post_commit / pre_mr 会得到「什么都没改」。
+
+    这里把「不知道」压平成 `[]` 是**有意**的：唯一消费方 `select_units(paths=None)` 对空的处理
+    是回落 repo-wide 全跑，方向已经保守，无须再区分。要区分的消费方直接用
+    `_working_paths_or_unknown`。"""
+    return _working_paths_or_unknown(git_root) or []
+
+
+def unit_fingerprint(git_root: str | Path, unit: repo_layout.CodeUnit) -> str | None:
+    """`unit` 当前待验证内容的指纹——**lint 通行证绑定它**。算不出 → `None`（gate 按未验证处理）。
+
+    为什么绑内容而不是绑「改了几次」：旧的 `edits_since_lint` 由 PostToolUse 计数，而那个 hook 只
+    认 `Edit`/`Write`/`NotebookEdit`——**Codex CLI 用 `apply_patch` 改文件，一次都不会计**（`MultiEdit`
+    同理，Bash 里的 `sed -i` / 脚本更不会）。一个只在部分 CLI、部分工具上生效的计数器守不住硬 gate：
+    它读出的 0 不是「没改过」，是「没人报告」。改问内容，则谁改的、怎么改的都不重要。
+
+    hash 的是本 unit 名下**已改动文件的当前 bytes**，不是 diff：新建的未跟踪文件改了内容路径不变，
+    diff 看不出来，而 lint 会 lint 它。删除写 tombstone、symlink 写 target（换指向也算变）。
+    """
+    paths = _working_paths_or_unknown(git_root)
+    if paths is None:
+        return None
+    root = Path(git_root)
+    h = hashlib.sha256()
+    h.update(unit.id.encode())          # 拌进 unit 身份：空改动集在不同 unit 上不该撞同一个指纹
+    try:
+        for rel in sorted(p for p in paths
+                          if repo_layout.enclosing_code_unit(root / p, git_root).id == unit.id):
+            h.update(b"\0path\0" + rel.encode())
+            p = root / rel
+            if p.is_symlink():
+                h.update(b"\0symlink\0" + os.readlink(p).encode())
+            elif not p.exists():
+                h.update(b"\0deleted\0")
+            elif p.is_file():
+                h.update(b"\0file\0")
+                with p.open("rb") as f:
+                    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                        h.update(chunk)
+            else:
+                h.update(b"\0other\0")
+    except OSError:
+        return None                     # 读不动就别猜，交给 fail-closed
+    return h.hexdigest()
 
 
 def _paths_or_unknown(r) -> list[str] | None:

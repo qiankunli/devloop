@@ -65,7 +65,7 @@ devloop/
 │   ├── userprompt_inject.py       # UserPromptSubmit：turn + session 注入
 │   ├── postcompact_reinject.py    # PostCompact：清注入 dedup
 │   ├── filechanged_refs.py        # FileChanged：AGENTS.md 变更重注入
-│   ├── posttool_git_refresh.py / posttool_track_edits.py   # PostToolUse 状态写入
+│   ├── posttool_git_refresh.py       # PostToolUse：git 状态命令后刷新 branch 段
 │   ├── sessionend_release.py      # SessionEnd：释放本 session 的 owner 锁（正常退出路径）
 │   └── pretool_*.py               # 10 个硬拦截（guard harness；含 checkout/edit owner 锁）
 ├── scripts/                        # smart_git_ops + smart_*.sh / pr.py（show/list/update/close；create 归 gcampr）/ release.py（发版：forge 服务端建 tag+Release，免 push tag）/ run_fixlint / run_tests / run_review（后台 ocr→review.json）/ poll_pr_status / init_*

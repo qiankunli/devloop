@@ -83,7 +83,9 @@ def lint(repo: str, *, capture: bool = True, unit: CodeUnit | None = None,
     rc = _make(code_dir, target, capture=capture, sink=sink)
     if rc == 0:
         ctx = RepoContext.load(repo) or RepoContext.refresh_all(repo)
-        ctx.mark_lint_passed(unit.id)
+        # 指纹在**此刻**算：`make fix` 刚改过文件，跑之前算的指纹配不上刚被验过的这棵树——
+        # 盖上去就等于给一份没验过的内容发通行证。
+        ctx.mark_lint_passed(unit.id, repo_resolve.unit_fingerprint(repo, unit) or "")
         return HookResult("lint", ok=True, summary=f"make {target} passed — stamped")
     detail = f"\n{_tail(sink)}" if capture else ""
     return HookResult("lint", ok=False, summary=f"make {target} failed (only `make fix` may edit files){detail}")

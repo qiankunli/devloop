@@ -161,19 +161,22 @@ class BranchTopology:
 
 @dataclass
 class UnitValidation:
-    """**一个** code unit 的验证戳。`edits_since_lint` 由 PostToolUse 按被编辑文件归属的 unit
-    自增，该 unit 的 lint 通过时清零。"""
+    """**一个** code unit 的验证戳。
+
+    `lint_fingerprint` 是 lint 通过那一刻、该 unit 待验证内容的指纹（`repo_resolve.unit_fingerprint`）
+    ——通行证绑**内容**，不绑「有没有人报告过改动」。gate 拿当前指纹与它比：不等 = 内容变过 = 这张
+    通行证已作废。这样谁改的、用什么工具改的都不重要（见 `unit_fingerprint` 的 why）。"""
     last_lint_at: float | None = None
+    lint_fingerprint: str = ""
     last_test_at: float | None = None
-    edits_since_lint: int = 0
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "UnitValidation":
         d = d or {}
         return cls(
             last_lint_at=d.get("last_lint_at"),
+            lint_fingerprint=d.get("lint_fingerprint", "") or "",
             last_test_at=d.get("last_test_at"),
-            edits_since_lint=int(d.get("edits_since_lint", 0) or 0),
         )
 
 
@@ -441,14 +444,13 @@ class RepoContext:
         return base.is_stale(meta.get("updated_at"), ttl)
 
     # ── mutators (each touches exactly one segment) ─────────────────────────────
-    def increment_stale_edits(self, uid: str, delta: int = 1) -> None:
-        self.validation.of(uid).edits_since_lint += delta
-        self._save_validation()
-
-    def mark_lint_passed(self, uid: str) -> None:
+    def mark_lint_passed(self, uid: str, fingerprint: str) -> None:
+        """`fingerprint` 必填、且必须是**刚验过的那份内容**的指纹（lint 跑完后现算，不是跑之前）——
+        lint 的 `make fix` 会改文件，跑前算的指纹配不上跑后的树。空串 = 算不出，gate 会按未验证
+        处理（fail-closed）。"""
         u = self.validation.of(uid)
         u.last_lint_at = base.now()
-        u.edits_since_lint = 0
+        u.lint_fingerprint = fingerprint
         self._save_validation()
 
     def mark_test_passed(self, uid: str) -> None:
@@ -668,11 +670,12 @@ def _format_turn(ctx: "RepoContext") -> str:
     if not v.units:
         lines.append("Validation: never run")
     else:
-        segs = []
-        for uid in sorted(v.units):
-            u = v.units[uid]
-            stale = f", {u.edits_since_lint} edits since" if u.edits_since_lint else ""
-            segs.append(f"{uid}: lint={base.fmt_ts(u.last_lint_at)}{stale}; test={base.fmt_ts(u.last_test_at)}")
+        # 只报「什么时候验过」，**不报「验的还算不算数」**：后者要现算指纹（读改动文件的 bytes），
+        # 而这里每轮都跑——按成本铁律（AGENTS.md〈成本原则〉）不值当。而且它本就不该由提示承担：
+        # 陈旧与否由 gate 在 commit 时判（那里算一次指纹是合算的），gcam 路径更是直接把 lint 跑掉。
+        # 旧的「N edits since」看着便宜，代价是它在 Codex 侧恒为 0——一个说谎的提示比没有更糟。
+        segs = [f"{uid}: lint={base.fmt_ts(v.units[uid].last_lint_at)}; test={base.fmt_ts(v.units[uid].last_test_at)}"
+                for uid in sorted(v.units)]
         lines.append("Validation: " + " | ".join(segs))
 
     # 后台 code-review 的结果回流（pull）：run_review（由 smart_git_ops detach 起）跑完写
