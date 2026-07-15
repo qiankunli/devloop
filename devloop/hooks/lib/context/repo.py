@@ -1,10 +1,15 @@
 """`RepoContext` — per-repo state, persisted as per-owner segment files under
 `<git_root>/.devloop/` (`meta.json` / `branch.json` / `remote_branches.json` / `pr.json` /
-`validation.json` / `injection.json`). `RepoContext` is the in-memory *view* that `load()`
-assembles by merging them; each mutator writes back only its own segment.
+`injection.json`, plus branch-domain `branches/<b>/{branch,lint,test,injection,review}.json`).
+`RepoContext` is the in-memory *view* that `load()` assembles by merging them; each mutator
+writes back only its own segment.
 
 Why one file per owner: the state has several independent writer-roles (the refresh, the MR
-monitor, validation marks, injection marks) running in different processes. A single shared
+monitor, **the lint handler**, **the test handler**, injection marks) running in different
+processes — and lint/test additionally run CONCURRENTLY inside one `lifecycle.dispatch`.
+That is why they own separate segments: "validation marks" was one entry in this list while
+being two concurrent writers on one file, which is exactly the lost update this layout exists
+to prevent (see `Validation`). A single shared
 file would force a read-modify-write that can lose a concurrent writer's update; one file per
 owner makes every write touch a disjoint file, so that whole class is structurally impossible
 — no lock, atomic per-file writes (see base.py `_write_atomic`).
@@ -190,16 +195,47 @@ class Validation:
     恰好把防绕过守卫的锁打开**（gate 挡住了 gcampr，却给裸 `git commit` 发了通行证）。
     按 unit 键之后这类偏差不可表达，而不是靠各消费方记得多问一句。
 
-    旧的 repo 级扁平格式（`{last_lint_at: ...}`）读进来是空 units——即「都没验过」，gate 要求重跑
+    旧格式（repo 级扁平 / 单个 validation.json）读进来是空 units——即「都没验过」，gate 要求重跑
     一次 lint。**刻意不写迁移**：`.devloop` 是 cache 不是事实源，退化方向是 fail-closed。
+
+    **落盘按 check 拆两个段**（`branches/<b>/lint.json` + `test.json`），本类是 `load` 合并出的
+    内存视图。三个维度各归各位：**branch** 是目录（域，切分支即自动隔离）、**check** 是文件
+    （= writer-role）、**unit** 是文件内的 JSON key。
+
+    为什么 check 必须拆到文件：`dispatch` 用线程池**并发**跑 lint 与 test，而 segment 的纪律是
+    「single-writer whole-file overwrite」（见 `context/store`）。两个 writer 写同一个文件 =
+    load-modify-write 互相覆盖，实测会丢戳——丢 lint 戳只是白跑一遍，丢 **test** 戳则是状态说
+    「没测过」而其实测过，是记录失真。拆开之后各写各的文件，这一类**结构上不可能**（store 的原话），
+    不需要锁、也不需要「写前重读合并」那种把不可能降级成窗口更窄的 race 的做法。
+
+    为什么 unit 不拆成目录：unit **不是 writer**（同一个 check 内部 fan-out 是顺序的），拆了不解决
+    这个 race；且 unit id 不是安全路径分量（根 unit 是 `.`、`eval/reviewbench` 带斜杠），当目录还得
+    枚举目录才能读回全集。当 JSON key 三个问题都没有。
     """
     units: dict[str, UnitValidation] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: dict | None) -> "Validation":
-        d = d or {}
-        return cls(units={k: UnitValidation.from_dict(v)
-                          for k, v in (d.get("units") or {}).items() if isinstance(v, dict)})
+    def from_dict(cls, lint: dict | None, test: dict | None) -> "Validation":
+        """两个 check 段 → 一个视图。段形状 `{unit_id: {...}}`（unit 是 key，不是目录）。"""
+        out = cls()
+        for uid, v in (lint or {}).items():
+            if isinstance(v, dict):
+                u = out.of(uid)
+                u.last_lint_at = v.get("passed_at")
+                u.lint_fingerprint = v.get("fingerprint", "") or ""
+        for uid, v in (test or {}).items():
+            if isinstance(v, dict):
+                out.of(uid).last_test_at = v.get("passed_at")
+        return out
+
+    def lint_segment(self) -> dict:
+        """lint 段的落盘形状——只含 lint 拥有的字段，绝不带 test 的（那是另一个 writer 的）。"""
+        return {uid: {"passed_at": u.last_lint_at, "fingerprint": u.lint_fingerprint}
+                for uid, u in self.units.items() if u.last_lint_at is not None}
+
+    def test_segment(self) -> dict:
+        return {uid: {"passed_at": u.last_test_at}
+                for uid, u in self.units.items() if u.last_test_at is not None}
 
     def unit(self, uid: str) -> UnitValidation:
         """`uid` 的戳，只读；从未验过 → 全空默认值（无戳即未验，fail-closed）。"""
@@ -313,7 +349,8 @@ class RepoContext:
             agents_md=AgentsMd.from_dict(meta.get("agents_md") or {}),
             branch=branch,
             validation=Validation.from_dict(
-                store.load_segment(repo_dir, store.branch_segment(live, "validation")) or {}),
+                store.load_segment(repo_dir, store.branch_segment(live, "lint")),
+                store.load_segment(repo_dir, store.branch_segment(live, "test"))),
             injection=Injection.from_dict(
                 store.load_segment(repo_dir, store.branch_segment(live, "injection")) or {}),
             prs=[PullRequest.from_dict(p) for p in (pr.get("prs") or []) if p.get("number") is not None],
@@ -375,9 +412,15 @@ class RepoContext:
             "prs": [asdict(p) for p in self.prs],
         })
 
-    def _save_validation(self) -> None:
+    def _save_lint(self) -> None:
+        """只写 lint 段。**绝不**顺手写 test 段——那是另一个 writer 的文件，碰它就把
+        「一段一 writer」的不变量破掉，lost update 立刻回来（见 `Validation`）。"""
         if self._root():
-            store.save_segment(self._root(), self._branch_seg("validation"), asdict(self.validation))
+            store.save_segment(self._root(), self._branch_seg("lint"), self.validation.lint_segment())
+
+    def _save_test(self) -> None:
+        if self._root():
+            store.save_segment(self._root(), self._branch_seg("test"), self.validation.test_segment())
 
     def _save_injection(self) -> None:
         if self._root():
@@ -451,11 +494,11 @@ class RepoContext:
         u = self.validation.of(uid)
         u.last_lint_at = base.now()
         u.lint_fingerprint = fingerprint
-        self._save_validation()
+        self._save_lint()
 
     def mark_test_passed(self, uid: str) -> None:
         self.validation.of(uid).last_test_at = base.now()
-        self._save_validation()
+        self._save_test()
 
     def set_branch_pr_number(self, number: int | None) -> None:
         """Write surface for the current branch's PR/MR number (monitor + create flow)."""

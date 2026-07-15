@@ -119,6 +119,44 @@ def test_turn_text_merge_blocked_hint():
     ctx.merge_readiness = "conflict"
     assert "MERGE-BLOCKED" not in ctx.turn_text()
 
+def test_concurrent_lint_and_test_marks_dont_lose_each_other():
+    """lint 与 test 在一次 `lifecycle.dispatch` 里**并发**盖戳，谁都不许覆盖谁。
+
+    红过的样子：两者共用 `branches/<b>/validation.json`，而 segment 的纪律是「single-writer
+    whole-file overwrite」——两个 writer 各自 load→mutate→save 整个文件，后写的把先写的抹掉。
+    实测丢的是 **test** 戳：状态说「没测过」而其实测过，是**记录失真**，不是保守的 fail-closed。
+
+    修法用 store 自己的既定答案（拆到一段一 writer-role），不是「写前重读合并」——那只是把
+    store 说的「结构上不可能」降级成窗口更窄的 race。
+
+    barrier 把交错对齐成**必现**：两个线程读到同一个旧视图，再各自写。
+    """
+    import threading
+
+    from lib.context import RepoContext
+    R = "/tmp/dlut_concurrent_marks"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
+    RepoContext.refresh_all(R)
+
+    barrier = threading.Barrier(2)
+    def mark(kind):
+        ctx = RepoContext.load(R)      # 两边读到同一个旧视图
+        barrier.wait()                  # 对齐，放大成必现
+        if kind == "lint":
+            ctx.mark_lint_passed(".", "fp-abc")
+        else:
+            ctx.mark_test_passed(".")
+
+    ts = [threading.Thread(target=mark, args=(k,)) for k in ("lint", "test")]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+
+    v = RepoContext.load(R).validation.unit(".")
+    assert v.last_lint_at and v.lint_fingerprint == "fp-abc", "lint 戳被 test 覆盖了"
+    assert v.last_test_at, "test 戳被 lint 覆盖了 —— 状态会说「没测过」而其实测过"
+
+
 def test_context_segments():
     """Per-owner segment files: each writer touches a disjoint file (no lost update),
     and pr.json is branch-keyed so a branch switch self-invalidates pr_number with no writer."""
@@ -134,15 +172,22 @@ def test_context_segments():
     RepoContext.refresh_all(R)
     D = Path(R) / ".devloop"
     assert (D / "meta.json").exists() and (D / "branches/feat/a/branch.json").exists()
-    assert not (D / "branches/feat/a/validation.json").exists() and not (D / "pr.json").exists()
+    assert not (D / "branches/feat/a/lint.json").exists() and not (D / "pr.json").exists()
 
     ctx = RepoContext.load(R)
     assert ctx.branch.local.name == "feat/a" and ctx.branch.pr_number is None and ctx.prs == []
 
-    # a validation mark writes only its branch's validation.json
+    # 验证戳按 **check** 分段（lint / test 各一个 writer-role，dispatch 里并发跑）：
+    # 盖 lint 戳只碰 lint.json，绝不碰 test.json——碰了就把「一段一 writer」破掉，lost update 回来。
     ctx.mark_lint_passed(".", "fp1")
-    assert (D / "branches/feat/a/validation.json").exists()
+    assert (D / "branches/feat/a/lint.json").exists()
+    assert not (D / "branches/feat/a/test.json").exists(), "盖 lint 戳不该碰 test 段"
     assert RepoContext.load(R).validation.unit(".").lint_fingerprint == "fp1"
+    RepoContext.load(R).mark_test_passed(".")
+    assert (D / "branches/feat/a/test.json").exists()
+    # 两段合并成一个内存视图（消费方看不到拆分）
+    v = RepoContext.load(R).validation.unit(".")
+    assert v.lint_fingerprint == "fp1" and v.last_lint_at and v.last_test_at
 
     # monitor-owned pr write, branch-keyed; provider is repo-level (header, not per-PR)
     ctx = RepoContext.load(R)
@@ -1125,7 +1170,7 @@ def test_state_domains_worktree():
     assert CodeUnit.at(W, W).id == CodeUnit.at(M, M).id == "."
     wt_ctx.mark_lint_passed(CodeUnit.at(W, W).id, "fp1")
     RepoContext.refresh_all(M)
-    assert (Path(M) / ".devloop/branches/feat/wt/validation.json").exists()
+    assert (Path(M) / ".devloop/branches/feat/wt/lint.json").exists()
     assert (Path(M) / ".devloop/branches/feat/wt/branch.json").exists()
     assert (Path(M) / ".devloop/branches/main/branch.json").exists()
     assert RepoContext.load(W).branch.local.name == "feat/wt"   # load 按 live 分支取段

@@ -36,7 +36,16 @@ STATE_FILENAME = "context.json"   # workspace-level state (single owner: the ref
 # one writer-role, so a writer overwrites only its own file — the cross-writer lost-update
 # class is designed out, not guarded against. A missing / corrupt segment degrades to its
 # default (fail-open) without touching the others.
-REPO_SEGMENTS = ("meta", "branch", "pr", "validation", "injection")
+#
+# 「一段一 writer-role」是**判据**，不是描述：拆到哪一层看**谁并发写**，不看它描述什么实体。
+# lint 与 test 在一次 `lifecycle.dispatch` 里并发跑，故各占一段（`branches/<b>/lint.json` /
+# `test.json`）；而 code unit 不写文件（同一 check 内 fan-out 是顺序的），故 unit 是段**内**的
+# JSON key，不是目录——拆成目录既不解决那个 race，unit id 又不是安全路径分量（根 unit 是 `.`、
+# 可含斜杠），当目录还得枚举目录才能读回全集。
+#
+# 段名**不在这里列清单**：曾有个 `REPO_SEGMENTS` 元组，零消费方，且早已与事实脱节（漏了
+# `review` / `remote_branches`）。没人读、又会悄悄过期的清单只会误导——段名的事实源是各
+# `save_segment` 调用点。
 
 
 @lru_cache(maxsize=64)
