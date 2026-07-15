@@ -10,7 +10,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from _testkit import _FakeForge, _git, _load_script, run_main  # noqa: E402  (bootstrap first)
+from _testkit import _FakeForge, _git, _git_out, _load_script, run_main  # noqa: E402  (bootstrap first)
 from lib.context import PullRequest  # noqa: E402
 from lib.forge.base import ForgeError  # noqa: E402
 
@@ -32,6 +32,61 @@ def test_run_review_skips_without_engine():
     from lib import git_state
     seg = store.load_segment(G, store.branch_segment(git_state.get_current_branch(G), "review"))
     assert seg and seg["status"] == "skipped" and "not installed" in seg["message"] and seg["count"] == 0
+
+def test_review_result_lands_on_the_branch_it_reviewed():
+    """review 是 detach 起的**长时**任务：结果必须落到它**启动时**那条分支，而不是写盘那一刻的
+    live 分支。
+
+    红过的样子——`_write` 每次现问 `get_current_branch()`（注释还写着「即使 checkout 移动过也
+    正确」）：跑 ~6 分钟期间人 / agent 切走分支，于是被审分支的 review.json 永远停在 running
+    （注入把它读成 stale），而当前分支凭空拿到一份**别人的** findings。实测过三条 PR，两条如此。
+
+    同一条不变量还管着 `reviewed_sha`：引擎的 to_ref 若传字面量 "HEAD"，ccr 在它自己启动那刻
+    才解析——审的是切换后的分支，记录里的 reviewed_sha 却是启动时的，记录直接撒谎。
+    """
+    from lib.context import store
+    rr = _load_script("run_review")
+
+    G = "/tmp/dlut_rr_branch"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
+    _git(G, "init", "-q", "-b", "main")
+    _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
+    Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
+    _git(G, "checkout", "-q", "-b", "feat/reviewed")
+    Path(f"{G}/b.txt").write_text("y"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "work")
+    reviewed_sha = _git_out(G, "rev-parse", "HEAD")
+
+    seen: dict = {}
+
+    class _FakeEngine:
+        name = "fake"
+        def available(self): return True
+        def configured(self, repo): return True
+        def install_hint(self): return ""
+        def review(self, repo, from_ref, to_ref, background, history_path=None):
+            seen["to_ref"] = to_ref
+            # 引擎跑到一半，checkout 被切走——这正是真实场景（人/agent 去开下一条 PR 了）
+            _git(repo, "checkout", "-q", "main")
+            return rr.review_engine.ReviewResult(
+                ok=True, status="success", comments=[], failed=0, warnings=[],
+                message="lgtm", cost_sec=1, tool_version="v0", models={})
+
+    orig_resolve, orig_open = rr.review_engine.resolve, rr._open_mr
+    rr.review_engine.resolve = lambda name: _FakeEngine()
+    rr._open_mr = lambda repo, branch: (None, None)     # 不碰 forge
+    try:
+        assert rr.main(["--repo", G]) == 0
+    finally:
+        rr.review_engine.resolve, rr._open_mr = orig_resolve, orig_open
+
+    # 终态落在**被审的**分支，不是写盘时的 live 分支（main）
+    seg = store.load_segment(G, store.branch_segment("feat/reviewed", "review"))
+    assert seg and seg["status"] == "success", f"结果没落在被审分支：{seg}"
+    assert seg["reviewed_sha"] == reviewed_sha
+    assert store.load_segment(G, store.branch_segment("main", "review")) is None, \
+        "结果落到了切换后的分支名下 —— 正是「写盘时现问 live 分支」的 bug"
+    # 引擎审的是冻结的 sha，不是字面量 HEAD（否则 reviewed_sha 会与实际审的对象不符）
+    assert seen["to_ref"] == reviewed_sha, f"to_ref 应是冻结的 sha，实际 {seen['to_ref']!r}"
+
 
 def test_review_engine_resolve():
     """review tool 协议：按名解析引擎，未知 / 空回落默认 ccr；ReviewResult 归一化形状。"""

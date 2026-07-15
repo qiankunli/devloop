@@ -41,11 +41,15 @@ def _branch(repo: str) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def _write(repo: str, **fields) -> None:
-    # review is BRANCH-domain state (it reviews one branch's diff): branches/<b>/review.json.
-    # Branch resolved per write — cheap next to the review itself, and correct even if the
-    # checkout moved between the "running" stamp and the terminal write.
-    store.save_segment(repo, store.branch_segment(git_state.get_current_branch(repo), "review"), fields)
+def _write(repo: str, branch: str, **fields) -> None:
+    """写 review 段。`branch` 由调用方在**启动时冻结**后一路传下来，绝不在这里现问 live 分支。
+
+    这里曾是 `git_state.get_current_branch(repo)` 现问，注释还写着「即使 checkout 移动过也正确」
+    ——**恰恰相反**：review 是 detach 起的长时任务（分钟级），期间人 / agent 很可能已经切走分支。
+    现问 live 分支的后果不是「结果丢了」，是**结果落到别的分支名下**：被审分支的 review.json 永远
+    停在 running（下一轮注入把它读成 stale），而当前分支凭空拿到一份别人的 findings。
+    「始终跟上最新」对一个审**固定**分支的任务是错的语义——它的对象在出生那一刻就定了。"""
+    store.save_segment(repo, store.branch_segment(branch, "review"), fields)
 
 
 def _append_history(repo: str, started: float, **fields) -> None:
@@ -268,12 +272,15 @@ def main(argv: list[str]) -> int:
     resolved, _ = cli.resolve_repo_or_exit(ns, "run_review")
     repo = resolved.git_root
     record_active_repo(repo)
-    sha = _head_sha(repo)
+    # 审的是**哪条分支的哪个 sha**，在这里一次定死。本进程是 detach 起的、跑分钟级，期间
+    # checkout 完全可能被切走——之后任何一处再问「现在是哪条分支 / HEAD 是谁」都会答出另一个
+    # 对象。冻结点只有这一个，下面全程只用这两个值。
+    branch, sha = _branch(repo), _head_sha(repo)
     started = base.now()
-    _write(repo, status="running", reviewed_sha=sha, comments=[], count=0, message="review in progress", generated_at=base.now())
+    _write(repo, branch, status="running", reviewed_sha=sha, comments=[], count=0, message="review in progress", generated_at=base.now())
 
     def skip(msg: str) -> int:
-        _write(repo, status="skipped", reviewed_sha=sha, comments=[], count=0, failed=0, message=msg, generated_at=base.now())
+        _write(repo, branch, status="skipped", reviewed_sha=sha, comments=[], count=0, failed=0, message=msg, generated_at=base.now())
         _append_history(repo, started, status="skipped", sha=sha, count=0, failed=0, message=msg)
         print(f"run_review: {msg} — skipped")
         return 0
@@ -290,14 +297,17 @@ def main(argv: list[str]) -> int:
 
     target = git_state.local_default_target(repo)
     range_label = f"origin/{target}..HEAD"
-    forge, pr = _open_mr(repo, _branch(repo))                       # 找一次，下面 background + 发评论都复用
+    forge, pr = _open_mr(repo, branch)                              # 冻结的 branch：别把 A 的 findings 发到 B 的 PR
     background = _build_background(repo, target, forge, pr, ns.background)
     pr_number = pr.number if pr else None
     history_path = _build_history_feed(repo, pr_number, sha)   # this PR's prior findings → ccr --history
 
-    result = engine.review(repo, f"origin/{target}", "HEAD", background, history_path)
+    # to_ref 传**冻结的 sha**，不是字面量 "HEAD"：ccr 在它自己启动那一刻才解析 HEAD，checkout
+    # 若已切走，它审的就是另一条分支——而我们早已把 reviewed_sha 记成上面那个 sha，记录就成了谎。
+    # 传 sha 之后「记录说审了什么」与「实际审了什么」由构造保证一致。
+    result = engine.review(repo, f"origin/{target}", sha, background, history_path)
     if not result.ok:
-        _write(repo, status="error", reviewed_sha=sha, comments=[], count=0, failed=0,
+        _write(repo, branch, status="error", reviewed_sha=sha, comments=[], count=0, failed=0,
                message=result.error, generated_at=base.now())
         _append_history(repo, started, status="error", sha=sha, count=0, failed=0, range=range_label)
         print(f"run_review: {engine.name} output not parseable — see .devloop/review.json")
@@ -314,7 +324,7 @@ def main(argv: list[str]) -> int:
     else:
         posted = _post(forge, pr, _format_comment(fallback, result.failed, range_label, sha, result.models,
                                                   result.cost_sec, tool_label, inline_posted))
-    _write(repo, status=result.status, reviewed_sha=sha, comments=comments,
+    _write(repo, branch, status=result.status, reviewed_sha=sha, comments=comments,
            count=len(comments), failed=result.failed, warnings=result.warnings, message=result.message,
            cost_sec=result.cost_sec, tool_version=result.tool_version, inline_posted=inline_posted,
            reviewed_range=range_label, mr_comment=posted, generated_at=base.now())
