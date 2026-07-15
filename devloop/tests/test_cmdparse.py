@@ -141,7 +141,7 @@ def test_cd_position_aware_attribution():
 
 def test_cmdparse_glued_operators():
     """运算符紧贴词尾时也要断句:shlex.split 会把 `jsonpath='...';` 的 `;` 吞进
-    token,segments() 断不开句——cd 落到段中而非段头,workspace guard 的 cd 豁免
+    token,于是断不开句——cd 落到段中而非段头,workspace guard 的 cd 豁免
     失效,kubectl+cd+uv 串被误拦。punctuation_chars 化后修复。"""
     from lib.cmdtree import cmdparse
     cmd = ("kubectl -o jsonpath='{range .items[*]}{\"\\n\"}{end}'; "
@@ -189,6 +189,15 @@ def test_cmdparse_command_invocations():
     uv = [v for v in ci("(cd sub); uv run pytest") if v.argv[0] == "uv"][0]
     assert uv.cd is None
     assert ci("PYTHONPATH=. pytest x")[0].argv[0] == "pytest"   # env 同 commands() 剥离
+    # env 被剥掉但**不丢**：「带没带 env 前缀」是调用自身的事实,有规则据此判定
+    # (naked-pytest: `PYTHONPATH=. pytest` 不算裸)。它与 cd 出自同一次解析,规则才可能同时要到
+    # env 和 run_dir——env 曾只能靠另一个**不追踪 cd** 的 walker 拿原始 token,那条路上二者只能选一个。
+    assert ci("PYTHONPATH=. pytest x")[0].env == ["PYTHONPATH=."]
+    assert ci("pytest x")[0].env == []
+    assert ci("A=1 B=2 pytest")[0].env == ["A=1", "B=2"]
+    inv = ci("cd cli && PYTHONPATH=. pytest")[-1]
+    assert inv.env == ["PYTHONPATH=."] and inv.cd == "cli" and inv.run_dir("/r") == Path("/r/cli")
+    assert ci("git -C sub push")[0].env == []                   # GitInvocation 也带 env 字段
     # run_dir 把 cd 叠在 base 上
     assert Inv(argv=["uv"], cd="sub").run_dir("/ws") == Path("/ws/sub")
     assert Inv(argv=["uv"], cd=None).run_dir("/ws") == Path("/ws")
