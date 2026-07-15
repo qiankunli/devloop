@@ -160,19 +160,51 @@ class BranchTopology:
 
 
 @dataclass
-class Validation:
+class UnitValidation:
+    """**一个** code unit 的验证戳。`edits_since_lint` 由 PostToolUse 按被编辑文件归属的 unit
+    自增，该 unit 的 lint 通过时清零。"""
     last_lint_at: float | None = None
     last_test_at: float | None = None
     edits_since_lint: int = 0
 
     @classmethod
-    def from_dict(cls, d: dict | None) -> "Validation":
+    def from_dict(cls, d: dict | None) -> "UnitValidation":
         d = d or {}
         return cls(
             last_lint_at=d.get("last_lint_at"),
             last_test_at=d.get("last_test_at"),
             edits_since_lint=int(d.get("edits_since_lint", 0) or 0),
         )
+
+
+@dataclass
+class Validation:
+    """验证戳，**按 code unit 键**（key = `repo_layout.unit_id`，仓相对路径 `.` / `server`）。
+
+    key 的粒度必须与**执行**的粒度一致：lint/test 本就按 unit 跑（一个仓可有 `server/` + `cli/`
+    两套工具链、各自的 Makefile），repo 级单戳表达不了「A 过 B 挂」——unit A 通过盖下的戳会让
+    `precommit_gate` 读到「已验、无待验编辑」而放行整个仓，于是**一次 partial-fail 的 fan-out
+    恰好把防绕过守卫的锁打开**（gate 挡住了 gcampr，却给裸 `git commit` 发了通行证）。
+    按 unit 键之后这类偏差不可表达，而不是靠各消费方记得多问一句。
+
+    旧的 repo 级扁平格式（`{last_lint_at: ...}`）读进来是空 units——即「都没验过」，gate 要求重跑
+    一次 lint。**刻意不写迁移**：`.devloop` 是 cache 不是事实源，退化方向是 fail-closed。
+    """
+    units: dict[str, UnitValidation] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "Validation":
+        d = d or {}
+        return cls(units={k: UnitValidation.from_dict(v)
+                          for k, v in (d.get("units") or {}).items() if isinstance(v, dict)})
+
+    def unit(self, uid: str) -> UnitValidation:
+        """`uid` 的戳，只读；从未验过 → 全空默认值（无戳即未验，fail-closed）。"""
+        return self.units.get(uid) or UnitValidation()
+
+    def of(self, uid: str) -> UnitValidation:
+        """`uid` 的戳，可写（缺则建）——mutator 专用。"""
+        return self.units.setdefault(uid, UnitValidation())
 
 
 def _review_status(rv: dict) -> str:
@@ -409,17 +441,18 @@ class RepoContext:
         return base.is_stale(meta.get("updated_at"), ttl)
 
     # ── mutators (each touches exactly one segment) ─────────────────────────────
-    def increment_stale_edits(self, delta: int = 1) -> None:
-        self.validation.edits_since_lint += delta
+    def increment_stale_edits(self, uid: str, delta: int = 1) -> None:
+        self.validation.of(uid).edits_since_lint += delta
         self._save_validation()
 
-    def mark_lint_passed(self) -> None:
-        self.validation.last_lint_at = base.now()
-        self.validation.edits_since_lint = 0
+    def mark_lint_passed(self, uid: str) -> None:
+        u = self.validation.of(uid)
+        u.last_lint_at = base.now()
+        u.edits_since_lint = 0
         self._save_validation()
 
-    def mark_test_passed(self) -> None:
-        self.validation.last_test_at = base.now()
+    def mark_test_passed(self, uid: str) -> None:
+        self.validation.of(uid).last_test_at = base.now()
         self._save_validation()
 
     def set_branch_pr_number(self, number: int | None) -> None:
@@ -629,9 +662,18 @@ def _format_turn(ctx: "RepoContext") -> str:
     else:
         lines.append("Workspace: clean")
 
+    # 按 unit 逐段渲染（key 排序：dict 序来自落盘顺序，会随哪个 unit 先盖戳而变；整块 hash 去重
+    # 下那等于无意义重发）。没有任何 unit 验过 → 一句话，不摆两个 never。
     v = ctx.validation
-    stale = f", {v.edits_since_lint} edits since" if v.edits_since_lint else ""
-    lines.append(f"Validation: lint={base.fmt_ts(v.last_lint_at)}{stale}; test={base.fmt_ts(v.last_test_at)}")
+    if not v.units:
+        lines.append("Validation: never run")
+    else:
+        segs = []
+        for uid in sorted(v.units):
+            u = v.units[uid]
+            stale = f", {u.edits_since_lint} edits since" if u.edits_since_lint else ""
+            segs.append(f"{uid}: lint={base.fmt_ts(u.last_lint_at)}{stale}; test={base.fmt_ts(u.last_test_at)}")
+        lines.append("Validation: " + " | ".join(segs))
 
     # 后台 code-review 的结果回流（pull）：run_review（由 smart_git_ops detach 起）跑完写
     # review.json，这里在下一轮把它捎进上下文——advisory，只通报、不挟持。读 fresh（段由

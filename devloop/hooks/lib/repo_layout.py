@@ -70,6 +70,26 @@ class CodeUnit:
         return None
 
 
+def unit_id(unit: CodeUnit | str | Path, git_root: str | Path) -> str:
+    """CodeUnit 的**持久化身份**：相对 checkout 根的 posix 路径（`.` / `server` / `cli`）。
+
+    `CodeUnit.path` 是绝对路径——那是「这次在哪跑 make」的事实，**不能**当 key 存进 `.devloop`：
+    - worktree 里的 `<repo>/.worktrees/foo/server` 与主 checkout 的 `<repo>/server` 是同一个
+      unit，而 validation 段统一落**主仓** `branches/<b>/`（见 `context/store` 三域布局）——
+      绝对路径会让同一 unit 在不同 checkout 下拿到不同 key：worktree 里 lint 过的戳回主
+      checkout 就查不到（fail-closed 白跑一遍），且 key 随 worktree 增删无限累积。
+    - 落盘的 key 还要给人看：`server` 比一串机器相关的绝对路径可读。
+    """
+    p = Path(unit.path if isinstance(unit, CodeUnit) else unit).resolve()
+    root = Path(git_root).resolve()
+    try:
+        return p.relative_to(root).as_posix()
+    except ValueError:
+        # unit 落在仓外（不该发生）：退回绝对路径而不是抛——身份算不准最多让戳对不上（fail-closed，
+        # 多跑一次 lint），把关路径上崩掉才是真事故。
+        return p.as_posix()
+
+
 def find_git_root(cwd: str | Path) -> str | None:
     """Find git root by walking up. Returns absolute path or None if not in a git repo."""
     r = gitcmd.git(cwd, "rev-parse", "--show-toplevel", timeout=3)

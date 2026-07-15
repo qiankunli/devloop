@@ -25,7 +25,11 @@ def handle(inp: hook_io.HookInput) -> None:
         return
     ctx = RepoContext.load(git_root)
     if ctx:
-        ctx.increment_stale_edits()
+        # 归属到被编辑文件所在的 unit。走 `enclosing_code_unit`——与 `select_units` /
+        # `_dirty_units` 是同一条路径→unit 投影，所以这里累计的 key 与 gate 查的 key 必然对齐；
+        # 各写一份推导正是 key 对不上的经典来源。
+        unit = repo_layout.enclosing_code_unit(inp.edited_dir(), git_root)
+        ctx.increment_stale_edits(repo_layout.unit_id(unit, git_root))
     record_active_repo(git_root, inp.session_id)
 
 

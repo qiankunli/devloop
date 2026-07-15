@@ -16,7 +16,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from lib import repo_resolve
+from lib import repo_layout, repo_resolve
 from lib.context import RepoContext
 from lib.repo_layout import CodeUnit
 from lib.lifecycle.base import HookResult
@@ -77,7 +77,7 @@ def lint(repo: str, *, capture: bool = True, unit: CodeUnit | None = None) -> Ho
     rc = _make(code_dir, target, capture=capture, sink=sink)
     if rc == 0:
         ctx = RepoContext.load(repo) or RepoContext.refresh_all(repo)
-        ctx.mark_lint_passed()
+        ctx.mark_lint_passed(repo_layout.unit_id(unit, repo))
         return HookResult("lint", ok=True, summary=f"make {target} passed — stamped")
     detail = f"\n{_tail(sink)}" if capture else ""
     return HookResult("lint", ok=False, summary=f"make {target} failed (only `make fix` may edit files){detail}")
@@ -116,7 +116,7 @@ def test(repo: str, *, capture: bool = True, extra: list[str] | None = None,
         rc = subprocess.run(argv, cwd=code_dir).returncode
     if rc == 0:
         ctx = RepoContext.load(repo) or RepoContext.refresh_all(repo)
-        ctx.mark_test_passed()
+        ctx.mark_test_passed(repo_layout.unit_id(unit, repo))
         return HookResult("test", ok=True, advisory=True, summary=f"{display} passed — stamped")
     detail = f"\n{_tail(sink)}" if capture else ""
     return HookResult("test", ok=False, advisory=True, summary=f"{display} failed (advisory — not blocking){detail}")

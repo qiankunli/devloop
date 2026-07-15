@@ -20,6 +20,7 @@ def test_protocol_files_schema():
     版本化 cache 目录失效)。新增合法键时有意识地更新这里,这正是协议变更的关卡。"""
     import json
     import re as _re
+    import shlex
     P = Path(__file__).resolve().parent.parent  # devloop/
 
     for manifest in [P / ".claude-plugin/plugin.json", P / ".codex-plugin/plugin.json"]:
@@ -40,8 +41,15 @@ def test_protocol_files_schema():
                     assert {"type", "command"} <= set(h)
                     assert set(h) <= {"type", "command", "timeout", "statusMessage"}, f"unknown hook key: {set(h)}"
                     assert h["type"] == "command" and "${CLAUDE_PLUGIN_ROOT}" in h["command"]
-                    rel = h["command"].split("${CLAUDE_PLUGIN_ROOT}/", 1)[1].split()[0]
-                    assert (P / rel).exists(), f"hook command points to missing script: {rel}"
+                    # command 是一条 shell 行，现在形如 `"<root>/scripts/python" "<root>/hooks/x.py"`
+                    # ——**两个** plugin-root 路径，都要校验。用 shlex 分词，别拿字符串裁：按
+                    # `${CLAUDE_PLUGIN_ROOT}/` 裸切再 `.split()[0]` 会把闭引号一起带走（切出
+                    # `scripts/python"`），断言于是恒假红，且只够着解释器、够不着真正的 hook 脚本。
+                    refs = [t.split("${CLAUDE_PLUGIN_ROOT}/", 1)[1]
+                            for t in shlex.split(h["command"]) if t.startswith("${CLAUDE_PLUGIN_ROOT}/")]
+                    assert refs, f"no ${{CLAUDE_PLUGIN_ROOT}} path in hook command: {h['command']}"
+                    for rel in refs:
+                        assert (P / rel).exists(), f"hook command points to missing script: {rel}"
 
     assert_hooks(
         P / "hooks/hooks.json",

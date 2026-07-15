@@ -197,6 +197,48 @@ def test_lifecycle_checks_follow_changed_code_unit():
     assert "changed files under: cli" in result.summary
     assert "make test passed" in result.summary
 
+
+def test_partial_unit_lint_failure_does_not_unlock_bare_commit():
+    """一个 unit 过、另一个挂时，防绕过守卫必须**仍然拦**裸 `git commit`。
+
+    这是 validation 按 unit 键的理由本身。repo 级单戳下这条必红：fan-out 里 cli 通过盖的那个
+    戳是 repo 级的，`precommit_gate` 读到「已验、无待验编辑」就放行——于是 gate 挡住了 gcampr，
+    却正好给它唯一要拦的东西（裸 commit）发了通行证。守卫和正常路径必须是同一份策略。
+    """
+    import json as _json
+
+    from lib.context import RepoContext
+    from lib.lifecycle import checks
+    bash = _load_hook("pretool_policy_bash")
+
+    R = "/tmp/dlut_partial_unit"
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/cli"); os.makedirs(f"{R}/server"); os.makedirs(f"{R}/.devloop")
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/x")
+    Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\n")            # cli 过
+    Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
+    Path(f"{R}/server/Makefile").write_text("lint:\n\tfalse\n")        # server 挂
+    Path(f"{R}/server/pyproject.toml").write_text("[project]\nname = 'server'\nversion = '0'\n")
+    Path(f"{R}/.devloop/config.json").write_text(
+        _json.dumps({"lifecycle": {"repos": {str(Path(R).resolve()): {"pre_commit": ["lint"]}}}}))
+    _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
+    RepoContext.refresh_all(R)
+
+    # 两个 unit 都有改动 → WorkSet 命中两个；lint fan-out 一过一挂 → 整体不放行
+    Path(f"{R}/cli/a.py").write_text("x = 1\n")
+    Path(f"{R}/server/b.py").write_text("y = 2\n")
+    res = checks.lint(R)
+    assert not res.ok, "server 的 lint 挂了，聚合结果必须 ok=False"
+
+    # cli 已盖戳，但 server 没有——裸 commit 守卫要看的是「本轮 required units 是否都验过」
+    v = RepoContext.load(R).validation
+    assert v.unit("cli").last_lint_at and not v.unit("server").last_lint_at
+    msg = bash.decide(_hook_input("Bash", {"cwd": R, "session_id": "",
+                                           "tool_input": {"command": "git commit -m x"}})) or ""
+    assert "Refusing `git commit`" in msg, "cli 的戳把守卫的锁打开了 —— 正是 repo 级单戳的 bug"
+    assert "server" in msg and "cli" not in msg, f"应只点名未验的 server：{msg}"
+
 def test_lifecycle_config_layering():
     """config.lifecycle()：default 全空（opt-in），repo 级 .devloop/config.json 覆盖该 repo 的相位。"""
     import json as _json
