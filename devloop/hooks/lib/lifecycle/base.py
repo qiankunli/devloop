@@ -79,8 +79,8 @@ class DispatchResult:
         return [r.relay for r in self.results if r.relay is not None]
 
 
-def resolve_handler(name: str) -> Callable[[str], HookResult] | None:
-    """name → handler 可调用（`handler(repo) -> HookResult`）；未注册返回 None。"""
+def resolve_handler(name: str) -> Callable[..., HookResult] | None:
+    """name → handler 可调用（`handler(repo, paths) -> HookResult`）；未注册返回 None。"""
     spec = _BUILTIN.get(name)
     if not spec:
         return None
@@ -92,11 +92,20 @@ def dispatch(
     phase: str,
     repo: str,
     *,
+    paths: list[str] | None = None,
     names: list[str] | None = None,
-    registry: dict[str, Callable[[str], HookResult]] | None = None,
+    registry: dict[str, Callable[..., HookResult]] | None = None,
     max_workers: int = 4,
 ) -> DispatchResult:
     """跑 `phase` 上配置的全部 hook（并发 join），聚合成 DispatchResult。
+
+    `paths` = **本相位「本次改动」涉及的文件**（仓相对），由调用方在相位边界算好后**冻结**下传。
+    这是 handler 拿不到、也猜不出来的那半上下文：每个相位的答案不同（pre_commit 是将提交的脏
+    文件、post_commit 是刚落地那个 commit、pre_mr 是整条分支 vs target），而 handler 手里只有
+    `repo`，只能去读工作树——commit 之后工作树是干净的，那个答案会被读成「不知道范围」进而退化
+    成跑全仓。冻结还顺带让同相位的 lint 与 test 看到**同一个**范围：lint 的 `make fix` 会改工作
+    树，各自现算就可能算出两个不同的集合。
+    `None` = 调用方也不知道范围，由 handler 自行判定（保持 CLI 语境的老行为）。
 
     `names` 省略时从 `config.lifecycle(repo)[phase]` 读（opt-in，默认空 → no-op）。
     `registry` 仅测试用：注入 name→handler，绕过内置惰性解析。
@@ -120,7 +129,7 @@ def dispatch(
         if handler is None:
             return HookResult(name=name, ok=False, summary=f"unknown lifecycle hook {name!r}")
         try:
-            return handler(repo)
+            return handler(repo, paths)
         except Exception as e:  # gate fail-closed
             return HookResult(name=name, ok=False, summary=f"{name} errored: {e}")
 

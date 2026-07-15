@@ -79,10 +79,14 @@ class WorkSet:
     reason: str
 
 
-def _changed_paths(git_root: str | Path) -> list[str]:
+def changed_paths(git_root: str | Path) -> list[str]:
     """working tree 里有改动的文件（相对仓根的路径）：tracked 改动（staged + unstaged vs HEAD）
     + untracked。**刻意不用 `status --porcelain`**——`gitcmd` 对输出整体 `strip()`，会吃掉
-    porcelain 首行的前导状态空格（` M path`）导致列错位；这两条命令输出纯路径、strip 无害。"""
+    porcelain 首行的前导状态空格（` M path`）导致列错位；这两条命令输出纯路径、strip 无害。
+
+    这是「本次改动」的**工作树答案**，只对「改动尚未提交」的语境成立（pre_commit / CLI）。
+    commit 之后工作树是干净的，那时的答案要问 git 历史（见 `committed_paths`）——用工作树去答
+    post_commit / pre_mr 会得到「什么都没改」，进而被误读成「不知道范围」。"""
     paths: list[str] = []
     d = gitcmd.git(git_root, "diff", "--name-only", "HEAD")          # tracked: staged+unstaged
     if d.ok and d.out:
@@ -103,24 +107,62 @@ def _changed_paths(git_root: str | Path) -> list[str]:
     return [p.strip() for p in paths if p.strip()]
 
 
-def _dirty_units(git_root: str | Path) -> list[repo_layout.CodeUnit]:
-    """working tree 里有改动的文件各自归属的 code unit，去重。这是「变更决定验证目标」的核心：
+def _paths_or_unknown(r) -> list[str] | None:
+    """git 结果 → 「本次改动」的路径列表，**算不出时是 `None` 不是 `[]`**。
+
+    `gitcmd` 是 failure-safe 的（rc≠0 不抛），所以「命令失败」和「确实没有改动」的原始输出长得
+    一模一样。但下游把这两者当两回事：`[]` = 知道且为空 → 0 个 unit → 干净跳过验证；`None` =
+    不知道 → 回落全跑。把失败读成 `[]`，就等于 `origin/<target>` 没 fetch 时**静默跳过整个 lint
+    gate**——gate 上的 fail-open 是最不能有的方向。故失败一律降级成「不知道」。"""
+    if not r.ok:
+        return None
+    return [p.strip() for p in r.out.splitlines() if p.strip()]
+
+
+def committed_paths(git_root: str | Path, rev: str = "HEAD") -> list[str] | None:
+    """`rev` 这个 commit 自身改了哪些文件（仓相对）。commit 已落地、工作树已干净后的「本次改动」。
+    算不出 → `None`（见 `_paths_or_unknown`）。
+
+    用 `diff-tree -r --root`：**根 commit（无父）也能答**，而 `diff HEAD~1 HEAD` 在仓库第一个
+    commit 上直接失败。"""
+    return _paths_or_unknown(
+        gitcmd.git(git_root, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", rev))
+
+
+def range_paths(git_root: str | Path, base: str, head: str = "HEAD") -> list[str] | None:
+    """`base`..`head` 这条分支相对基线改了哪些文件（仓相对）——整条分支的「本次改动」，
+    pre_mr / post_mr 的答案（MR 承载的是整条分支，不是最后那个 commit）。
+    算不出（如 `origin/<target>` 尚未 fetch）→ `None`（见 `_paths_or_unknown`）。
+
+    用三点 `base...head`：与 fork point 比，而不是与 base 的当前 tip 比——否则 base 在你开发
+    期间前进过，别人的提交会被算成你的改动，凭空扩大验证范围。"""
+    return _paths_or_unknown(gitcmd.git(git_root, "diff", "--name-only", f"{base}...{head}"))
+
+
+def _project_units(git_root: str | Path, paths: list[str]) -> list[repo_layout.CodeUnit]:
+    """一组仓相对路径各自归属的 code unit，去重。这是「变更决定验证目标」的核心：
     改了 cli/** 就只投影出 cli，不受解析来源是否带路径影响。"""
     seen: dict[str, repo_layout.CodeUnit] = {}
-    for p in _changed_paths(git_root):
+    for p in paths:
         u = repo_layout.enclosing_code_unit(Path(git_root) / p, git_root)
         seen.setdefault(u.path, u)
     return list(seen.values())
 
 
-def select_units(git_root: str | Path, *, explicit: str | Path | None = None) -> WorkSet:
-    """本轮 WorkSet：显式目标 > dirty 改动投影 > repo-wide 全量。任何一级都**不静默回默认 server**。
+def select_units(git_root: str | Path, *, explicit: str | Path | None = None,
+                 paths: list[str] | None = None) -> WorkSet:
+    """本轮 WorkSet：显式目标 > 本次改动投影 > repo-wide 全量。任何一级都**不静默回默认 server**。
 
     - `explicit`（显式 --unit / 路径 / cwd 落在仓内某具体子目录）→ 归属那个 unit。仅当它指向仓根
       **严格子路径**时才算显式；`explicit == 仓根`（cwd 恰停在仓根）不算——否则又会 enclosing 回落
       到 default(server)，正是要消除的那个 bug。
-    - 无显式目标 → 看 working tree dirty 文件落在哪些 unit → 全部命中（多 unit 并行）。
-    - dirty 为空（clean tree）→ repo-wide：枚举全部 unit。
+    - `paths`：**本次改动就是这些文件**（仓相对）。调用方知道范围时给它——lifecycle 各相位的
+      「本次改动」取法不同（将提交的脏文件 / 刚提交的那个 commit / 整条分支 vs target），只有
+      调用方知道，handler 自己读工作树猜不出来。
+    - `paths=None`：**不知道**范围 → 退回读 working tree（CLI 的「跑下测试」就是这个语境）。
+      dirty 为空（clean tree）→ repo-wide 枚举全部 unit，绝不猜一个。
+    - `paths=[]`：**知道**范围且为空（该相位无改动）→ 0 个 unit，干净跳过。与 None 是两回事：
+      「不知道所以全跑」和「知道没有所以不跑」不能混为一谈，混了就是 clean tree 上跑全仓。
     """
     root = Path(git_root).resolve()
     if explicit is not None:
@@ -128,8 +170,14 @@ def select_units(git_root: str | Path, *, explicit: str | Path | None = None) ->
         if ep != root and root in ep.parents:
             u = repo_layout.enclosing_code_unit(ep, git_root)
             return WorkSet((u,), f"explicit target {ep.name} → unit {Path(u.path).name}")
-        # ep == 仓根：没有具体目标，落到 dirty（不走 enclosing → default → server）
-    dirty = _dirty_units(git_root)
+        # ep == 仓根：没有具体目标，落到改动投影（不走 enclosing → default → server）
+    if paths is not None:
+        units = _project_units(git_root, paths)
+        if not units:
+            return WorkSet((), "no changed files in scope")
+        names = ", ".join(Path(u.path).name for u in units)
+        return WorkSet(tuple(units), f"changed files under: {names}")
+    dirty = _project_units(git_root, changed_paths(git_root))
     if dirty:
         names = ", ".join(Path(u.path).name for u in dirty)
         return WorkSet(tuple(dirty), f"changed files under: {names}")

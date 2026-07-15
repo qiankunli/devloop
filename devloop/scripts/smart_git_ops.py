@@ -569,15 +569,37 @@ def _build_parser() -> cli.ArgParser:
     return ap
 
 
-def run_lifecycle_gate(repo: str, phase: str, plan: list[str]) -> lifecycle.DispatchResult:
+def phase_paths(repo: str, phase: str, target: str) -> list[str] | None:
+    """本相位的「本次改动」是哪些文件（仓相对）——**每个相位的答案不同**，且只有这里知道。
+
+    handler 手里只有 `repo`，要范围只能读工作树；那个答案只在 pre_commit（改动尚未提交）成立。
+    commit 之后工作树是干净的，读出来是「什么都没改」→ 被 `select_units` 读成「不知道范围」→
+    退化成 repo-wide 跑**全部** unit：一个你根本没碰的 unit 有存量 lint 错误，就会在 commit 已
+    落地之后拦掉 push 和 MR。所以范围必须在相位边界由这里算好、冻结下传。
+
+    - `pre_commit`：将要提交的 = 工作树脏文件（`None` → 让 handler 读工作树，语境本就一致）。
+    - `post_commit`：刚落地的那个 commit 自身。
+    - `pre_mr` / `post_mr`：整条分支 vs target——MR 承载的是整条分支，不是最后那个 commit。
+    """
+    if phase == "pre_commit":
+        return None                                    # 工作树即答案，与 handler 默认语境一致
+    if phase == "post_commit":
+        return repo_resolve.committed_paths(repo)
+    return repo_resolve.range_paths(repo, f"origin/{target}")
+
+
+def run_lifecycle_gate(repo: str, phase: str, plan: list[str], target: str) -> lifecycle.DispatchResult:
     """跑某相位的 lifecycle hook（lint/test 等 inline gate），写进 PLAN，返回 DispatchResult。
 
     配置为空 → 静默 no-op（opt-in，零行为变化）。inline gate 失败 → 抛 SmartError 中止本次
     git 动作。pre_commit 故意排在 staging 之前：lint 的 `make fix` 改的文件要被随后的 stage
     收进同一个 commit。signal hook（如 code-review）不挡、把后台下游放进 `res.to_launch`，由
     调用方在 git 动作完成后用 launch_background_relays detach 起。
+
+    范围（`phase_paths`）在**跑 hook 之前**算好：既让 post_commit / pre_mr 不退化成跑全仓，也让
+    同相位并发的 lint 与 test 看到同一个集合（lint 的 `make fix` 会改工作树，各自现算会分叉）。
     """
-    res = lifecycle.dispatch(phase, repo)
+    res = lifecycle.dispatch(phase, repo, paths=phase_paths(repo, phase, target))
     if not res.results:
         return res
 
@@ -643,15 +665,15 @@ def main(argv: list[str]) -> int:
         # review 的 MR 评论是机会性的——relay 跑时查到分支有开放 MR 就发，没有就只落 review.json。
         branch = prepare_branch(intent, gv, plan)
         ensure_requirement(intent, branch, plan)   # cut 与 continue 都要（--requirement 不得被静默丢弃）
-        pre_c = run_lifecycle_gate(intent.repo, "pre_commit", plan)   # 必在 commit 前（lint/test 阻塞门禁）
+        pre_c = run_lifecycle_gate(intent.repo, "pre_commit", plan, intent.target)   # 必在 commit 前（lint/test 阻塞门禁）
         staged = stage_and_commit(intent, plan)
         if staged.committed:
-            post_c = run_lifecycle_gate(intent.repo, "post_commit", plan)
+            post_c = run_lifecycle_gate(intent.repo, "post_commit", plan, intent.target)
             launch_background_relays(pre_c.to_launch + post_c.to_launch, intent.repo, plan)
-        pre_m = run_lifecycle_gate(intent.repo, "pre_mr", plan) if intent.mode == "mr" else None  # 在 publish 前（阻塞门禁）
+        pre_m = run_lifecycle_gate(intent.repo, "pre_mr", plan, intent.target) if intent.mode == "mr" else None  # 在 publish 前（阻塞门禁）
         publish(intent, branch, staged, plan)
         if intent.mode == "mr":
-            post_m = run_lifecycle_gate(intent.repo, "post_mr", plan)   # MR 此刻已建好
+            post_m = run_lifecycle_gate(intent.repo, "post_mr", plan, intent.target)   # MR 此刻已建好
             launch_background_relays((pre_m.to_launch if pre_m else []) + post_m.to_launch, intent.repo, plan)
         RepoContext.refresh_branch(intent.repo)
     except SmartError as e:
