@@ -79,10 +79,10 @@ def pending(comments: list[Comment]) -> list[Finding]:
 def pending_key(found: list[Finding]) -> str:
     """Identity of a pending SET, for nudge decay (`context.base.Nudge`).
 
-    Hashes the sorted fps, not the count: a count can't tell "the same 3 findings you've
-    already been asked about" from "one got labeled and a new round added another" — same
-    number, different work. Sorted so comment order (two forge surfaces, interleaved by time)
-    can't churn the key and silently reset the decay.
+    Hashes each finding's stable fp PLUS its published comment id. The fp identifies the issue,
+    while the id identifies this review round's occurrence: if the same issue is published again
+    after an earlier round was labeled, it is new work and must reopen the nudge. Sorted so comment
+    order (two forge surfaces, interleaved by time) can't churn the key and reset the decay.
     """
-    fps = sorted(f.fp for f in found)
-    return hashlib.sha256("\n".join(fps).encode()).hexdigest()[:12] if fps else ""
+    identities = sorted(f"{f.fp}:{f.comment.id or f.comment.thread_id}" for f in found)
+    return hashlib.sha256("\n".join(identities).encode()).hexdigest()[:12] if identities else ""

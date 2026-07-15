@@ -6,7 +6,7 @@ description: Run make fix + make lint and report results. Use when the user want
 Run:
 
 ```
-python3 <PLUGIN_ROOT>/scripts/run_fixlint.py [<repo name|path>]
+<PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/run_fixlint.py [<repo name|path>]
 ```
 
 The script handles repo resolution (no `cd` prefix needed — defaults to cwd's repo, then

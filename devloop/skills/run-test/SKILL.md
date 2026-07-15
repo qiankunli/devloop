@@ -6,7 +6,7 @@ description: Run the repo's code-unit tests and report results. Use when the use
 Run:
 
 ```
-python3 <PLUGIN_ROOT>/scripts/run_tests.py [<repo name|path>] [-- <extra args to narrow scope>]
+<PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/run_tests.py [<repo name|path>] [-- <extra args to narrow scope>]
 ```
 
 Selects code units from the explicit target / changed files / clean repo-wide fallback, then runs each

@@ -122,10 +122,10 @@ class GitHubForge(Forge):
         # Both are fetched and merged: a caller looking for what review posted can't be asked
         # to know which surface it landed on. Interleaved by creation time so the merged list
         # reads as one conversation.
-        issue = self.c.get(f"issues/{number}/comments", per_page=50)
-        review = self.c.get(f"pulls/{number}/comments", per_page=50)
-        rows = [(n, False) for n in (issue if isinstance(issue, list) else [])]
-        rows += [(n, True) for n in (review if isinstance(review, list) else [])]
+        issue = self.c.get_all(f"issues/{number}/comments")
+        review = self.c.get_all(f"pulls/{number}/comments")
+        rows = [(n, False) for n in issue]
+        rows += [(n, True) for n in review]
         rows.sort(key=lambda r: r[0].get("created_at") or "")   # ISO-8601 Z → lexical == chronological
         return [self._to_comment(n, anchored=a) for n, a in rows]
 

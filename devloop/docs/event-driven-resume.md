@@ -90,7 +90,7 @@ Claude Code 的 **channels**（research preview，v2.1.80+；[channels-reference
 
 ```json
 { "mcpServers": {
-  "notify": { "command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/notify.py", "channel", "all", "${CLAUDE_PROJECT_DIR}"] }
+  "notify": { "command": "${CLAUDE_PLUGIN_ROOT}/scripts/python", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/notify.py", "channel", "all", "${CLAUDE_PROJECT_DIR}"] }
 }}
 ```
 ```bash

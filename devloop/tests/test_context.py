@@ -7,11 +7,50 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 from _testkit import _git, _hook_input, _load_hook, run_main  # noqa: E402  (bootstrap first)
 from lib.context import PullRequest  # noqa: E402
+
+
+def test_python_launcher_skips_old_name_and_uses_supported_fallback():
+    """PATH 上第一个名字可能是旧 Python；launcher 必须继续找，而不是只认 python3。"""
+    root = Path("/tmp/dlut_python_launcher")
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir()
+    old = root / "python3"
+    old.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    old.chmod(0o755)
+    good = root / "python"
+    good.write_text(
+        "#!/bin/sh\ncase \"$2\" in *version_info*) exit 0;; esac\nprintf python-fallback\n",
+        encoding="utf-8",
+    )
+    good.chmod(0o755)
+    launcher = Path(__file__).parents[1] / "scripts" / "python"
+    env = {**os.environ, "PATH": str(root)}
+    out = subprocess.run([launcher, "-c", "ignored"], env=env, capture_output=True, text=True)
+    assert out.returncode == 0 and out.stdout == "python-fallback"
+
+    # A versioned-only installation is discovered from PATH, including future names that
+    # were not known when this launcher was written.
+    good.unlink()
+    versioned = root / "python3.99"
+    versioned.write_text(
+        "#!/bin/sh\ncase \"$2\" in *version_info*) exit 0;; esac\nprintf versioned-fallback\n",
+        encoding="utf-8",
+    )
+    versioned.chmod(0o755)
+    out = subprocess.run([launcher, "-c", "ignored"], env=env, capture_output=True, text=True)
+    assert out.returncode == 0 and out.stdout == "versioned-fallback"
+
+    # Explicit override is authoritative: a bad requested interpreter reports itself instead
+    # of silently switching to another binary and hiding a configuration mistake.
+    env["DEVLOOP_PYTHON"] = "python3"
+    bad = subprocess.run([launcher, "-c", "ignored"], env=env, capture_output=True, text=True)
+    assert bad.returncode == 127 and "DEVLOOP_PYTHON" in bad.stderr
 
 
 def test_turn_block_stable_across_clock_when_state_unchanged():

@@ -384,6 +384,9 @@ def test_review_feedback_joins_fp_to_label():
     def _fs(*fps): return [Finding(fp=f, comment=Comment(id=f, thread_id=f)) for f in fps]
     assert pending_key(_fs("a", "b")) == pending_key(_fs("b", "a"))   # 顺序无关（两个面交织）
     assert pending_key(_fs("a", "b")) != pending_key(_fs("a", "c"))   # 同为 2 条,活不同
+    # fingerprint 是稳定问题身份；同一问题在新 review 轮次重新发布时 comment id 会变，必须重开 nudge
+    assert pending_key(_fs("a")) != pending_key(
+        [Finding(fp="a", comment=Comment(id="new-round", thread_id="new-round"))])
     assert pending_key([]) == ""
 
     # 带 ccr:label 但不是回复（thread 根自己提了一嘴）→ 不算 verdict

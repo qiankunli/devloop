@@ -144,8 +144,7 @@ class GitLabForge(Forge):
         # single-note, `individual_note` discussions) AND positioned ones — so unlike
         # GitHub this needs no second fetch. `system` notes are GitLab's activity log
         # ("changed the description"), not comments.
-        out = self.c.get(f"merge_requests/{number}/discussions", per_page=50)
-        discussions = out if isinstance(out, list) else []
+        discussions = self.c.get_all(f"merge_requests/{number}/discussions")
         return [
             self._to_comment(d, n)
             for d in discussions for n in d.get("notes", [])

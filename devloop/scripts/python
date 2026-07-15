@@ -1,0 +1,38 @@
+#!/bin/sh
+# Resolve one supported Python for every devloop entrypoint. Users commonly have several
+# names on PATH (python, python3, python3.14); the first name is not necessarily the newest.
+
+run_if_supported() {
+    py=$1
+    shift
+    command -v "$py" >/dev/null 2>&1 || return 1
+    "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+        >/dev/null 2>&1 || return 1
+    exec "$py" "$@"
+}
+
+if [ -n "${DEVLOOP_PYTHON:-}" ]; then
+    run_if_supported "$DEVLOOP_PYTHON" "$@"
+    echo "devloop: DEVLOOP_PYTHON is unavailable or older than Python 3.10: $DEVLOOP_PYTHON" >&2
+    exit 127
+fi
+
+for py in python3 python; do
+    run_if_supported "$py" "$@"
+done
+
+# Some installations expose only a versioned binary. Discover those names from PATH so
+# this keeps working for future Python releases without extending a hard-coded list.
+old_ifs=$IFS
+IFS=:
+for dir in ${PATH:-}; do
+    [ -n "$dir" ] || dir=.
+    for py in "$dir"/python3.*; do
+        [ -x "$py" ] || continue
+        run_if_supported "$py" "$@"
+    done
+done
+IFS=$old_ifs
+
+echo "devloop: Python 3.10+ not found (tried python3, python, and python3.* on PATH)" >&2
+exit 127
