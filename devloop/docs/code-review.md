@@ -53,9 +53,9 @@ smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https:/
 ```
 gcampr → … → commit → publish（建/复用 MR）→ post_mr relay
    → smart_git_ops detach 起 run_review（PLAN 出 `review: launched in background`）
-run_review（后台、独立进程）：先写 status=running
+run_review（后台、独立进程）：**启动即冻结 (branch, sha)**（见下）→ 先写 status=running
    → 自动拼 --background（业务上下文）：本次提交说明（git log）+ MR 标题/描述（forge）
-   → <engine> review --from origin/<target> --to HEAD --background <ctx> --format json   # engine=ccr(默认)/ocr
+   → <engine> review --from origin/<target> --to <冻结的 sha> --background <ctx> --format json   # engine=ccr(默认)/ocr
    → 写 .devloop/review.json（通用）+ 若分支有开放 MR：逐条 findings 尝试锚点（diff_comment）
      → line-level 行锚 →（失败）文件锚；file-level 直接文件锚 →（都失败）回落汇总评论（forge.comment）
 下一轮：userprompt 注入读 review.json → 上下文出现 `Review: …`（含 mr_comment 状态）
@@ -81,6 +81,22 @@ tool 协议** `ReviewEngine` + `ReviewResult` + ocr/ccr adapter）、`lib/review
 join，纯函数、无 HTTP）、`scripts/pr.py`（`pr findings` / `pr reply`：打标闭环的读写两半）、
 `forge.comment`（写评论原语，gitlab notes / github issue comment）、
 `.devloop/review.json`（结果段）、`context/repo.py` 的 `Review:` 注入行（pull）。
+
+## 审的是谁：启动时冻结，不在写盘时现问
+
+run_review 是 detach 起的**长时**任务（分钟级）。期间人 / agent 很可能已经切走 checkout 去开
+下一条 PR——所以它一启动就把 **(branch, sha)** 定死，之后**任何一处都不再问「现在是哪条分支 /
+HEAD 是谁」**：
+
+| 用处 | 用冻结值的原因 |
+|---|---|
+| `review.json` 落哪个 branch 段 | 现问 live 分支 → 结果落到**别人**名下：被审分支永远停在 `running`（注入读成 stale），当前分支凭空拿到一份别人的 findings |
+| 引擎的 `--to` | 传字面量 `HEAD` → 引擎在**它自己**启动那刻才解析，审的是切换后的分支，而 `reviewed_sha` 记的是启动时的 → **记录撒谎** |
+| `_open_mr` 找哪条 MR | 现问 → 可能把 A 的 findings 发到 B 的 PR 上 |
+
+这条与 `CodeUnit.id` 绑在出生点（CONCEPTS.md〈code unit〉）、lifecycle 范围在相位边界冻结
+（`docs/lifecycle-hooks.md`）是**同一条原则**的三处应用：一个对象在诞生时就确定了它的主体，
+「始终跟上最新」对它是错的语义。判据是**这个任务的主体会不会在它运行期间变**——会变就必须冻结。
 
 ## 启用
 
