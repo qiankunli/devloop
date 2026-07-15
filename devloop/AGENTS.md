@@ -54,8 +54,9 @@ devloop/
 │   │   │   ├── base.py            #     facade：dispatch 并发 join + 聚合 + 内置注册表
 │   │   │   ├── checks.py          #     内置 inline-gate handler（lint/test，与 fix-lint / run-test skill 共用）
 │   │   │   └── review.py          #     code-review signal handler（任意相位；审全量 diff，分支有开放 MR 时机会性发评论）
-│   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）
-│   │   ├── git_state.py  parsers.py  repo_layout.py  workspace.py
+│   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）+ select_units→WorkSet（本轮跑哪些 code unit，按本次改动定）
+│   │   ├── repo_layout.py         #   ★code unit 模型：CodeUnit（path 执行身份 / id 持久化身份 / 工具链动作）+ at() 唯一构造入口 + enclosing/discover
+│   │   ├── git_state.py  parsers.py  workspace.py
 │   │   └── context/               #   .devloop/ 状态总线，五族分模块：store(磁盘原语/三域) + base(共享词汇) / repo+workspace(视图) / gate+prstate(真相接缝) / session(运行态+owner锁+session 日志 `sessions/<sid>.jsonl`——devloop 自己干了什么的 append-only 账,`kind` 分类(首个 `inject`),纯 exhaust、从不读回)
 │   │       └── loopstate/         #     经验沉淀 ledger 半（loop-state / requirement-first，见 workspace docs/）：friction(guard deny→friction.jsonl，per-repo) + requirement(域落 dev root——workspace 根、单仓退化 repo 根；单 spine 跨仓、事件带 repo；turn_line 派生任务视图；monitor reconcile 收口)
 │   ├── cwdchanged_enter.py        # Claude CwdChanged：自动 enter
@@ -133,6 +134,16 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 - **新分支基点由意图定，不由 HEAD 当前态定**：`--branch`（开新工作）一律 cut 自 `origin/<target>`（`--base` 显式栈式），与当前停在哪条分支无关——否则上一轮留下的 in-flight 分支会被当成基底、新 PR 夹带其提交（夹带在 push/PR 前由 `smart_git_ops` 外来提交自检拦下）。当前分支在循环里的四态流转（protected / healthy / in-flight / inactive）见 CONCEPTS.md〈分支状态流转〉。
 - **Owner 锁（owner / guest session）**：多 CLI / session 并发操作同一 checkout 时，第一笔**变更动作**的 session 占有它，guest 的切分支与编辑被硬拦、引导去 worktree——锁保护 checkout 的可变面，防止两个 session 的改动混进同一工作树；enter / 只读不占有，避免假冲突。占有点、豁免与逃逸口见 CONCEPTS.md〈Owner / guest session〉，实现见 `hooks/lib/context/session.py`。
 
+### 6. repo ≠ code unit（工具链与验证的真实粒度）
+「一个 repo = 一个代码目录」是 devloop 早期的隐含假设，也是这里最容易被重新写回去的错误——每条都在防它复辟：
+- **一个 git 仓可含多个 code unit**：自带工具链、可独立 build/lint/test 的目录（`server/` + `cli/`、`packages/*`、`cmd/*`）。「操作落在哪个 unit」由**操作目标路径**决定（`enclosing_code_unit`），**不是 repo 的单值属性**——单值 `code_dir` 正是多代码目录仓上静默选错目录的根因。
+- **本轮跑哪些 unit 由「本次改动」定**，不由解析来源定：`select_units` → `WorkSet`（显式目标 > dirty 改动投影 > repo-wide 全量），任何一级都**不静默回落 default unit**。lifecycle gate 与 fix-lint / run-test skill **共用这一个入口**——正常路径与防绕过守卫必须是同一份策略，分叉了守卫就拦不住它唯一要拦的东西。
+- **unit 有两个身份，别混**：`path`（绝对）是「这次在哪跑 make」的执行事实；`id`（仓相对）是**持久化身份**，落 `.devloop` 的一切 key 用它。两者都在出生点由唯一构造入口 `CodeUnit.at(path, git_root)` 算清，`id` 必填无默认值——给默认值则漏传就是静默的空 key，让消费方自算又要各自再传 `git_root`（传错 root 就算错）。
+- **验证戳按 unit 键**，不是 repo 级单值：单戳表达不了「A 过 B 挂」，会让一次 partial-fail 的 fan-out 反而给裸 commit 发通行证。key 与执行范围同粒度，这类偏差才不可表达。
+- `default_unit`（`server/` > `backend/` > 仓根）只留作**交互兜底**（按名字 `/enter` 一个仓、cwd 恰在仓根），**不进 correctness 路径**。
+
+模型与落盘细节见 CONCEPTS.md〈code unit〉〈验证状态〉。
+
 ---
 
 ## References
@@ -142,6 +153,6 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 - devops 生命周期 hook（pre_commit/post_commit/pre_mr/post_mr，统一 lint/test/review 等的触发；hook 皆阻塞，异步=发信号+既有 wake）：[`docs/lifecycle-hooks.md`](./docs/lifecycle-hooks.md)
 - 提交期 code-review（signal hook `review`，任意相位由 config 决定：detach 起、审全量 diff、不挡 commit、结果经状态总线 pull 注入；分支有开放 MR 时（典型 post_mr）机会性发评论到 MR 做历史）：[`docs/code-review.md`](./docs/code-review.md)
 - 使用 / 安装 / 配置：[`README.md`](./README.md)
-- 共享术语（repo_dir / repo_code_dir / 保护分支 / PR 模型 / `<PLUGIN_ROOT>`）：[`CONCEPTS.md`](./CONCEPTS.md)
+- 共享术语（repo_dir / **code unit** + default unit / 保护分支 / PR 模型 / 验证状态 / `<PLUGIN_ROOT>`）：[`CONCEPTS.md`](./CONCEPTS.md)
 - 仓库级（marketplace / 多 CLI）：[`../AGENTS.md`](../AGENTS.md)
 - 完整方案与设计决策：plan 文档（开发者本地 `~/.claude/plans/devloop-plugin-0.1.md`）
