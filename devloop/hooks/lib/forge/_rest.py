@@ -57,6 +57,21 @@ class RestClient:
     def get(self, path: str, **params) -> Any:
         return self.request("GET", path, params=params or None)
 
+    def get_all(self, path: str, *, per_page: int = 100, **params) -> list:
+        """Fetch every page from a list endpoint using the page/per_page convention shared
+        by GitHub and GitLab. Keeping the loop here makes "all" a transport guarantee instead
+        of an adapter promise that silently stops at its first page."""
+        out = []
+        page = 1
+        while True:
+            batch = self.get(path, **params, page=page, per_page=per_page)
+            if not isinstance(batch, list):
+                return out
+            out.extend(batch)
+            if len(batch) < per_page:
+                return out
+            page += 1
+
     def post(self, path: str, body: dict) -> Any:
         return self.request("POST", path, body=body)
 

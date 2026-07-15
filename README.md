@@ -74,6 +74,9 @@ devloop is the **loop machine** — the state bus, the hard intercepts, and the 
 
 ## Install (Claude Code)
 
+Runtime requirement: **Python 3.10+**. devloop's launcher automatically selects the first supported
+`python3`, `python`, or versioned `python3.x` on `PATH`; set `DEVLOOP_PYTHON` to force a specific binary.
+
 ```
 /plugin marketplace add https://github.com/qiankunli/devloop.git
 /plugin install devloop@devloop
@@ -83,10 +86,10 @@ Optionally run init once (hooks also auto-init on first `cd` into a repo):
 
 ```
 # Mode A: aggregate workspace (one root holding many git subprojects)
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_workspace.py <your-aggregate-workspace>
+"${CLAUDE_PLUGIN_ROOT}/scripts/python" "${CLAUDE_PLUGIN_ROOT}/scripts/init_workspace.py" <your-aggregate-workspace>
 
 # Mode B: a single git repo
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/init_repo.py
+"${CLAUDE_PLUGIN_ROOT}/scripts/python" "${CLAUDE_PLUGIN_ROOT}/scripts/init_repo.py"
 ```
 
 Forge features (PR/MR creation + state injection) need a token for your host (`GITHUB_TOKEN` / `GITLAB_TOKEN`, or the `forges` block) — see [devloop/README.md](./devloop/README.md) for the unified `~/.devloop/config.json`.

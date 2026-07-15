@@ -16,6 +16,7 @@ from lib.forge import detect_provider, parse_origin  # noqa: E402
 from lib.forge.base import build_window, parse_pr_number, pr_label  # noqa: E402
 from lib.forge.github import GitHubForge  # noqa: E402
 from lib.forge.gitlab import GitLabForge  # noqa: E402
+from lib.forge._rest import RestClient  # noqa: E402
 
 
 def test_build_window():
@@ -34,6 +35,24 @@ def test_build_window():
     # anchor that doesn't exist (404 on get) → silently dropped, still returns newest cap
     nums = [p.number for p in build_window(f, 999, cap=5)]
     assert nums == [20, 19, 18, 17, 16]
+
+
+def test_rest_get_all_pages_until_short_batch():
+    """List endpoints must not silently truncate at the first page: review→label uses the
+    forge as its durable source of truth, and two review rounds can already exceed 50 comments."""
+    c = RestClient.__new__(RestClient)
+    calls = []
+
+    def get(path, **params):
+        calls.append((path, params))
+        return list(range(100)) if params["page"] == 1 else [100]
+
+    c.get = get
+    assert len(c.get_all("comments")) == 101
+    assert calls == [
+        ("comments", {"page": 1, "per_page": 100}),
+        ("comments", {"page": 2, "per_page": 100}),
+    ]
 
 def test_parse_pr_number():
     assert parse_pr_number("https://github.com/o/r/pull/12") == 12
@@ -418,7 +437,7 @@ def test_forge_comments_union_both_surfaces():
 
     class _Cap:
         def __init__(self, by_path): self._by = by_path; self.gets = []
-        def get(self, path, **kw): self.gets.append(path); return self._by.get(path, [])
+        def get_all(self, path, **kw): self.gets.append(path); return self._by.get(path, [])
 
     gh = GitHubForge("api.github.com", "o", "r", "t")
     gh.c = _Cap({

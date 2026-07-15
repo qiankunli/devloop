@@ -67,7 +67,7 @@ background` 后,分两步——
 1. 前台先决议要不要 arm(同步、不唤醒):
 
    ```
-   python3 <PLUGIN_ROOT>/scripts/notify.py should-arm all <repo>
+   <PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/notify.py should-arm all <repo>
    ```
 
    exit 0(打印 `arm:`)= 没有常驻 channel,走第 2 步;exit 1(`skip:`)= 已有 `channel all`
@@ -77,8 +77,8 @@ background` 后,分两步——
    事件各自独立唤醒、互不抢占:
 
    ```
-   python3 <PLUGIN_ROOT>/scripts/notify.py waiter review <repo>
-   python3 <PLUGIN_ROOT>/scripts/notify.py waiter forge  <repo>
+   <PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/notify.py waiter review <repo>
+   <PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/notify.py waiter forge  <repo>
    ```
 
 每个 waiter 盯自己那段(review.json / pr.json),其源**首个终态事件**即唤醒本会话、内容 inline
@@ -98,12 +98,12 @@ One provider-neutral, config-driven surface for **inspecting / managing an exist
 is gcampr's job, above.
 
 ```
-python3 <PLUGIN_ROOT>/scripts/pr.py show     <number|url>      # state/branches/merge-readiness/comments
-python3 <PLUGIN_ROOT>/scripts/pr.py list     [--limit N] [--branch B]
-python3 <PLUGIN_ROOT>/scripts/pr.py update   <number> --title "..." --description "..." --target-branch <b>
-python3 <PLUGIN_ROOT>/scripts/pr.py close    <number>          # close without merging
-python3 <PLUGIN_ROOT>/scripts/pr.py findings <number> [--pending]  # findings + 其 ccr:label verdict
-python3 <PLUGIN_ROOT>/scripts/pr.py reply    <number> <comment-id> "<body>"  # 回到某 comment 的线程
+<PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/pr.py show     <number|url>      # state/branches/merge-readiness/comments
+<PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/pr.py list     [--limit N] [--branch B]
+<PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/pr.py update   <number> --title "..." --description "..." --target-branch <b>
+<PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/pr.py close    <number>          # close without merging
+<PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/pr.py findings <number> [--pending]  # findings + 其 ccr:label verdict
+<PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/pr.py reply    <number> <comment-id> "<body>"  # 回到某 comment 的线程
 ```
 
 `findings` / `reply` 是打标闭环的读写两半;判定纪律（必须对照真实代码求证、四档词表）在
@@ -120,8 +120,8 @@ created **server-side** — no `git push --tags`, no working tree, no push guard
 `--target <sha>` to mistype (a mistyped sha shipped a broken release before this existed).
 
 ```
-python3 <PLUGIN_ROOT>/scripts/release.py create <version> [--target <ref>] [--title "..."] [--notes "..." | --notes-file <path>]
-python3 <PLUGIN_ROOT>/scripts/release.py latest                         # the current published release
+<PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/release.py create <version> [--target <ref>] [--title "..."] [--notes "..." | --notes-file <path>]
+<PLUGIN_ROOT>/scripts/python <PLUGIN_ROOT>/scripts/release.py latest                         # the current published release
 ```
 
 - `<version>` must be **semver** (`vX.Y.Z`) and strictly greater than the last release — the CLI
