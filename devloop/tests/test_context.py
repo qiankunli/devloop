@@ -80,7 +80,7 @@ def test_turn_block_stable_across_clock_when_state_unchanged():
                         "generated_at": base.now(), "comments": []})
     store.save_segment(G, "pr", {"branch": branch, "provider": "github",
                                  "label_pending": 2, "label_pending_key": "setA"})
-    RepoContext.load(G).mark_lint_passed(".")     # Validation: <unit>: lint=<绝对时间戳>
+    RepoContext.load(G).mark_lint_passed(".", "fp1")   # Validation: <unit>: lint=<绝对时间戳>
 
     t1 = RepoContext.load(G).turn_text()
     assert "Review: running" in t1 and "待打标" in t1 and "lint=" in t1   # 别测了个空 block
@@ -140,9 +140,9 @@ def test_context_segments():
     assert ctx.branch.local.name == "feat/a" and ctx.branch.pr_number is None and ctx.prs == []
 
     # a validation mark writes only its branch's validation.json
-    ctx.mark_lint_passed(".")
+    ctx.mark_lint_passed(".", "fp1")
     assert (D / "branches/feat/a/validation.json").exists()
-    assert RepoContext.load(R).validation.unit(".").edits_since_lint == 0
+    assert RepoContext.load(R).validation.unit(".").lint_fingerprint == "fp1"
 
     # monitor-owned pr write, branch-keyed; provider is repo-level (header, not per-PR)
     ctx = RepoContext.load(R)
@@ -1113,7 +1113,7 @@ def test_state_domains_worktree():
     # 白跑一遍 lint；且 key 随 worktree 增删无限累积。
     from lib.repo_layout import CodeUnit
     assert CodeUnit.at(W, W).id == CodeUnit.at(M, M).id == "."
-    wt_ctx.mark_lint_passed(CodeUnit.at(W, W).id)
+    wt_ctx.mark_lint_passed(CodeUnit.at(W, W).id, "fp1")
     RepoContext.refresh_all(M)
     assert (Path(M) / ".devloop/branches/feat/wt/validation.json").exists()
     assert (Path(M) / ".devloop/branches/feat/wt/branch.json").exists()

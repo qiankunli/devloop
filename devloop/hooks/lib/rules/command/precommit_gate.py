@@ -38,21 +38,29 @@ class PrecommitGateRule(Rule):
         # gate 挡住了 gcampr，却给裸 `git commit` 发了通行证。正常路径与这条防绕过守卫必须是同一
         # 份策略，否则守卫拦不住它唯一要拦的东西。
         ws = repo_resolve.select_units(git_root)
-        required = [u.id for u in ws.units if u.lint_target() is not None]
+        required = [u for u in ws.units if u.lint_target() is not None]
         if not required:
             # 本轮没有任何带 lint target 的 unit：dispatch 的 lint 对它们本来就是干净跳过、永远
             # 盖不出戳，硬要戳等于把裸 commit 锁死（跑 fix-lint 也解不开）。与 checks.lint 对齐。
             return []
-        unverified = [(uid, val.unit(uid)) for uid in required]
-        unverified = [(uid, v) for uid, v in unverified if not v.last_lint_at or v.edits_since_lint]
+        # 通行证 = 「lint 跑过」+「跑的就是现在这份内容」。第二条比指纹，不比编辑计数：计数由
+        # PostToolUse 报，而它认不出 apply_patch / MultiEdit / Bash 里的改动——那个 0 的意思是
+        # 「没人报告」，不是「没改过」（见 repo_resolve.unit_fingerprint）。指纹算不出（None）
+        # 也按未验证：宁可多拦一次，不可拿不准还放行。
+        unverified: list[tuple[str, str]] = []
+        for u in required:
+            v = val.unit(u.id)
+            if not v.last_lint_at:
+                unverified.append((u.id, "lint has never run for this branch."))
+                continue
+            current = repo_resolve.unit_fingerprint(git_root, u)
+            if not current or not v.lint_fingerprint or current != v.lint_fingerprint:
+                unverified.append((u.id, "content changed since its last lint pass."))
         if not unverified:
             return []
         parts = ["⚠️  Refusing `git commit`: lint is in the pre_commit gate and is stale."]
-        for uid, v in unverified:
-            if not v.last_lint_at:
-                parts.append(f"  {uid}: lint has never run for this branch.")
-            else:
-                parts.append(f"  {uid}: {v.edits_since_lint} edit(s) since last lint pass.")
+        for uid, why in unverified:
+            parts.append(f"  {uid}: {why}")
         parts.append("Commit via gcam/gcampr instead (the gate runs lint inline), or run the fix-lint skill, then retry.")
         parts.append("Adjust the gate under `lifecycle` in ~/.devloop/config.json.")
         return [Finding(rule=self.name, severity=Severity.DENY, message="\n".join(parts), locator=" ".join(target.argv))]

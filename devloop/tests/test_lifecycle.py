@@ -230,6 +230,65 @@ def test_code_unit_test_target_detect_matches_execute():
     # 身份在出生点算清，消费方直接读 .id（不再各自拿 git_root 重推）
     assert CodeUnit.at(f"{D}/ci", D).id == "ci" and CodeUnit.at(D, D).id == "."
 
+def test_lint_passport_is_bound_to_content_not_to_edit_events():
+    """lint 通行证绑**内容指纹**，不绑「有没有人报告过改动」。
+
+    旧机制（`edits_since_lint`）由 PostToolUse 计数，而那个 hook 只认 Edit/Write/NotebookEdit：
+    **Codex 用 apply_patch 改文件一次都不会计**（它的 matcher 甚至写了 apply_patch，handler 却
+    第一行就 return，意图与实现早已漂开），Bash 里的 `sed -i` / 脚本更不会。于是计数器读出的 0
+    是「没人报告」而不是「没改过」——一个只在部分 CLI、部分工具上生效的计数器守不住硬 gate。
+    这条测试就模拟那类「hook 看不见的改动」：**不经任何 devloop hook**，直接写文件。
+    """
+    import json as _json
+
+    from lib import repo_layout, repo_resolve
+    from lib.context import RepoContext
+    from lib.lifecycle import checks
+    bash = _load_hook("pretool_policy_bash")
+
+    R = str(Path("/tmp/dlut_passport").resolve())   # canonical：config 的 repos key 也用它
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/cli"); os.makedirs(f"{R}/.devloop")
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    _git(R, "checkout", "-q", "-b", "feat/x")
+    Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
+    Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\n")
+    Path(f"{R}/.devloop/config.json").write_text(
+        _json.dumps({"lifecycle": {"repos": {R: {"pre_commit": ["lint"]}}}}))
+    _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
+    RepoContext.refresh_all(R)
+
+    def commit_denied():
+        return bash.decide(_hook_input("Bash", {"cwd": R, "session_id": "",
+                                                "tool_input": {"command": "git commit -m x"}}))
+
+    Path(f"{R}/cli/a.py").write_text("x = 1\n")
+    assert commit_denied(), "lint 从未跑过 → 必须拦"
+    assert checks.lint(R).ok
+    assert commit_denied() is None, "lint 刚过、内容没动 → 必须放行"
+
+    # 「hook 看不见的改动」：直接写盘，不经 Edit/Write 事件。旧的计数器在这里恒为 0 → 放行。
+    Path(f"{R}/cli/a.py").write_text("x = 2\n")
+    assert commit_denied(), "改过 tracked 文件却仍放行 —— 正是计数器机制的洞"
+
+    # 未跟踪的新文件改内容：路径没变，diff 也看不出来，但 lint 会 lint 它 → 指纹必须变
+    assert checks.lint(R).ok
+    Path(f"{R}/cli/newfile.py").write_text("y = 1\n")     # 新增未跟踪
+    assert commit_denied()
+    assert checks.lint(R).ok
+    Path(f"{R}/cli/newfile.py").write_text("y = 2\n")     # 未跟踪文件**改内容**，路径不变
+    assert commit_denied(), "未跟踪文件的内容改动必须让通行证作废（diff 抓不到，hash bytes 才抓得到）"
+
+    # 删除同样让通行证作废（tombstone）
+    assert checks.lint(R).ok
+    os.remove(f"{R}/cli/newfile.py")
+    assert commit_denied()
+
+    # 指纹算不出（None）→ 按未验证，fail-closed：宁可多拦一次，不可拿不准还放行
+    unit = repo_layout.CodeUnit.at(f"{R}/cli", R)
+    assert repo_resolve.unit_fingerprint("/tmp/definitely-not-a-repo-xyz", unit) is None
+
+
 def test_dispatch_reaches_the_real_lint_handler():
     """dispatch 必须能真的调到**内置** lint/test handler，而不只是调到测试用的假 registry。
 
