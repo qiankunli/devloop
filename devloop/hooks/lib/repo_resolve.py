@@ -60,7 +60,7 @@ def default_unit(git_root: str | Path, ctx: RepoContext | None = None) -> repo_l
     ctx = ctx if ctx is not None else RepoContext.load(git_root)
     cached = ctx.repo.code_dir if ctx and ctx.repo.code_dir else None
     if cached:
-        return repo_layout.CodeUnit(cached, repo_layout.detect_language(cached))
+        return repo_layout.CodeUnit.at(cached, git_root)
     return repo_layout.default_code_unit(git_root)
 
 

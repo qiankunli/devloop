@@ -178,11 +178,11 @@ def test_code_unit_lint_target():
     D = "/tmp/dlut_lint"
     shutil.rmtree(D, ignore_errors=True); os.makedirs(D)
     Path(f"{D}/Makefile").write_text("lint:\n\ttrue\n")
-    assert CodeUnit(D).lint_target() == "lint"
+    assert CodeUnit.at(D, D).lint_target() == "lint"
     Path(f"{D}/Makefile").write_text("lint:\n\ttrue\nlint-ci:\n\ttrue\n")
-    assert CodeUnit(D).lint_target() == "lint-ci"
+    assert CodeUnit.at(D, D).lint_target() == "lint-ci"
     Path(f"{D}/Makefile").write_text("test:\n\ttrue\n")
-    assert CodeUnit(D).lint_target() is None
+    assert CodeUnit.at(D, D).lint_target() is None
 
 def test_message_file_and_stdin_input():
     """Commit message via --message-file (path) or -F - (stdin) — the shell-escaping-free path
