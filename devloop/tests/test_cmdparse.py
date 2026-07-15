@@ -64,6 +64,19 @@ def test_cmdparse_commands():
     assert cmdparse.first_token_is("make test", "make") is True
     assert cmdparse.first_token_is('echo "make test"', "make") is False
 
+def test_cmdparse_docstring_api_list_is_real():
+    """模块 docstring 自称的 Public API 必须真的存在——删了函数忘删文档，读者会照着调一个
+    不存在的名字。这类漂移是机械可查的，别留给下一次 code-review（`segments` 被删后就在那份
+    清单里滞留了一版，正是 review 抓到的）。"""
+    import re as _re
+    doc = cmdparse.__doc__ or ""
+    api = doc.split("Public API", 1)[1] if "Public API" in doc else ""
+    assert api, "模块 docstring 丢了 Public API 段"
+    # 反引号里首字母小写的标识符 = 函数名（大写的是 Invocation/GitInvocation 这些类型，
+    # `.env` 这类带点的是属性，都不在此列）
+    for name in _re.findall(r"`([a-z_][a-z0-9_]*)`", api):
+        assert hasattr(cmdparse, name), f"docstring 里的 Public API `{name}` 不存在"
+
 def test_git_invocation_cd_prefix():
     """git_invocations 按位置跟踪 cd 前缀(取代 last_cd_target)——聚合工作区里 session
     cwd 停在 workspace 根,inp.cwd 不是命令真正触达的仓库;相对 cd 链按 shell 语义组合
@@ -141,7 +154,7 @@ def test_cd_position_aware_attribution():
 
 def test_cmdparse_glued_operators():
     """运算符紧贴词尾时也要断句:shlex.split 会把 `jsonpath='...';` 的 `;` 吞进
-    token,segments() 断不开句——cd 落到段中而非段头,workspace guard 的 cd 豁免
+    token,于是断不开句——cd 落到段中而非段头,workspace guard 的 cd 豁免
     失效,kubectl+cd+uv 串被误拦。punctuation_chars 化后修复。"""
     from lib.cmdtree import cmdparse
     cmd = ("kubectl -o jsonpath='{range .items[*]}{\"\\n\"}{end}'; "
@@ -189,6 +202,15 @@ def test_cmdparse_command_invocations():
     uv = [v for v in ci("(cd sub); uv run pytest") if v.argv[0] == "uv"][0]
     assert uv.cd is None
     assert ci("PYTHONPATH=. pytest x")[0].argv[0] == "pytest"   # env 同 commands() 剥离
+    # env 被剥掉但**不丢**：「带没带 env 前缀」是调用自身的事实,有规则据此判定
+    # (naked-pytest: `PYTHONPATH=. pytest` 不算裸)。它与 cd 出自同一次解析,规则才可能同时要到
+    # env 和 run_dir——env 曾只能靠另一个**不追踪 cd** 的 walker 拿原始 token,那条路上二者只能选一个。
+    assert ci("PYTHONPATH=. pytest x")[0].env == ["PYTHONPATH=."]
+    assert ci("pytest x")[0].env == []
+    assert ci("A=1 B=2 pytest")[0].env == ["A=1", "B=2"]
+    inv = ci("cd cli && PYTHONPATH=. pytest")[-1]
+    assert inv.env == ["PYTHONPATH=."] and inv.cd == "cli" and inv.run_dir("/r") == Path("/r/cli")
+    assert ci("git -C sub push")[0].env == []                   # GitInvocation 也带 env 字段
     # run_dir 把 cd 叠在 base 上
     assert Inv(argv=["uv"], cd="sub").run_dir("/ws") == Path("/ws/sub")
     assert Inv(argv=["uv"], cd=None).run_dir("/ws") == Path("/ws")

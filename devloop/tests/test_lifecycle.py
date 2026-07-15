@@ -113,6 +113,48 @@ def test_migrated_command_rules_parity():
     RepoContext.refresh_all(G)
     assert d("git commit -m x", cwd=G) is None
 
+def test_command_guards_judge_the_parsed_run_dir():
+    """命令侧 guard 必须按**解析后的 run_dir**（cd/-C 已算完）判，不能回头读 session 原始 cwd。
+
+    这两条红过的样子：`cd cli && pip install x` / `cd cli && pytest` 里，parser 早把 run_dir
+    算成 cli/ 了，guard 却拿 `ctx.cwd`（= 仓根，cd **之前**的位置）去问 code unit——于是不管
+    cd 到哪都在问默认 unit：该拦的不拦（下面 R），不该拦的误拦（下面 U）。
+    """
+    from lib.context import RepoContext
+    bash = _load_hook("pretool_policy_bash")
+
+    def d(cmd, cwd):
+        return bash.decide(_hook_input("Bash", {"cwd": cwd, "session_id": "",
+                                                "tool_input": {"command": cmd}}))
+
+    # R：仓根是**非** uv、无 make test；cli/ 是 uv 仓、有 make test → 该拦的必须拦
+    R = "/tmp/dlut_rundir"; shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/cli")
+    _git(R, "init", "-q")
+    Path(f"{R}/Makefile").write_text("build:\n\ttrue\n")           # 根：无 test target
+    Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
+    Path(f"{R}/cli/uv.lock").write_text("")
+    Path(f"{R}/cli/Makefile").write_text("test:\n\techo hi\n")
+    RepoContext.refresh_all(R)
+    assert d("pip install requests", cwd=R) is None                # 根非 uv → 放行
+    assert d("pytest", cwd=R) is None                              # 根无 make test → 放行
+    assert d("cd cli && pip install requests", cwd=R), "cd cli 后是 uv 仓，pip install 必须拦"
+    assert "cli" in (d("cd cli && pytest", cwd=R) or ""), "cd cli 后有 make test，裸 pytest 必须拦"
+    # env 前缀仍放行：env 与 cd 现在出自同一次解析，别为了拿 run_dir 把 env 判定弄丢
+    assert d("cd cli && PYTHONPATH=. pytest", cwd=R) is None
+    # 子 shell 的 cd 不外泄（cd scope 是 parser 的既有语义，guard 白拿）
+    assert d("(cd cli) && pytest", cwd=R) is None
+
+    # U：反向——仓根是 uv 仓，tools/ 不是 → 不该拦的不许误拦
+    U = "/tmp/dlut_rundir_rev"; shutil.rmtree(U, ignore_errors=True); os.makedirs(f"{U}/tools")
+    _git(U, "init", "-q")
+    Path(f"{U}/pyproject.toml").write_text("[project]\nname = 'root'\nversion = '0'\n")
+    Path(f"{U}/uv.lock").write_text("")
+    Path(f"{U}/tools/pyproject.toml").write_text("[project]\nname = 'tools'\nversion = '0'\n")
+    RepoContext.refresh_all(U)
+    assert d("pip install requests", cwd=U)                        # 根是 uv → 拦
+    assert d("cd tools && pip install requests", cwd=U) is None, "tools 无 uv.lock，不该按仓根误拦"
+
+
 def test_lifecycle_dispatch():
     """facade 机制：并发 join + 聚合。gate fail / 异常 fail-closed / 未知 hook 可见 /
     signal hook 不挡且其 relay 进 to_launch / 空配置 no-op / 未知相位抛。"""
