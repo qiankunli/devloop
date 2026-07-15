@@ -13,9 +13,14 @@ from lib import config
 from lib.lifecycle.base import BackgroundSpec, HookResult
 
 
-def review(repo: str) -> HookResult:
+def review(repo: str, paths: list[str] | None = None) -> HookResult:
     """detach 起 run_review——审整条分支的全量改动（origin/<target>..HEAD），结果写 review.json，
-    且分支有开放 MR 时发评论做历史。挂哪个相位由 config 决定（不限 post_mr）。"""
+    且分支有开放 MR 时发评论做历史。挂哪个相位由 config 决定（不限 post_mr）。
+
+    `paths`（相位的改动范围）**刻意不用**：review 的范围恒是整条分支 vs target，与挂在哪个相位
+    无关——挂 post_commit 也审全条分支，而不是只审刚落地那个 commit。范围由 run_review 在后台
+    自己算（detach 起时才跑，那时的 HEAD 才是最终态）。签名收下它只为满足 handler 契约。"""
+    del paths
     script = str(config.plugin_root() / "scripts" / "run_review.py")
     spec = BackgroundSpec("review", ["python3", script, "--repo", repo],
                           note="ocr review origin/<target>..HEAD → .devloop/review.json + MR comment")

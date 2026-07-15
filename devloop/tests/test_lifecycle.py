@@ -10,7 +10,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from _testkit import _git, _hook_input, _load_hook, run_main  # noqa: E402  (bootstrap first)
+from _testkit import _git, _hook_input, _load_hook, _load_script, run_main  # noqa: E402  (bootstrap first)
 
 
 def test_code_policy_engine():
@@ -119,12 +119,21 @@ def test_lifecycle_dispatch():
     from lib import lifecycle as lc
     HR, BG = lc.HookResult, lc.BackgroundSpec
 
+    seen: list = []
     reg = {
-        "ok":   lambda repo: HR("ok", ok=True, summary="fine"),
-        "bad":  lambda repo: HR("bad", ok=False, summary="boom"),
-        "boom": lambda repo: (_ for _ in ()).throw(RuntimeError("kaboom")),
-        "sig":  lambda repo: HR("sig", ok=True, relay=BG("sig", ["run", "x"])),
+        "ok":   lambda repo, paths: HR("ok", ok=True, summary="fine"),
+        "bad":  lambda repo, paths: HR("bad", ok=False, summary="boom"),
+        "boom": lambda repo, paths: (_ for _ in ()).throw(RuntimeError("kaboom")),
+        "sig":  lambda repo, paths: HR("sig", ok=True, relay=BG("sig", ["run", "x"])),
+        "spy":  lambda repo, paths: (seen.append(paths), HR("spy", ok=True))[1],
     }
+
+    # 相位范围下传到 handler：dispatch 不解释 paths，只如实转交（None 与 [] 是两种不同的语义，
+    # 见 select_units——「不知道范围」vs「知道且为空」，dispatch 不得把它们抹平）
+    lc.dispatch("post_commit", "/r", names=["spy"], registry=reg, paths=["cli/a.py"])
+    lc.dispatch("post_commit", "/r", names=["spy"], registry=reg, paths=[])
+    lc.dispatch("post_commit", "/r", names=["spy"], registry=reg)
+    assert seen == [["cli/a.py"], [], None], seen
 
     # 全过 → proceed；ex.map 保序
     r = lc.dispatch("pre_commit", "/r", names=["ok", "sig"], registry=reg)
@@ -141,7 +150,7 @@ def test_lifecycle_dispatch():
     r = lc.dispatch("pre_commit", "/r", names=["nope"], registry=reg)
     assert not r.proceed and "unknown" in r.results[0].summary
     # 软提示（advisory）失败 → 通报但不阻断（proceed），进 advisory_failures 而非 blocking_failures
-    reg["soft"] = lambda repo: HR("soft", ok=False, advisory=True, summary="advisory boom")
+    reg["soft"] = lambda repo, paths: HR("soft", ok=False, advisory=True, summary="advisory boom")
     r = lc.dispatch("pre_commit", "/r", names=["ok", "soft"], registry=reg)
     assert r.proceed
     assert [x.name for x in r.advisory_failures] == ["soft"] and r.blocking_failures == []
@@ -178,6 +187,97 @@ def test_code_unit_test_target_detect_matches_execute():
     assert CodeUnit.at(f"{D}/go", D).test_command() == ("go", "test", "./...")
     # 身份在出生点算清，消费方直接读 .id（不再各自拿 git_root 重推）
     assert CodeUnit.at(f"{D}/ci", D).id == "ci" and CodeUnit.at(D, D).id == "."
+
+def test_dispatch_reaches_the_real_lint_handler():
+    """dispatch 必须能真的调到**内置** lint/test handler，而不只是调到测试用的假 registry。
+
+    这条红过、且被 code-review 抓到：dispatch 曾位置传 `handler(repo, paths)`，而 lint/test 的
+    `paths` 在 `*,` 之后是 keyword-only → TypeError → 被 gate 的 fail-closed 收敛成 ok=False
+    → **每一次 gcampr 都被静默挡掉**（不是崩，是「lint 没过」）。而全部 dispatch 测试都用假
+    registry（`lambda repo, paths:` 位置可接），真 handler 一次没被 dispatch 调到，所以全绿——
+    这条测试补的就是那个洞：假替身接得住的调用约定，真身未必接得住。
+    """
+    import json as _json
+
+    from lib import lifecycle as lc
+    from lib.context import RepoContext
+
+    # macOS 的 /tmp 是指向 /private/tmp 的软链：config 的 repos key 用 canonical 路径，若拿
+    # 未解析的 /tmp/... 去 dispatch 就匹配不上、names 落空 → results 为空 → proceed 空过为 True，
+    # 这条测试会「绿着什么都没测」。故全程用 canonical 路径。
+    R = str(Path("/tmp/dlut_dispatch_real").resolve())
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/cli"); os.makedirs(f"{R}/.devloop")
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
+    Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\ntest:\n\ttrue\n")
+    Path(f"{R}/.devloop/config.json").write_text(
+        _json.dumps({"lifecycle": {"repos": {R: {"pre_commit": ["lint", "test"]}}}}))
+    _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
+    RepoContext.refresh_all(R)
+    Path(f"{R}/cli/a.py").write_text("x = 1\n")
+
+    res = lc.dispatch("pre_commit", R)          # 不给 registry → 走真实 _BUILTIN 解析
+    # 先钉住「真的跑了」：config 没读到 → names 空 → results 空 → proceed 空过为 True，
+    # 那样这条测试会绿着什么都没测（正是它要防的那类假绿）。
+    assert {r.name for r in res.results} == {"lint", "test"}, res.results
+    assert res.proceed, [f"{r.name}: {r.summary}" for r in res.results]
+    assert all("errored" not in r.summary for r in res.results), \
+        [r.summary for r in res.results]        # TypeError 会被 fail-closed 收敛成这个形状
+    # 范围确实下传到了真 handler（而不是被它自己重算）
+    assert all("changed files under: cli" in r.summary for r in res.results)
+
+
+def test_phase_scope_survives_a_clean_tree():
+    """commit 之后（工作树已干净）的相位必须仍按**本次改动**收范围，不得退化成跑全仓。
+
+    这条红过的样子：post_commit / pre_mr 的 handler 手里只有 repo，去读工作树得到「什么都没改」
+    → select_units 读成「不知道范围」→ repo-wide 枚举全部 unit → 一个你根本没碰、却有存量 lint
+    错误的 unit 让 gate fail → commit 已落地，push 和 MR 全被拦。
+    """
+    from lib import repo_resolve
+    from lib.lifecycle import checks
+    sgo = _load_script("smart_git_ops")
+
+    R = "/tmp/dlut_phase_scope"
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/cli"); os.makedirs(f"{R}/legacy")
+    _git(R, "init", "-q", "-b", "main")
+    _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\n")            # 你改的 unit：干净
+    Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
+    Path(f"{R}/legacy/Makefile").write_text("lint:\n\tfalse\n")        # 没碰的 unit：存量坏 lint
+    Path(f"{R}/legacy/pyproject.toml").write_text("[project]\nname = 'legacy'\nversion = '0'\n")
+    _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
+    _git(R, "checkout", "-q", "-b", "feat/x")
+    Path(f"{R}/cli/a.py").write_text("x = 1\n")
+    _git(R, "add", "-A"); _git(R, "commit", "-qm", "touch cli only")   # 工作树现在是干净的
+
+    # 相位边界各自算出的范围：post_commit=刚落地那个 commit；pre_mr=整条分支 vs target
+    assert repo_resolve.committed_paths(R) == ["cli/a.py"]
+    assert repo_resolve.range_paths(R, "main") == ["cli/a.py"]
+    assert sgo.phase_paths(R, "pre_commit", "main") is None            # pre_commit：工作树即答案
+    assert sgo.phase_paths(R, "post_commit", "main") == ["cli/a.py"]
+
+    # 有范围 → 只跑 cli，legacy 的存量坏 lint 拦不到你
+    res = checks.lint(R, paths=["cli/a.py"])
+    assert res.ok, f"没碰 legacy 却被它拦下：{res.summary}"
+    assert "changed files under: cli" in res.summary and "legacy" not in res.summary
+
+    # 对照：范围丢失（老行为）→ clean tree 回落 repo-wide → 被无关 unit 拦下
+    degraded = checks.lint(R)
+    assert not degraded.ok and "clean tree, all units" in degraded.summary
+
+    # 「知道范围且为空」≠「不知道范围」：前者 0 个 unit 干净跳过，后者才全跑
+    assert repo_resolve.select_units(R, paths=[]).units == ()
+    assert len(repo_resolve.select_units(R).units) == 2
+
+    # git 算不出范围 → **None（不知道）而非 []（知道且为空）**。gitcmd 是 failure-safe 的，
+    # 两者原始输出都是空；读成 [] 就等于 origin/<target> 没 fetch 时静默跳过整个 lint gate。
+    assert repo_resolve.range_paths(R, "origin/nope-not-fetched") is None
+    assert repo_resolve.committed_paths(R, "deadbeef") is None
+    assert sgo.phase_paths(R, "pre_mr", "nope-not-fetched") is None    # → handler 回落全跑，不放行
+
 
 def test_lifecycle_checks_follow_changed_code_unit():
     """gcampr lifecycle 与 run-test 必须共用 WorkSet：只改 cli 时不得跑仓根 test。"""
