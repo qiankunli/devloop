@@ -188,6 +188,46 @@ def test_code_unit_test_target_detect_matches_execute():
     # 身份在出生点算清，消费方直接读 .id（不再各自拿 git_root 重推）
     assert CodeUnit.at(f"{D}/ci", D).id == "ci" and CodeUnit.at(D, D).id == "."
 
+def test_dispatch_reaches_the_real_lint_handler():
+    """dispatch 必须能真的调到**内置** lint/test handler，而不只是调到测试用的假 registry。
+
+    这条红过、且被 code-review 抓到：dispatch 曾位置传 `handler(repo, paths)`，而 lint/test 的
+    `paths` 在 `*,` 之后是 keyword-only → TypeError → 被 gate 的 fail-closed 收敛成 ok=False
+    → **每一次 gcampr 都被静默挡掉**（不是崩，是「lint 没过」）。而全部 dispatch 测试都用假
+    registry（`lambda repo, paths:` 位置可接），真 handler 一次没被 dispatch 调到，所以全绿——
+    这条测试补的就是那个洞：假替身接得住的调用约定，真身未必接得住。
+    """
+    import json as _json
+
+    from lib import lifecycle as lc
+    from lib.context import RepoContext
+
+    # macOS 的 /tmp 是指向 /private/tmp 的软链：config 的 repos key 用 canonical 路径，若拿
+    # 未解析的 /tmp/... 去 dispatch 就匹配不上、names 落空 → results 为空 → proceed 空过为 True，
+    # 这条测试会「绿着什么都没测」。故全程用 canonical 路径。
+    R = str(Path("/tmp/dlut_dispatch_real").resolve())
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/cli"); os.makedirs(f"{R}/.devloop")
+    _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
+    Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
+    Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\ntest:\n\ttrue\n")
+    Path(f"{R}/.devloop/config.json").write_text(
+        _json.dumps({"lifecycle": {"repos": {R: {"pre_commit": ["lint", "test"]}}}}))
+    _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
+    RepoContext.refresh_all(R)
+    Path(f"{R}/cli/a.py").write_text("x = 1\n")
+
+    res = lc.dispatch("pre_commit", R)          # 不给 registry → 走真实 _BUILTIN 解析
+    # 先钉住「真的跑了」：config 没读到 → names 空 → results 空 → proceed 空过为 True，
+    # 那样这条测试会绿着什么都没测（正是它要防的那类假绿）。
+    assert {r.name for r in res.results} == {"lint", "test"}, res.results
+    assert res.proceed, [f"{r.name}: {r.summary}" for r in res.results]
+    assert all("errored" not in r.summary for r in res.results), \
+        [r.summary for r in res.results]        # TypeError 会被 fail-closed 收敛成这个形状
+    # 范围确实下传到了真 handler（而不是被它自己重算）
+    assert all("changed files under: cli" in r.summary for r in res.results)
+
+
 def test_phase_scope_survives_a_clean_tree():
     """commit 之后（工作树已干净）的相位必须仍按**本次改动**收范围，不得退化成跑全仓。
 

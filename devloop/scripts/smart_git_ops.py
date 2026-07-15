@@ -585,7 +585,12 @@ def phase_paths(repo: str, phase: str, target: str) -> list[str] | None:
         return None                                    # 工作树即答案，与 handler 默认语境一致
     if phase == "post_commit":
         return repo_resolve.committed_paths(repo)
-    return repo_resolve.range_paths(repo, f"origin/{target}")
+    if phase in ("pre_mr", "post_mr"):
+        return repo_resolve.range_paths(repo, f"origin/{target}")
+    # 新相位必须在上面显式选一种取法。**不 fallthrough 到分支范围**：那会让一个未来的相位
+    # （如 pre_push）悄悄拿到「整条分支」的语义而看不出问题——而「每个相位的答案不同」正是本
+    # 函数存在的全部理由，默认值一填就把这个约定架空了。None = 不知道 → handler 保守全跑。
+    return None
 
 
 def run_lifecycle_gate(repo: str, phase: str, plan: list[str], target: str) -> lifecycle.DispatchResult:

@@ -129,7 +129,11 @@ def dispatch(
         if handler is None:
             return HookResult(name=name, ok=False, summary=f"unknown lifecycle hook {name!r}")
         try:
-            return handler(repo, paths)
+            # `paths=` 按**关键字**传：handler 各自决定把它声明成位置参数（`review`）还是
+            # keyword-only（`lint`/`test` 把它放在 `*,` 之后，与 capture/unit 同列）。位置传在
+            # 后者上炸 TypeError，而 gate 的 fail-closed 会把异常收敛成 ok=False——那不是崩，
+            # 是**静默挡掉每一次 commit**。契约规定的是参数名，不是它的位置。
+            return handler(repo, paths=paths)
         except Exception as e:  # gate fail-closed
             return HookResult(name=name, ok=False, summary=f"{name} errored: {e}")
 
