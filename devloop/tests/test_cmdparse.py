@@ -64,6 +64,19 @@ def test_cmdparse_commands():
     assert cmdparse.first_token_is("make test", "make") is True
     assert cmdparse.first_token_is('echo "make test"', "make") is False
 
+def test_cmdparse_docstring_api_list_is_real():
+    """模块 docstring 自称的 Public API 必须真的存在——删了函数忘删文档，读者会照着调一个
+    不存在的名字。这类漂移是机械可查的，别留给下一次 code-review（`segments` 被删后就在那份
+    清单里滞留了一版，正是 review 抓到的）。"""
+    import re as _re
+    doc = cmdparse.__doc__ or ""
+    api = doc.split("Public API", 1)[1] if "Public API" in doc else ""
+    assert api, "模块 docstring 丢了 Public API 段"
+    # 反引号里首字母小写的标识符 = 函数名（大写的是 Invocation/GitInvocation 这些类型，
+    # `.env` 这类带点的是属性，都不在此列）
+    for name in _re.findall(r"`([a-z_][a-z0-9_]*)`", api):
+        assert hasattr(cmdparse, name), f"docstring 里的 Public API `{name}` 不存在"
+
 def test_git_invocation_cd_prefix():
     """git_invocations 按位置跟踪 cd 前缀(取代 last_cd_target)——聚合工作区里 session
     cwd 停在 workspace 根,inp.cwd 不是命令真正触达的仓库;相对 cd 链按 shell 语义组合

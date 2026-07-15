@@ -19,8 +19,8 @@ stay untouched.
 
 Best-effort by design: guards are the secondary net; the smart_*.sh scripts are primary
 (AGENTS.md §3). Requires Python 3.12+. Public API — `commands` / `command_invocations` /
-`git_invocations` (→ `Invocation` / `GitInvocation`, with `.run_dir(base)`) / `first_token_is`
-/ `segments`.
+`git_invocations` (→ `Invocation` / `GitInvocation`, carrying `.env` / `.cd` / `.dash_c` and
+`.run_dir(base)`) / `first_token_is`.
 """
 from __future__ import annotations
 
