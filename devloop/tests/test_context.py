@@ -421,8 +421,14 @@ def test_select_units_by_change():
     assert names(repo_resolve.select_units(repo)) == ["cli", "server"]
 
 def test_discover_root_and_sub_units():
-    """repo-wide 枚举不漏根 unit：根有强 marker（go.mod）+ 子目录也有独立 unit 时，两者都在，
-    根不被子 unit 挤掉（回归 PR #81 review finding）。"""
+    """code unit 的身份 = **语言项目清单**，且仓根不是特例。两条都红过：
+
+    1. 补根 unit 曾用 `default_code_unit`（`server/` > `backend/` > 根的**选择**启发式）来探——
+       `server/` 存在时它返回 `server/`，而 `server/` 早被 walk 收过，于是「补根」永远补不进、
+       根的 go.mod 从 catalog 里消失。旧 fixture 只造了「无 server/」那支，所以一直绿。
+    2. `Makefile` 曾算 marker，于是 `docs/` 里一个 sphinx Makefile 就成了 code unit。Makefile
+       是 unit 的动作入口（怎么 lint/test），不是身份。
+    """
     from lib import repo_layout
     R = "/tmp/dlut_discover"
     shutil.rmtree(R, ignore_errors=True)
@@ -431,7 +437,34 @@ def test_discover_root_and_sub_units():
     _git(repo, "init", "-q")
     Path(f"{repo}/go.mod").write_text("module x\n")
     Path(f"{repo}/tools/pyproject.toml").write_text("[project]\n")
-    assert sorted(Path(u.path).name for u in repo_layout.discover_code_units(repo)) == ["repo", "tools"]
+    ids = lambda p: sorted(u.id for u in repo_layout.discover_code_units(p))
+    assert ids(repo) == [".", "tools"]
+
+    # 关键回归：`server/` 一出现，「补根」那支就哑火了——根必须仍在 catalog 里
+    os.makedirs(f"{repo}/server", exist_ok=True)
+    Path(f"{repo}/server/pyproject.toml").write_text("[project]\n")
+    assert ids(repo) == [".", "server", "tools"]
+    # catalog 与改动投影必须给同一个答案：根的文件归根，不归 server
+    assert repo_layout.enclosing_code_unit(f"{repo}/main.go", repo).id == "."
+    assert repo_layout.enclosing_code_unit(f"{repo}/server/app.py", repo).id == "server"
+    # 而「没有具体目标该选谁」仍是 server：选择启发式不变，与身份判据各答各的问题
+    assert repo_layout.default_code_unit(repo).id == "server"
+
+    # 身份不是 Makefile：docs/ 的 sphinx Makefile 不让 docs 变成 code unit
+    os.makedirs(f"{repo}/docs", exist_ok=True)
+    Path(f"{repo}/docs/Makefile").write_text("html:\n\tsphinx-build . _build\n")
+    assert ids(repo) == [".", "server", "tools"]
+
+    # 逐语言的项目清单——TS 与 JS 同为 package.json（tsconfig.json 只是 TS 的编译配置，
+    # 一个 package 里可以有多份，不定义项目边界，故不算身份）
+    for manifest in ("go.mod", "pyproject.toml", "setup.py", "package.json"):
+        d = Path(f"{R}/probe/{manifest}"); d.mkdir(parents=True)
+        (d / manifest).write_text("{}" if manifest == "package.json" else "")
+        assert repo_layout._is_code_unit(d), f"{manifest} 应当是项目清单"
+    for weak in ("Makefile", "requirements.txt", "tsconfig.json"):
+        d = Path(f"{R}/weak/{weak}"); d.mkdir(parents=True)
+        (d / weak).write_text("{}" if weak.endswith(".json") else "")
+        assert not repo_layout._is_code_unit(d), f"{weak} 不是项目边界，不该独自构成 unit"
 
 def test_active_repo_first_entry_symlink_workspace():
     """P1 回归:首次进入(尚无 context.json)+ symlink 子仓,record_active_repo 也要落

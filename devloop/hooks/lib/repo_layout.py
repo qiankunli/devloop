@@ -117,7 +117,7 @@ def find_repo_code_dir(repo_dir: str | Path) -> str:
     repo_dir = Path(repo_dir)
     for sub in ("server", "backend"):
         candidate = repo_dir / sub
-        if candidate.is_dir() and _has_code_markers(candidate):
+        if candidate.is_dir() and _is_code_unit(candidate):
             return str(candidate)
     return str(repo_dir)
 
@@ -129,26 +129,31 @@ def default_code_unit(git_root: str | Path) -> CodeUnit:
 
 
 def enclosing_code_unit(target: str | Path, git_root: str | Path) -> CodeUnit:
-    """操作目标 `target`（文件或目录）落在哪个 code unit：从 target 向上找**最近**的带工具链清单
-    的目录，边界止于 `git_root`（不越出仓）。
+    """操作目标 `target`（文件或目录）落在哪个 code unit：从 target 向上找**最近**的带项目清单
+    的目录（`_is_code_unit`），边界止于 `git_root`（不越出仓）。
 
-    当 target 就是（或在）仓根、其间没有更具体的 unit 时回落 `default_code_unit`——所以
-    `run_tests.py doctor` 仍走默认 `server/`，而 `run_tests.py doctor/cli` 精确命中 `cli/`。
-    仓根自身的 orchestration Makefile 不抢默认：target==git_root 直接走 default（探测顺序说了算）。"""
+    走到仓根仍没命中更具体的 unit 时：**根自己是 unit 就是它**（判据同子目录、同
+    `discover_code_units`——catalog 说根是 unit，投影就不能把根的文件判给别人，否则同一个仓、
+    同一个文件，走 clean-tree 全量和走改动投影会得到两个不同的 unit）。根**不是** unit 时才回落
+    `default_code_unit` 的选择启发式（`server/` > `backend/` > 根）：那时根本没有「根这个 unit」
+    可选，「没有具体目标该选谁」才是真问题——`run_tests.py doctor` 走默认 `server/` 正是这一支
+    （doctor 根无任何项目清单），而 `run_tests.py doctor/cli` 精确命中 `cli/`。"""
     root = Path(git_root).resolve()
     p = Path(target).resolve()
     cur = p if p.is_dir() else p.parent
-    # 只在 git_root 严格子目录里向上走；命中 marker 即为该 unit。target 在仓根或仓外 →
-    # 循环不进入，落到 default（仓根的探测优先级说了算，别被根级编排 Makefile 抢走）。
+    # 只在 git_root 严格子目录里向上走；命中项目清单即为该 unit。
     while cur != root and root in cur.parents:
-        if _has_code_markers(cur):
+        if _is_code_unit(cur):
             return CodeUnit.at(cur, git_root)
         cur = cur.parent
+    if _is_code_unit(root):
+        return CodeUnit.at(root, git_root)
     return default_code_unit(git_root)
 
 
 # repo-wide 验证（clean tree 从仓根发起、无具体改动可依据）枚举全部 unit 时跳过的目录：
-# VCS / 依赖 / 虚拟环境 / 构建产物 / 各类缓存——不含独立工具链，进去只会拖慢扫描。
+# VCS / 依赖 / 虚拟环境 / 构建产物 / 各类缓存——不是本仓的项目，进去只会拖慢扫描。
+# node_modules / vendor 尤其要跳：里面每个包都带 package.json / go.mod，不跳会扫出成百上千个「unit」。
 _DISCOVER_SKIP = {
     ".git", "node_modules", ".venv", "venv", "env", ".tox",
     "dist", "build", "target", "__pycache__", ".mypy_cache", ".pytest_cache",
@@ -157,11 +162,17 @@ _DISCOVER_SKIP = {
 
 
 def discover_code_units(git_root: str | Path, *, max_depth: int = 4) -> list[CodeUnit]:
-    """枚举 repo 内**全部**独立 code unit（带工具链 marker 的目录），供 repo-wide 验证用。
+    """枚举 repo 内**全部**独立 code unit（带语言项目清单的目录，见 `_is_code_unit`），供
+    repo-wide 验证用。
 
-    遇到一个 unit 就收下、**不再下钻它内部**（unit 内的嵌套 marker 不算独立 unit）；跳过 VCS /
-    依赖 / 构建产物目录，并限制递归深度。多代码目录仓（`server/` + `cli/`）因此返回全部 unit；
-    单 unit 仓（Go/TS 根即 unit，或探测出的 `server/`）找不到子 unit 时回落 `default_code_unit`。
+    遇到一个 unit 就收下、**不再下钻它内部**（unit 内的嵌套清单不算独立 unit）；跳过 VCS /
+    依赖 / 构建产物目录，并限制递归深度。多代码目录仓（`server/` + `cli/`）因此返回全部 unit。
+
+    **仓根不是特例**：判据与子目录同一条，所以「根是 Go module + `server/` 是 Python unit」的仓
+    会同时收到两者。这里刻意**不问 `default_code_unit`**——那是「没有更具体
+    目标时该选谁」的**选择**启发式（`server/` > `backend/` > 根），拿它回答「根有没有工具链」这个
+    **目录事实**问题，答案会被 `server/` 的存在改写：`server/` 在时它返回 `server/`，而 `server/`
+    早被 walk 收过了，于是「补根」永远补不进，根的 go.mod 就从 catalog 里消失。
 
     存在的意义是「绝不静默选 server」：clean tree 从仓根跑验证时要全跑（或让用户显式选），
     绝不退回单值默认 unit——所以这里返回「全部」而非「某一个」。"""
@@ -181,30 +192,47 @@ def discover_code_units(git_root: str | Path, *, max_depth: int = 4) -> list[Cod
             if (child.name in _DISCOVER_SKIP or child.name.startswith(".") or
                     child.is_symlink() or not child.is_dir() or (child / ".git").exists()):
                 continue
-            if _has_code_markers(child):
+            if _is_code_unit(child):
                 units.append(CodeUnit.at(child, root))
                 # 命中即止：不下钻，unit 内部的子 marker（如 packages 内嵌）不当独立 unit
             else:
                 walk(child, depth + 1)
 
+    # 根自身是 unit 就收下，与子目录同一判据。walk 只看子目录、从不收根，故无需去重。
+    if _is_code_unit(root):
+        units.append(CodeUnit.at(root, root))
     walk(root, 1)
-    # 根自身若是 unit（根级强 marker，如 go.mod / pyproject），补进来——否则「根有 marker + 子目录
-    # 也有 unit」时根会被漏：walk 只收子目录，而 `not units` 那条 fallback 又因子 unit 存在而哑火。
-    # 用 default_code_unit 探测（server > backend > root）并去重，避免与已收集的子 unit（如 doctor 的
-    # server）重复；default 兜底会返回无 marker 的仓根，故用 _has_code_markers 把关，不把纯编排目录当 unit。
-    seen = {u.path for u in units}
-    root_unit = default_code_unit(root)
-    if _has_code_markers(Path(root_unit.path)) and root_unit.path not in seen:
-        units.append(root_unit)
     if not units:
-        # 单 unit 仓：没有更深的子 unit，仓根自身（或探测出的 server/backend）即唯一 unit
+        # 全仓一份项目清单都没有：仍给出唯一 unit（探测出的 server/backend/根），绝不返回空——
+        # 空会被消费方读成「没什么要验的」而静默跳过。这里才轮到选择启发式登场。
         units.append(default_code_unit(root))
     return units
 
 
-def _has_code_markers(path: Path) -> bool:
-    markers = ("pyproject.toml", "go.mod", "package.json", "Makefile", "setup.py", "requirements.txt")
-    return any((path / m).exists() for m in markers)
+# 语言的**项目清单**：一个目录是不是 code unit，由「某个语言的工具链认不认它是项目根」定义。
+# 这是身份判据，逐语言一条：
+_PROJECT_MANIFESTS = (
+    "go.mod",          # Go module
+    "pyproject.toml",  # Python（PEP 621，现代）
+    "setup.py",        # Python（legacy）
+    "package.json",    # Node/npm —— JS 与 TS 共用的项目边界（tsconfig.json 只是 TS 的编译配置，
+                       # 不定义项目：一个 package 里可以有多份 tsconfig）
+)
+
+
+def _is_code_unit(path: Path) -> bool:
+    """`path` 自身是不是一个 code unit —— 它带没带某个语言的**项目清单**。
+
+    **刻意不看 `Makefile`**：Makefile 是 unit 的**动作入口**（怎么 lint/test，见 `lint_target`），
+    不是它的**身份**。两者正交——doctor 的 `server/`(pyproject) 和 `cli/`(package.json) 都有
+    Makefile，但让它们成为 unit 的是前者。反过来，`docs/` 里放个 sphinx 的 Makefile 不该让 docs
+    变成 code unit，仓根的编排 Makefile（`make dev` 转发到子目录）也不该让仓根变成 code unit。
+
+    **也不看 `requirements.txt`**：那是依赖清单不是项目边界（常见形态恰恰是仓根放一份给容器构建、
+    真项目在 `server/`——认它就等于把仓根误判成 unit，正是这里要消灭的那类误判）。它仍是
+    `detect_language` 的语言线索：「这是什么语言」和「这是不是一个项目」是两个问题。
+    """
+    return any((path / m).exists() for m in _PROJECT_MANIFESTS)
 
 
 def detect_language(repo_code_dir: str | Path) -> str | None:
