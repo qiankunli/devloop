@@ -177,6 +177,26 @@ def test_code_unit_test_target_detect_matches_execute():
     assert CodeUnit(f"{D}/ci").test_command() == ("make", "test-ci")
     assert CodeUnit(f"{D}/go", "go").test_command() == ("go", "test", "./...")
 
+def test_lifecycle_checks_follow_changed_code_unit():
+    """gcampr lifecycle 与 run-test 必须共用 WorkSet：只改 cli 时不得跑仓根 test。"""
+    from lib.lifecycle import checks
+
+    R = "/tmp/dlut_lifecycle_unit"
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(f"{R}/cli")
+    _git(R, "init", "-q")
+    Path(f"{R}/Makefile").write_text("test:\n\tfalse\n")
+    Path(f"{R}/cli/Makefile").write_text("test:\n\ttrue\n")
+    Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
+    _git(R, "add", "-A")
+    _git(R, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+
+    Path(f"{R}/cli/change.py").write_text("x = 1\n")
+    result = checks.test(R)
+    assert result.ok and result.advisory
+    assert "changed files under: cli" in result.summary
+    assert "make test passed" in result.summary
+
 def test_lifecycle_config_layering():
     """config.lifecycle()：default 全空（opt-in），repo 级 .devloop/config.json 覆盖该 repo 的相位。"""
     import json as _json
