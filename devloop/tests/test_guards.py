@@ -217,6 +217,34 @@ def test_edit_owner_guard():
     outside = _hook_input("Edit", {"session_id": "sess-B", "cwd": R, "tool_input": {"file_path": f"{R}/x.py"}})
     assert guard.decide(outside) is None
 
+def test_apply_patch_owner_guard_uses_target_path():
+    """Codex ``apply_patch`` must enter the edit policy and anchor owner lookup to the patched
+    file. Its session cwd commonly remains at the aggregate workspace root, which is not a repo.
+    """
+    guard = _load_hook("pretool_policy_edit")
+    from lib.context import session as session_lock
+    R = "/tmp/dlut_patch_owner"
+    repo = f"{R}/repo"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(repo, exist_ok=True)
+    _git(repo, "init", "-q")
+    fp = f"{repo}/a.py"
+    Path(fp).write_text("old\n")
+    patch = f"*** Begin Patch\n*** Update File: {fp}\n@@\n-old\n+new\n*** End Patch\n"
+
+    # The hook's freeform-tool normalization stores the patch under ``input``.
+    inp_a = _hook_input("apply_patch", {
+        "session_id": "sess-A", "cwd": R, "tool_input": {"input": patch},
+    })
+    assert guard.decide(inp_a) is None
+    assert session_lock.read(repo)["session_id"] == "sess-A"
+
+    session_lock.acquire(repo, "sess-A", "feat/x", pid=os.getpid())
+    inp_b = _hook_input("apply_patch", {
+        "session_id": "sess-B", "cwd": R, "tool_input": {"input": patch},
+    })
+    reason = guard.decide(inp_b)
+    assert reason and "worktree" in reason and "owner.lock" in reason
+
 def test_branch_merged_guard_uses_file_path():
     """INACTIVE 分支编辑拦截按 file_path 解析 repo——session cwd 在 workspace 根时
     cwd-based 查找为 None,guard 此前静默失效。Also exercises the gate's SHA validation: the

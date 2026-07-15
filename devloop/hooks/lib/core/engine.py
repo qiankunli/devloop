@@ -86,18 +86,19 @@ def evaluate(change: Change, ctx: PolicyContext, rules: list[Rule]) -> Decision:
     findings: list[Finding] = []
 
     for target in change.targets:
+        target_ctx = ctx.for_target(target) if hasattr(ctx, "for_target") else ctx
         kind = getattr(target, "kind", None)
-        applicable = [r for r in rules if r.target_kind == kind and _safe_applies(r, target, ctx)]
+        applicable = [r for r in rules if r.target_kind == kind and _safe_applies(r, target, target_ctx)]
         if not applicable:
             continue
         # content-aware 规则命中 → 惰性解析（读盘+套 edit 得"改后全文"再解析 imports/decls）
         if isinstance(target, FileChange) and any(r.needs_content for r in applicable):
             try:
-                enrich(target, ctx)
+                enrich(target, target_ctx)
             except Exception:
                 pass  # 解析失败 → 不产 content findings（fail-open）
         for r in applicable:
-            findings.extend(_safe_check(r, target, ctx))
+            findings.extend(_safe_check(r, target, target_ctx))
 
     # mutation 级规则：不看具体 target，直接吃 Change
     for r in rules:
