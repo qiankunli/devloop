@@ -17,8 +17,9 @@ Two invariants:
 from __future__ import annotations
 
 from hooks.core.domain import Decision, Severity
-from lib import git_state, repo_layout
-from lib.context import base, store
+from domain import repo_layout
+from lib import git_state
+from domain.context import base, store
 
 
 def record_deny(decision: Decision, *, tool: str, cwd: str | None,

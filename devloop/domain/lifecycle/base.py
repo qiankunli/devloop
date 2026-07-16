@@ -9,12 +9,12 @@ from typing import Callable
 PHASES = ("pre_commit", "post_commit", "pre_mr", "post_mr")
 
 # 内置 hook 注册表：name → "module:function"。**惰性**解析（dispatch 时才 import）：handler
-# 模块（lib.lifecycle.checks）要 `from lib.lifecycle.base import HookResult`，模块级直接引用会
+# 模块（domain.lifecycle.checks）要 `from domain.lifecycle.base import HookResult`，模块级直接引用会
 # 成 import 环。
 _BUILTIN: dict[str, str] = {
-    "lint": "lib.lifecycle.checks:lint",
-    "test": "lib.lifecycle.checks:test",
-    "review": "lib.lifecycle.review:review",   # signal hook：后台审全量改动、写 review.json + 有开放 MR 时发评论（挂哪相位由 config 决定）
+    "lint": "domain.lifecycle.checks:lint",
+    "test": "domain.lifecycle.checks:test",
+    "review": "domain.lifecycle.review:review",   # signal hook：后台审全量改动、写 review.json + 有开放 MR 时发评论（挂哪相位由 config 决定）
 }
 
 

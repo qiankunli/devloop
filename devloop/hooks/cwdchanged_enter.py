@@ -18,8 +18,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hooks import hook_io  # noqa: E402
-from lib import git_state, repo_layout, workspace  # noqa: E402
-from lib.context import (  # noqa: E402
+from domain import repo_layout, workspace  # noqa: E402
+from lib import git_state  # noqa: E402
+from domain.context import (  # noqa: E402
     RepoContext,
     WorkspaceContext,
     base,

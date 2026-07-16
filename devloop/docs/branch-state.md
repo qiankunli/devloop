@@ -1,6 +1,6 @@
 # 分支状态——三态 freshness 模型
 
-devloop 关于分支的所有事实,过去挤在一个 `branch.json` + 一次 `RepoContext.load()` 里、同一种 freshness 待遇。它们其实分三类,**信任来源根本不同**,该用不同待遇。本文讲清这件事的 why;字段/常量的具体形状以代码为准(`lib/context/repo.py` / `gate.py` / `prstate.py`、`lib/git_state.py`)。
+devloop 关于分支的所有事实,过去挤在一个 `branch.json` + 一次 `RepoContext.load()` 里、同一种 freshness 待遇。它们其实分三类,**信任来源根本不同**,该用不同待遇。本文讲清这件事的 why;字段/常量的具体形状以代码为准(`domain/context/repo.py` / `gate.py` / `prstate.py`、`lib/git_state.py`)。
 
 ## 1. 理念:一个事实该多"新",取决于它会变得多快、读它要多贵、以及谁会偷偷改它
 
@@ -32,7 +32,7 @@ devloop 关于分支的所有事实,过去挤在一个 `branch.json` + 一次 `R
 - **fail-open**:本地实际在保护分支、缓存还说 feature → 放行 push 到 main;
 - **fail-closed**:切到新分支、缓存还说旧分支 → 误拦新分支上的编辑(本模型要根治的那次事故)。
 
-所以所有 hard gate 走唯一入口 **`lib.context.gate.evaluate()`**:`branch` / `head_sha` 是 live `git rev-parse`,PR 活性用 live 分支 + live HEAD 在 monitor 缓存窗口上**本地 SHA 校验**(`pick_branch_pr` 的 merge-base 祖先判定,零 forge 调用)。CI 不变量测试(`test_gates_use_gate_seam_not_cached_identity`)钉死:任何 guard 不得读 `ctx.branch.*` / `branch_pr_inactive()` 做决策。
+所以所有 hard gate 走唯一入口 **`domain.context.gate.evaluate()`**:`branch` / `head_sha` 是 live `git rev-parse`,PR 活性用 live 分支 + live HEAD 在 monitor 缓存窗口上**本地 SHA 校验**(`pick_branch_pr` 的 merge-base 祖先判定,零 forge 调用)。CI 不变量测试(`test_gates_use_gate_seam_not_cached_identity`)钉死:任何 guard 不得读 `ctx.branch.*` / `branch_pr_inactive()` 做决策。
 
 成本分层:edit-频率 guard(protect / merged)只付本地 git;低频出口 gcampr 传 `live_refresh=True` 先做一次权威 forge poll+persist。
 

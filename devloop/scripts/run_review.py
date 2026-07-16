@@ -25,8 +25,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from lib import cli, config, git_state, review_engine  # noqa: E402
-from lib.context import base, record_active_repo, store  # noqa: E402
-from lib.forge import ForgeError, forge_for_repo, pr_label  # noqa: E402
+from domain.context import base, record_active_repo, store  # noqa: E402
+from domain.forge import ForgeError, pr_label  # noqa: E402
+from lib.forge import forge_for_repo  # noqa: E402
 
 _MAX_COMMENT_FINDINGS = 30   # 评论里最多列几条，避免超长 MR 评论
 

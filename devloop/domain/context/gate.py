@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .. import git_state
+from lib import git_state
 from . import prstate, store
 from .base import PullRequest
 

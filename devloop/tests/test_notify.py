@@ -16,7 +16,7 @@ def test_poll_persist():
     """The monitor is persist-only: prstate writes the `pr` segment (sole writer of
     .devloop/pr.json, for the PR guard / injection). Waking on a change is the forge
     channel's job, not the monitor's."""
-    from lib.context import base, store, prstate
+    from domain.context import base, store, prstate
     R = "/tmp/dlut_pollh"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
@@ -49,7 +49,7 @@ def test_review_source():
     error), stays silent for running / skipped / clean, and carries the findings inline. wake_key is
     the single 'wake-worthy' definition both transports share; seed() ignores the startup edge;
     generated_at in the key makes a same-sha re-review wake again."""
-    from lib.context import base, store
+    from domain.context import base, store
     from lib.notify.sources.review import ReviewSource, wake_key
     assert wake_key(None) is None
     assert wake_key({"status": "running", "reviewed_sha": "a"}) is None
@@ -82,7 +82,7 @@ def test_forge_source():
     """ForgeSource fires two INDEPENDENT signals over pr.json: `pr_change` on a lifecycle delta
     (level key, names each transitioned PR) and `merge_blocked` on ENTERING a blocker (edge +
     hysteresis so the async 'checking'/unknown window can't double-fire). seg_key is lifecycle-only."""
-    from lib.context import base, store
+    from domain.context import base, store
     from lib.notify.sources.forge import ForgeSource, merge_block_event, seg_key
     assert seg_key(None) is None
     assert seg_key({"pr_number": 12, "prs": [{"number": 12, "state": "open"}]}) == (12, ((12, "open"),))

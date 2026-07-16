@@ -34,10 +34,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import cli, git_state, gitcmd, lifecycle, repo as repo_model  # noqa: E402
-from lib.context import RepoContext, gate, prstate, record_active_repo
-from lib.context.loopstate import requirement  # noqa: E402
-from lib.forge import Forge, ForgeError, PullRequest, forge_for_repo, pr_label  # noqa: E402
+from domain import lifecycle, repo as repo_model  # noqa: E402
+from domain.context import RepoContext, gate, prstate, record_active_repo
+from domain.context.loopstate import requirement  # noqa: E402
+from domain.forge import Forge, ForgeError, PullRequest, pr_label  # noqa: E402
+from lib import cli, git_state, gitcmd  # noqa: E402
+from lib.forge import forge_for_repo  # noqa: E402
 
 
 class SmartError(Exception):
@@ -636,7 +638,7 @@ def launch_background_relays(specs: list[lifecycle.BackgroundSpec], repo: str, p
     """
     if not specs:
         return
-    from lib.context import store
+    from domain.context import store
     logp = store.tmp_dir(repo) / "review.log"
     logp.parent.mkdir(parents=True, exist_ok=True)
     for spec in specs:

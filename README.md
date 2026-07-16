@@ -42,7 +42,7 @@ Loss 3 is answered by **session-grain state** riding the same two levers: an own
 
 **PR/MR → Repo → CodeUnit is the domain spine** — in its narrow scope, devloop manages PR/MR creation, development, and validation. Every PR/MR belongs to one repo, whose affected code units own lint/test execution. A branch is the development axis; a worktree is only one isolated checkout form of that branch. `/enter <repo> --worktree <tag>` is the managed entrypoint for creating, reusing, pruning, and preparing `<repo>/.worktrees/`; raw `git worktree add` is blocked so it cannot bypass that lifecycle.
 
-The source layout follows the same dependency direction: `devloop/lib/` owns the Workspace / Repo / CodeUnit domain, branch/PR state, and legal transitions; `devloop/hooks/` and `devloop/scripts/` drive that domain from tool events and workflows, keeping LLM actions on a workspace/repo behind controlled entrypoints.
+The source layout follows the same boundary: `devloop/domain/` owns the Workspace / Repo / CodeUnit domain, branch/PR state, and legal transitions, while `devloop/lib/` provides technical capabilities such as Git, forge, ecosystem, notify, and config. `devloop/hooks/` and `devloop/scripts/` drive the domain from tool events and workflows, keeping LLM actions on a workspace/repo behind controlled entrypoints.
 
 **native-first** — every capability sits on the most native event primitive instead of a workaround:
 

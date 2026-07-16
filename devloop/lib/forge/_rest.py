@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from .base import ForgeAuthError, ForgeError, ForgeNotFound
+from domain.forge import ForgeAuthError, ForgeError, ForgeNotFound
 
 DEFAULT_TIMEOUT = 10
 

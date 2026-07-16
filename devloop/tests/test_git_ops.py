@@ -11,8 +11,8 @@ import sys
 from pathlib import Path
 
 from _testkit import _FakeForge, _git, _git_out, _load_script, run_main  # noqa: E402  (bootstrap first)
-from lib.context import PullRequest  # noqa: E402
-from lib.forge.base import ForgeError  # noqa: E402
+from domain.context import PullRequest  # noqa: E402
+from domain.forge import ForgeError  # noqa: E402
 
 
 def test_sensitive_filter():
@@ -69,8 +69,8 @@ def test_refusal_detail_quotes_pr_evidence():
     caller trusts the verdict instead of re-querying the forge; protected branches (no PR) and an
     open PR (not inactive) fall back to the plain reason."""
     sgo = _load_script("commit_flow")
-    from lib.context import gate
-    from lib.forge import PullRequest
+    from domain.context import gate
+    from domain.forge import PullRequest
 
     def gv(pr):
         return gate.GateView(git_root="/x", branch="feat/a", head_sha="h", target="main",
@@ -113,7 +113,7 @@ def test_prepare_branch_reads_gate_pr_state():
     unit test bypasses this call, so an end-to-end run guards the wiring (and that gcampr reads
     the LIVE-branch / SHA-validated PR state, not ctx.branch_pr_inactive)."""
     sgo = _load_script("commit_flow")
-    from lib.context import RepoContext, gate, prstate
+    from domain.context import RepoContext, gate, prstate
     R = "/tmp/dlut_prep"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -174,7 +174,7 @@ def test_version_bump_mix_hint():
 def test_code_unit_lint_target():
     """lint 戳记对齐 CI 入口:有 lint-ci(通常 uv sync 锁定工具链)优先于 lint,
     消灭'本地 lint 绿、CI lint-ci 红'的版本漂移。目标选择是 unit 自己的事实（CodeUnit.lint_target）。"""
-    from lib.repo_layout import CodeUnit
+    from domain.repo_layout import CodeUnit
     D = "/tmp/dlut_lint"
     shutil.rmtree(D, ignore_errors=True); os.makedirs(D)
     Path(f"{D}/Makefile").write_text("lint:\n\ttrue\n")
@@ -322,7 +322,7 @@ def test_ensure_requirement_wiring():
     """gcampr 侧接线（loop-state slice3 + #62 F7）：ensure_requirement 在 cut 与 continue 两路都生效——
     cut 无参 → 新开（id=该分支）；--requirement → 续接，**手工切的分支（continue 路径）也不得静默丢弃**；
     continue 无参 → 不动；重复调用幂等。"""
-    from lib.context.loopstate import requirement
+    from domain.context.loopstate import requirement
     sgo = _load_script("commit_flow")
     R = "/tmp/dlut_req_wire"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)

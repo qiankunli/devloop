@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lib import git_state
-from lib.context import store
+from domain.context import store
 from lib.notify.base import Notification
 
 _MAX_FINDINGS = 30        # cap findings listed inline — full set always in review.json

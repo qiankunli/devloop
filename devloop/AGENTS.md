@@ -16,7 +16,7 @@ enter 某子模块 → 提需求(可能跨多个 subproject) → 开发 → comm
 
 **窄义领域主链是 `PR/MR → Repo → CodeUnit`**：一个 PR/MR 的创建、开发、验证始终锚定一个 repo；repo 是 git/branch/forge 状态的边界，一个 repo 可含多个 code unit，lint/test 按本次改动投影到对应 unit，review 审 repo 的分支 diff。branch 是开发主轴，worktree 只是 branch 用于多 session 并发隔离的一种 checkout 形态；devloop 管理这套形态的创建、复用、环境准备和清理，但不另建一套与 branch 平级的 worktree 领域状态。
 
-**目录按依赖方向表达这个模型**：`lib/` 是领域层，承载 Workspace / Repo / CodeUnit、branch/PR 状态及其合法变化；`hooks/` 与 `scripts/` 是两类驱动 adapter——前者把 CLI 事件 / LLM 工具调用投影成领域决策，后者把 enter、commit、PR、验证等工作流意图编排成领域操作。两者都只向 `lib/` 依赖，目的是让 LLM 对 workspace/repo 的作用落在可观测、可约束的路径上，而不是散落 shell 副作用。
+**目录按 owner 表达这个模型**：`domain/` 承载 Workspace / Repo / CodeUnit、branch/PR 状态、生命周期规则及合法变化；`lib/` 提供 Git、forge、ecosystem、notify、config、parser 等技术能力；`hooks/` 与 `scripts/` 是事件和工作流两类驱动 adapter。入口只向 `domain/lib` 调用，两层都不反向依赖入口，让 LLM 对 workspace/repo 的作用落在可观测、可约束的路径上，而不是散落 shell 副作用。
 
 排查问题也在同一 workspace：用 as-ops / as-web-ops / infra-ops 等发现问题后，带着上下文切到对应 subproject 开发。**workspace 是开发与排查的共同根，subproject 是动手的落点**——devloop 的全部能力，都是为提高这个循环里 AI 的首次成功率而生。一轮循环的端到端时序（每拍触发什么事件、哪些 hook/script 参与、三条贯穿流程线）见 [`docs/loop.md`](./docs/loop.md)。
 
@@ -40,17 +40,21 @@ enter 某子模块 → 提需求(可能跨多个 subproject) → 开发 → comm
 ```
 devloop/
 ├── .claude-plugin/plugin.json     # Claude manifest（0.0.1；靠目录约定自动发现）
-├── lib/                            # 领域模型、状态变化与基础能力（常被 hooks/scripts 共同驱动）
+├── domain/                         # 领域 owner：模型、状态变化与生命周期规则
 │   ├── repo.py                    #   ★Repo 模型 + cwd 无关解析 + WorkSet（本轮 code units）
 │   ├── workspace.py               #   ★Workspace 注册、发现与归属
 │   ├── repo_layout.py             #   ★CodeUnit 模型 + repo/code-unit 路径边界
 │   ├── context/                   #   ★状态总线：repo/workspace/session + gate/prstate + requirement ledger
-│   ├── gitcmd.py  git_state.py    #   ★统一 git runner 与 git/branch/worktree 事实
-│   ├── forge/                     #   ★GitHub/GitLab 中立 facade 与平级 adapter
 │   ├── lifecycle/                 #   ★pre/post commit/MR dispatch + lint/test/review handlers
+│   ├── forge.py                   #   ★PullRequest/Comment/Release 中立模型 + Forge port
+│   ├── review_feedback.py         #   review finding/label 的领域 join
+│   └── worktree.py                #   branch 隔离 checkout 的创建/复用、依赖准备与清理
+├── lib/                            # 技术能力：被 domain/hooks/scripts 消费
+│   ├── gitcmd.py  git_state.py    #   ★统一 git runner 与 git/branch/worktree 事实
+│   ├── forge/                     #   ★GitHub/GitLab 平级 adapter + HTTP/按 repo 分发
 │   ├── ecosystem/                 #   ★工具链身份、环境准备与 canonical fallback
 │   ├── notify/                    #   ★外部状态 Source/Notifier 端口
-│   └── worktree.py                #   branch 隔离 checkout 的创建/复用、依赖准备与清理
+│   └── config.py  parsers.py      #   ★配置持久化与文字源解析
 ├── hooks/                          # 事件驱动 adapter：把 LLM/CLI 工具调用投影成领域决策
 │   ├── hooks.json                 # Claude 事件注册
 │   ├── hooks.codex.json           # Codex 事件注册（支持事件子集 + PostToolUse 降级）
@@ -94,7 +98,7 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 
 ### 2. 三个统一 seam（集中、规范、可替换）
 - **git → `gitcmd`**：所有 git 子进程的唯一入口，超时 + failure-safe（rc=-1 不抛）。
-- **forge → `lib/forge`**：所有代码评审平台（GitHub / GitLab）访问的唯一入口，**缝在 provider 层而非 transport 层**。`base.py` 是中立领域核心：领域对象 `PullRequest`（`number`/`state` 归一，不带任一家行话、**不带 provider**——provider 是 repo 级)+ `Forge` port（取数原语 `create/get/update/prs_for_branch/recent/comments` + 写原语 `comment`（发 MR/PR 评论，code-review 历史用））+ 跨家一致的窗口**策略** `build_window`（组合在 `recent`+`get` 上，不让 adapter 各写一份)+ 展示 `pr_label`/`vocab`；`gitlab.py` / `github.py` 是平级 adapter，只实现差异（iid↔number、state 归一、API 路径），原生 JSON→`PullRequest` 的映射全困在各自 adapter；`_rest.py` 是唯一 HTTP 缝（urllib）。`resolve_forge(repo)` 把 origin/config/env 三源一处合一、`forge_for_repo` 据此分发——**聚合工作区里一个子项目 GitHub、一个 GitLab 可共存**。脚本一律是 facade 的薄包装，**不散写 urllib、不写死 provider**。
+- **forge → `domain/forge.py` + `lib/forge`**：`domain/forge.py` 是中立领域核心，定义 `PullRequest`（`number`/`state` 归一，不带任一家行话、**不带 provider**——provider 是 repo 级）、`Forge` port、跨家一致的窗口策略 `build_window` 和展示词汇；`lib/forge` 是技术 adapter 层，`gitlab.py` / `github.py` 只实现 iid↔number、state、API 路径等差异，`_rest.py` 是唯一 HTTP 缝，包 facade 负责按 repo 分发。聚合工作区里不同子项目可分别使用 GitHub/GitLab；脚本不散写 urllib、不写死 provider。
 - **用户配置 → `lib/config`**：所有对外部依赖的配置（`forges`：按 host 索引的 token/type/api_host）+ workspace 注册表 + precommit 门禁的唯一入口。**分层读取**：`默认值 < 全局 ~/.devloop/config.json < 上层 .devloop/config.json（离 repo 最近的赢，可只含部分配置）`；写入只落全局（`/plugin update` 不清；`DEVLOOP_CONFIG_DIR` 可覆写全局目录）。本地覆盖靠 `load(repo_dir)` 从 repo_dir 向上收集 `.devloop/config.json`，故 `forge_*`/precommit 访问器都带 `repo_dir` 参数；`workspaces` 是全局发现态、不参与就近覆盖。token 读取按 provider 的约定 env（`GITHUB_TOKEN`/`GH_TOKEN` / `GITLAB_TOKEN`）优先于 config；provider 由 host 推断、`forges[host].type` 可覆写。`workspace` / `forge` / precommit gate 都委托它，**不各自读文件**。
 
 ### 3. native-first 事件映射（本插件的设计本质）
@@ -117,12 +121,12 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 - **脚本与 cwd 解耦**：session cwd 在聚合工作区常驻 workspace 根，smart 脚本一律不依赖 cwd——repo 按"显式 `--repo` → cwd 仓库 → 本 session 绑定的最近活跃仓"解析并在 PLAN 里自述来源（active 一 session 一文件，互不劫持；无本 session 绑定即拒绝兜底，他人绑定仅作提示）。解析链见 CONCEPTS.md〈脚本的 repo 解析〉，生命周期见〈Session 运行态〉。
 - **PR 模型**：中立 `PullRequest`（provider 随对象走）；单 anchor（`branch.pr_number`）+ 近期窗口（`prs`）**派生**失活 / 在途，不存 bool；`pr.json` 由 monitor 独占且按 branch 归属——切分支即自动失效、无人去清（gcampr 建 PR 后也只触发 monitor poll，不自己写）。字段语义与窗口规则见 CONCEPTS.md〈PR 模型〉。
 - **注入两 cadence**：turn（branch/dirty/validation/PR 摘要，每轮，内容哈希 dedup + TTL 兜底）、session（References，SessionStart 发一次、变更才重发）。`PostCompact` 清两者。
-- 字段 schema / TTL / cap 数值、段读写原语（`load/save_segment` / `_write_atomic`）都在 `lib/context/base.py`，文档不复述。
+- 字段 schema / TTL / cap 数值、段读写原语（`load/save_segment` / `_write_atomic`）都在 `domain/context/base.py`，文档不复述。
 
 **成本原则（token 是第一约束，"非必要不注入"）**——prompt 注入是跟 AI 沟通最直接也最贵的通道，加任何东西进 prompt 前先过这几条：
 1. **只注入当前 subproject + workspace 级**的 References / 状态；**绝不**注入其它 subproject 的 AGENTS.md 正文（多 subproject 场景下这是最大的省 token 点）。
 2. **`watchPaths` / `monitor` 输出是给 harness 的指令 / 通知，不进模型 prompt**——所以"注册全部 subproject 的 AGENTS.md 监听""轮询全部 subproject 的 MR"都是 token-free 的；真正进 prompt 的只有当前 repo 的那点状态。
-3. **列表一律 cap**（子项目清单、PR 窗口都有定长上限，数值在 `lib/context/base.py`），长描述压成一行。
+3. **列表一律 cap**（子项目清单、PR 窗口都有定长上限，数值在 `domain/context/base.py`），长描述压成一行。
 4. **只在内容变化时才注入**（最大的省 token 手段之一）：每段注入文本按内容哈希比上次，**一样就不发**（`Cadence.should_emit`）——RepoContext 也是这样，branch/dirty/validation/MR 没变的轮次零增量；session 段一会话发一次。仅 TTL 到期或 `PostCompact` 才强制重发兜底。
 5. 新增任何注入前自问：这真得**每轮**进 prompt 吗？hook 内部读 context 决策不行吗？（硬规则 deny 通常不需要进 prompt。）
 
@@ -130,9 +134,9 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 
 ### 5. 不走原生通道的硬规矩
 - AI **绝不**直接 `git commit/push`（guard 会拦）或散调 forge——commit/push/PR 一律走 `scripts/smart_*.sh`（内部用 gitcmd + facade，自陈 `PLAN:` banner）。保护分支（main/master/release*）判定见 CONCEPTS.md。
-- AI **不直接 `git worktree add`**：需要隔离 branch 时统一走 `scripts/enter.py <repo> --worktree <tag>`（Claude 的交互入口是 `/enter`）。入口委托 `lib/worktree.py` 完成规范目录、基线、复用、依赖准备与安全清理；裸创建会被 guard 拒绝。
+- AI **不直接 `git worktree add`**：需要隔离 branch 时统一走 `scripts/enter.py <repo> --worktree <tag>`（Claude 的交互入口是 `/enter`）。入口委托 `domain/worktree.py` 完成规范目录、基线、复用、依赖准备与安全清理；裸创建会被 guard 拒绝。
 - **新分支基点由意图定，不由 HEAD 当前态定**：`--branch`（开新工作）一律 cut 自 `origin/<target>`（`--base` 显式栈式），与当前停在哪条分支无关——否则上一轮留下的 in-flight 分支会被当成基底、新 PR 夹带其提交（夹带在 push/PR 前由 `commit_flow` 外来提交自检拦下）。当前分支在循环里的四态流转（protected / healthy / in-flight / inactive）见 CONCEPTS.md〈分支状态流转〉。
-- **Owner 锁（owner / guest session）**：多 CLI / session 并发操作同一 checkout 时，第一笔**变更动作**的 session 占有它，guest 的切分支与编辑被硬拦、引导去 worktree——锁保护 checkout 的可变面，防止两个 session 的改动混进同一工作树；enter / 只读不占有，避免假冲突。占有点、豁免与逃逸口见 CONCEPTS.md〈Owner / guest session〉，实现见 `lib/context/session.py`。
+- **Owner 锁（owner / guest session）**：多 CLI / session 并发操作同一 checkout 时，第一笔**变更动作**的 session 占有它，guest 的切分支与编辑被硬拦、引导去 worktree——锁保护 checkout 的可变面，防止两个 session 的改动混进同一工作树；enter / 只读不占有，避免假冲突。占有点、豁免与逃逸口见 CONCEPTS.md〈Owner / guest session〉，实现见 `domain/context/session.py`。
 
 ### 6. repo ≠ code unit（工具链与验证的真实粒度）
 repo 是 PR/MR 与 branch 生命周期的边界，code unit 是 repo 内的验证单位。「一个 repo = 一个代码目录」是 devloop 早期的隐含假设，也是这里最容易被重新写回去的错误——每条都在防它复辟：

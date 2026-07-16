@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lib import git_state, repo_layout
+from domain import repo_layout
+from lib import git_state
 from hooks.core.domain import Command, Finding, Severity, TargetKind
 from hooks.core.protocol import Rule
 
@@ -29,7 +30,7 @@ class WorktreeAddRule(Rule):
                     "(canonical location, base branch, reuse/pruning, and dependency preparation).\n"
                     f"Use `/enter {repo} --worktree <tag>` in Claude Code, or in Codex run "
                     f"`python3 \"${{PLUGIN_ROOT}}/scripts/enter.py\" {repo} --worktree <tag>`. "
-                    "The enter flow delegates creation to `lib/worktree.py`."
+                    "The enter flow delegates creation to `domain/worktree.py`."
                 ),
                 locator=" ".join(target.argv),
             )

@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from lib import repo_layout
+from domain import repo_layout
 from hooks.cmdtree import cmdparse
 from hooks.core.domain import Change, Finding, Severity, TargetKind
 from hooks.core.protocol import Rule

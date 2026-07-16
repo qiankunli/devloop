@@ -2,7 +2,7 @@
 
 Same shape as RepoContext but only the **session** injection cadence (References +
 Subprojects); no turn-grain content (branch/dirty/validation are repo-level). The
-registry of which dirs are workspaces lives in `lib/workspace.py`.
+registry of which dirs are workspaces lives in `domain/workspace.py`.
 
 The workspace `.devloop/` also hosts the session-grain `active/` dir (each
 session's bound repo) — that is a different fact-owner grain and lives in
@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .. import parsers
+from lib import parsers
 from . import base, store
 from .base import (
     SESSION_TTL_SEC,
@@ -83,7 +83,7 @@ class WorkspaceContext:
         store.save_raw(root, store.to_dict(self))
         # A workspace root is usually not a git repo; exclude only if it is one.
         if (Path(root) / ".git").exists():
-            from .. import git_state
+            from lib import git_state
             git_state.ensure_gitignore_excluded(root)
 
     @classmethod
@@ -215,7 +215,9 @@ def _build_subproject(root: Path, s: dict) -> Subproject:
             sub.canonical = str(canon)
         # Auto-detect language when the table didn't pin one (table value wins).
         if not sub.language:
-            from .. import ecosystem, repo_layout
+            from lib import ecosystem
+
+            from .. import repo_layout
             sub.language = ecosystem.detect_language(repo_layout.find_repo_code_dir(sp_dir))
     return sub
 

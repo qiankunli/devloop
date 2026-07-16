@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lib import git_state, repo_layout
-from lib.context import session
+from domain import repo_layout
+from lib import git_state
+from domain.context import session
 from hooks.core.domain import Command, Finding, Severity, TargetKind
 from hooks.core.protocol import Rule
 

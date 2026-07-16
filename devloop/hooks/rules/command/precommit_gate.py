@@ -10,8 +10,9 @@ lint，只查戳——PreToolUse 有 5s 超时、fail-open，跑不了 lint。
 """
 from __future__ import annotations
 
-from lib import config, repo_layout, repo as repo_model
-from lib.context import RepoContext, Validation
+from domain import repo as repo_model, repo_layout
+from lib import config
+from domain.context import RepoContext, Validation
 from hooks.core.domain import Command, Finding, Severity, TargetKind
 from hooks.core.protocol import Rule
 

@@ -9,7 +9,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import config, ecosystem, git_state, gitcmd, repo_layout
+from lib import config, ecosystem, git_state, gitcmd
+
+from . import repo_layout
 from .context import session
 
 

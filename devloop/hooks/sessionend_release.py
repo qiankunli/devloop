@@ -5,7 +5,7 @@ checkout owner locks + the workspace active-repo binding.
 Without this, a finished session's lock lingers until its recorded pid dies —
 and up to OWNER_TTL_SEC when that pid was a transient shell — so a guest would
 keep being refused on a checkout nobody owns anymore. Pid liveness stays as the
-crash fallback (see lib.context.session.release); this hook is the immediate path.
+crash fallback (see domain.context.session.release); this hook is the immediate path.
 
 Sweep scope mirrors the monitor's repo set (workspace subprojects in Mode A,
 the cwd repo in Mode B) plus each repo's linked worktrees — every checkout
@@ -19,8 +19,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hooks import hook_io
-from lib import repo_layout, workspace  # noqa: E402
-from lib.context import RepoContext, WorkspaceContext, session  # noqa: E402
+from domain import repo_layout, workspace  # noqa: E402
+from domain.context import RepoContext, WorkspaceContext, session  # noqa: E402
 
 
 def _candidate_checkouts(cwd: str) -> list[str]:

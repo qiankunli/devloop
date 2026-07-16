@@ -17,7 +17,7 @@ owner makes every write touch a disjoint file, so that whole class is structural
 Branch model — three freshness tiers (see docs/branch-state.md):
 - **identity** (`branch.local`: name + HEAD sha): cheap, volatile, owned by the *refresh*
   (local git events). This is the DISPLAY copy; write-gates re-derive identity LIVE
-  (`lib.context.gate`) instead of trusting this snapshot.
+  (`domain.context.gate`) instead of trusting this snapshot.
 - **read-freshness** (`branch.remotes`: the server's trunk tips + `remotes_fetched_at`): trunk
   moves under you when a colleague pushes — an unobservable channel — so it is owned by the
   *monitor* (`remote_branches.json`), never written by a refresh/script. ahead/behind is a
@@ -34,8 +34,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .. import ecosystem, git_state, parsers, repo_layout
-from ..forge import ForgeError, forge_for_repo
+from lib import ecosystem, git_state, parsers
+from domain.forge import ForgeError
+from lib.forge import forge_for_repo
+
+from .. import repo_layout
 from . import base, store
 from .base import (
     DEFAULT_BRANCH_TTL_SEC,
@@ -339,7 +342,7 @@ class RepoContext:
         branch.remotes = [Branch.from_dict(r) for r in (rb.get("remotes") or [])]
         branch.remotes_fetched_at = rb.get("fetched_at")
         # Join the monitor-owned pr_number only when it was computed for the CURRENT branch —
-        # DISPLAY-grade; write-gates re-derive against LIVE branch (lib.context.gate).
+        # DISPLAY-grade; write-gates re-derive against LIVE branch (domain.context.gate).
         # pr.json is branch-keyed, so a branch switch self-invalidates the stale number.
         pr = store.load_segment(repo_dir, "pr") or {}
         on_branch = pr.get("branch") == branch.local.name   # pr.json is branch-keyed; only join if current
@@ -517,7 +520,7 @@ class RepoContext:
         self.branch.local.fork_from = fork_from
         self._save_branch()
 
-    # ── PR derivation (DISPLAY-grade; write-gates use lib.context.gate) ─────────
+    # ── PR derivation (DISPLAY-grade; write-gates use domain.context.gate) ─────────
     def current_pr(self) -> PullRequest | None:
         if self.branch.pr_number is None:
             return None
@@ -527,7 +530,7 @@ class RepoContext:
         """True if the current branch's PR/MR is merged/closed (derived, not stored).
 
         DISPLAY-grade — keyed off the *cached* branch name. The hard gates do NOT read this;
-        they re-derive against the LIVE branch + HEAD via `lib.context.gate` (a cached branch
+        they re-derive against the LIVE branch + HEAD via `domain.context.gate` (a cached branch
         name could be stale after an unobserved checkout). See docs/branch-state.md."""
         p = self.current_pr()
         return bool(p and p.inactive)

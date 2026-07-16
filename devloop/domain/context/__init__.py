@@ -20,9 +20,9 @@ two storage domains to present one cohesive view. Families:
   docs/loop-state.md). Future members: steering capture, resolution events, the miner.
 
 Usage (DISPLAY — for injection/hints; a gate must use `gate.evaluate` instead):
-    from lib.context import RepoContext, WorkspaceContext, PullRequest
+    from domain.context import RepoContext, WorkspaceContext, PullRequest
     ctx = RepoContext.load(repo_dir)
-    if ctx and ctx.branch_pr_inactive():   # display-grade; gates → lib.context.gate
+    if ctx and ctx.branch_pr_inactive():   # display-grade; gates → domain.context.gate
         ...
 """
 from __future__ import annotations

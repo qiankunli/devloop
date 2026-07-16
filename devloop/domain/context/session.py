@@ -30,7 +30,7 @@ import re
 import time
 from pathlib import Path
 
-from .. import git_state
+from lib import git_state
 from . import base, store
 from .base import ACTIVE_REPO_TTL_SEC
 

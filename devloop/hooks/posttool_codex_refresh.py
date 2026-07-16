@@ -16,8 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hooks import hook_io, posttool_git_refresh  # noqa: E402
-from lib import repo_layout, workspace  # noqa: E402
-from lib.context import RepoContext, WorkspaceContext, record_active_repo, workspace_for_repo  # noqa: E402
+from domain import repo_layout, workspace  # noqa: E402
+from domain.context import RepoContext, WorkspaceContext, record_active_repo, workspace_for_repo  # noqa: E402
 from hooks.core import engine  # noqa: E402
 from hooks.core.domain import Command, FileChange  # noqa: E402
 

@@ -1,6 +1,7 @@
 """Unified forge facade — provider-neutral access to GitHub / GitLab, picked per-repo.
 
-    from lib.forge import forge_for_repo, build_window, ForgeError
+    from lib.forge import forge_for_repo
+    from domain.forge import ForgeError, build_window
     f = forge_for_repo(repo_dir)              # None if no token / unsupported remote
     if f:
         pr = f.create(source_branch="feat/x", target_branch="main", title="...")
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import config, gitcmd
-from .base import (
+from domain.forge import (
     Comment,
     Forge,
     ForgeAuthError,

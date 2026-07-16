@@ -11,13 +11,13 @@ import sys
 from pathlib import Path
 
 from _testkit import _FakeForge, _git, _git_out, _load_script, run_main  # noqa: E402  (bootstrap first)
-from lib.context import PullRequest  # noqa: E402
-from lib.forge.base import ForgeError  # noqa: E402
+from domain.context import PullRequest  # noqa: E402
+from domain.forge import ForgeError  # noqa: E402
 
 
 def test_run_review_skips_without_engine():
     """引擎没装（默认 ccr）→ run_review 写 status=skipped、退出 0（advisory，从不报错/挡事）。"""
-    from lib.context import base, store
+    from domain.context import base, store
     rr = _load_script("run_review")
     G = "/tmp/dlut_rr"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
@@ -44,7 +44,7 @@ def test_review_result_lands_on_the_branch_it_reviewed():
     同一条不变量还管着 `reviewed_sha`：引擎的 to_ref 若传字面量 "HEAD"，ccr 在它自己启动那刻
     才解析——审的是切换后的分支，记录里的 reviewed_sha 却是启动时的，记录直接撒谎。
     """
-    from lib.context import store
+    from domain.context import store
     rr = _load_script("run_review")
 
     G = "/tmp/dlut_rr_branch"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
@@ -99,7 +99,7 @@ def test_review_engine_resolve():
 
 def test_review_injection_line():
     """review.json 经 _format_turn 在下一轮注入浮现（pull）：running / N findings / clean；skipped 不出。"""
-    from lib.context import RepoContext, base, store
+    from domain.context import RepoContext, base, store
     G = "/tmp/dlut_revinj"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
     Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
@@ -124,7 +124,7 @@ def test_review_line_told_once_per_result():
     """Review 是**事件**不是状态：同一个结果讲一遍就闭嘴（否则 agent 会反复 triage 同一批
     已处理的 findings），重跑出新结果（sha/status/计数变了）才再讲。且 PostCompact 不复活它
     ——compaction 掉的是「说过的话」，state 必须重说，事件重投则是让人重做已做的事。"""
-    from lib.context import RepoContext, base, store
+    from domain.context import RepoContext, base, store
     G = "/tmp/dlut_revonce"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
     Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
@@ -175,7 +175,7 @@ def test_label_pending_nudge_is_forge_derived():
     """待打标 nudge 的数来自 pr.json（forge 派生的 pending），不是 review.json 的 finding 数。
     两个关键性质：(1) review.json 说有 2 条 finding、但都标完了(pending=0) → 不再喊;
     (2) review.json 整个没了 / 被下轮覆盖 → nudge 照样在,因为 pending 锚在 forge 上。"""
-    from lib.context import RepoContext, store
+    from domain.context import RepoContext, store
     G = "/tmp/dlut_labelnudge"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
     Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
@@ -206,8 +206,8 @@ def test_label_nudge_decays_then_reopens_on_new_findings():
     """待打标是**要人干活**的行，不是状态行：同一批 finding 问满 LABEL_NUDGE_CAP 次就闭嘴
     （不理也是一种回答）；来了新的一批（pending set 变了）才重新开口。turn Cadence 顶不了
     这件事——它按整块 hash 去重，随便哪行状态一动就整块重发，chore 行会永远跟着喊。"""
-    from lib.context import RepoContext, store
-    from lib.context.base import LABEL_NUDGE_CAP
+    from domain.context import RepoContext, store
+    from domain.context.base import LABEL_NUDGE_CAP
     G = "/tmp/dlut_nudgedecay"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
     Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
@@ -239,7 +239,7 @@ def test_label_nudge_decays_then_reopens_on_new_findings():
 def test_launch_background_relays():
     """detach 起后台 relay：不抛、写 PLAN 行；空列表 no-op。"""
     sgo = _load_script("commit_flow")
-    from lib.lifecycle import BackgroundSpec
+    from domain.lifecycle import BackgroundSpec
     G = "/tmp/dlut_relay"; shutil.rmtree(G, ignore_errors=True); os.makedirs(f"{G}/.devloop")
     plan: list = []
     sgo.launch_background_relays([BackgroundSpec("review", ["python3", "-c", "pass"])], G, plan)
@@ -414,8 +414,8 @@ def test_review_feedback_joins_fp_to_label():
     """review_feedback 把 finding comment（`ccr:fp=`）和它线程里的 `ccr:label=` 回复 join
     起来——join 键在 body 里、锚在 forge 上，不依赖任何本地状态。汇总 note 里也有 ccr:fp
     （每条回落 finding 一个），但它没锚点、没 thread，回不进去也就标不了，必须排除。"""
-    from lib.forge.base import Comment
-    from lib.review_feedback import Finding, findings, pending
+    from domain.forge import Comment
+    from domain.review_feedback import Finding, findings, pending
 
     cs = [
         # 汇总 note：无 thread，body 里有多个 ccr:fp → 不是 published finding
@@ -435,7 +435,7 @@ def test_review_feedback_joins_fp_to_label():
     assert [f.fp for f in pending(typo)] == ["fp3"]
 
     # pending_key 认 fp 集合、不认条数：标掉一条又新来一条 → 数没变但活变了 → key 必须变
-    from lib.review_feedback import pending_key
+    from domain.review_feedback import pending_key
     def _fs(*fps): return [Finding(fp=f, comment=Comment(id=f, thread_id=f)) for f in fps]
     assert pending_key(_fs("a", "b")) == pending_key(_fs("b", "a"))   # 顺序无关（两个面交织）
     assert pending_key(_fs("a", "b")) != pending_key(_fs("a", "c"))   # 同为 2 条,活不同

@@ -20,7 +20,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-from .forge.base import Comment
+from domain.forge import Comment
 
 # Body conventions written by run_review (`ccr:fp=`) and the label-review skill (`ccr:label=`).
 # Kept as loose scans, not anchored matches: both footers are embedded in prose/markdown

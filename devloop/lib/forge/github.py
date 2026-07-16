@@ -9,7 +9,7 @@ here — it's `base.build_window`, composed over `recent` + `get`.
 from __future__ import annotations
 
 from ._rest import RestClient
-from .base import Comment, Forge, ForgeError, ForgeNotFound, PullRequest, Release
+from domain.forge import Comment, Forge, ForgeError, ForgeNotFound, PullRequest, Release
 
 
 class GitHubForge(Forge):

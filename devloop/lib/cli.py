@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import repo as repo_model
+from domain import repo as repo_model
 
 # Single source of truth for the help text, deliberately worded like repo_model's failure
 # messages so `--help` and a resolution error describe the same contract.

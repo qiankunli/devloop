@@ -11,7 +11,8 @@ from __future__ import annotations
 import functools
 from pathlib import Path
 
-from lib import config, repo_layout
+from domain import repo_layout
+from lib import config
 from hooks.core.domain import FileChange, Target
 
 

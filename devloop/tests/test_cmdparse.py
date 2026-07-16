@@ -40,7 +40,7 @@ def test_protect_branch_checks_dash_c_target():
     """Codex #4: protect guard must judge the `-C` target repo, not the caller's cwd."""
     pb = _load_hook("pretool_policy_bash")
     from hooks import hook_io
-    from lib.context import RepoContext
+    from domain.context import RepoContext
     R = "/tmp/dlut_prot"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from _testkit import _git, _hook_input, _load_hook, run_main  # noqa: E402  (bootstrap first)
-from lib.context import PullRequest  # noqa: E402
+from domain.context import PullRequest  # noqa: E402
 
 
 def test_python_launcher_skips_old_name_and_uses_supported_fallback():
@@ -64,7 +64,7 @@ def test_turn_block_stable_across_clock_when_state_unchanged():
     时钟**允许**驱动的只有阈值跃迁（running→stale @REVIEW_STALE_SEC、requirement idle
     @REQUIREMENT_STALE_SEC）——那是真状态变了，本就该重发。跨不过任何阈值的时间流逝必须零变化。
     """
-    from lib.context import RepoContext, base, store
+    from domain.context import RepoContext, base, store
     R = "/tmp/dlut_blockstable"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -97,7 +97,7 @@ def test_turn_block_stable_across_clock_when_state_unchanged():
 def test_turn_text_merge_blocked_hint():
     """An open MR with an actionable readiness blocker surfaces a MERGE-BLOCKED nag in the turn
     banner; READY / the async UNKNOWN stay quiet (no clutter while still checking)."""
-    from lib.context import PullRequest, RepoContext
+    from domain.context import PullRequest, RepoContext
     R = "/tmp/dlut_mblock"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -133,7 +133,7 @@ def test_concurrent_lint_and_test_marks_dont_lose_each_other():
     """
     import threading
 
-    from lib.context import RepoContext
+    from domain.context import RepoContext
     R = "/tmp/dlut_concurrent_marks"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
     Path(f"{R}/f").write_text("x"); _git(R, "add", "f"); _git(R, "commit", "-qm", "i")
@@ -160,7 +160,7 @@ def test_concurrent_lint_and_test_marks_dont_lose_each_other():
 def test_context_segments():
     """Per-owner segment files: each writer touches a disjoint file (no lost update),
     and pr.json is branch-keyed so a branch switch self-invalidates pr_number with no writer."""
-    from lib.context import PullRequest, RepoContext, base, store
+    from domain.context import PullRequest, RepoContext, base, store
     R = "/tmp/dlut_seg"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -216,7 +216,7 @@ def test_context_segments():
 def test_branch_pr_in_flight():
     """in-flight = 当前分支有 open PR(循环的"人工 merge 前 / 轮次之间"态);
     与 inactive(merged/closed)互斥。orchestrator 据此提示"在续写在途 PR"。"""
-    from lib.context import PullRequest, RepoContext
+    from domain.context import PullRequest, RepoContext
     R = "/tmp/dlut_inflight"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -237,7 +237,7 @@ def test_branch_pr_in_flight():
 def test_in_flight_turn_hint():
     """in-flight 是软提示(不硬拦):turn 注入出现 IN-FLIGHT + 引导新工作切新分支;
     inactive 仍是 INACTIVE;healthy 两者都不出现。vocab 按 provider 贴词(GitHub→PR)。"""
-    from lib.context import PullRequest, RepoContext
+    from domain.context import PullRequest, RepoContext
     R = "/tmp/dlut_if_hint"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -271,7 +271,7 @@ def test_in_flight_turn_hint():
 def test_atomic_segment_write():
     """save_segment is atomic: a reader never sees a torn write, and a corrupt segment
     degrades to its default rather than nuking the whole context."""
-    from lib.context import base, store
+    from domain.context import base, store
     R = "/tmp/dlut_atomic"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     store.save_segment(R, "meta", {"repo": {"repo_dir": R}, "updated_at": 1.0})
@@ -286,8 +286,8 @@ def test_atomic_segment_write():
 def test_subproject_canonical():
     """symlink 农场:子项目条目本身是 symlink → 注入文本携带 canonical 映射,
     git 输出的真实路径不再被当成另一个仓库;普通子目录不带箭头。"""
-    from lib.context import Subproject, WorkspaceContext
-    from lib.context import workspace as wsctx
+    from domain.context import Subproject, WorkspaceContext
+    from domain.context import workspace as wsctx
     W = "/tmp/dlut_canon"
     shutil.rmtree(W, ignore_errors=True)
     os.makedirs(f"{W}/ws/plain"); os.makedirs(f"{W}/real/nb")
@@ -305,7 +305,7 @@ def test_subproject_autodiscovery():
     """文件系统是 subproject 存在性的事实来源:workspace 直接子项里"是/指向 git 仓"的
     才算;docs/隐藏目录/非 git 子目录被排除(目录黑名单 + git 判据)。AGENTS.md 表格降级为
     可选润色——按 name 补 aliases/role,language 缺省自动探测、表格显式值可覆盖。"""
-    from lib.context import workspace as wsctx
+    from domain.context import workspace as wsctx
     W = "/tmp/dlut_autodisc"
     shutil.rmtree(W, ignore_errors=True)
     os.makedirs(f"{W}/ws/docs")                         # 非仓子目录 → 黑名单排除
@@ -335,8 +335,8 @@ def test_subproject_autodiscovery():
 def test_resolve_repo_dir():
     """脚本 repo 解析与 cwd 解耦:显式路径 / 子项目名(模糊)/ cwd 所在仓库 /
     workspace last-active 四级;workspace 根 + 无活动记录 → 明确报错而非瞎猜。"""
-    from lib import repo as repo_model, workspace as registry
-    from lib.context import Subproject, WorkspaceContext, load_active_repo, record_active_repo
+    from domain import repo as repo_model, workspace as registry
+    from domain.context import Subproject, WorkspaceContext, load_active_repo, record_active_repo
     W = "/tmp/dlut_rr"
     shutil.rmtree(W, ignore_errors=True)
     os.makedirs(f"{W}/ws"); os.makedirs(f"{W}/real/nb")
@@ -374,8 +374,8 @@ def test_resolve_repo_dir():
 
 def test_resolve_repo_dir_deduplicates_canonical_matches():
     """同一 canonical repo 被多个 workspace symlink 注册时仍是一个候选，不误报 ambiguous。"""
-    from lib import repo as repo_model, workspace as registry
-    from lib.context import Subproject, WorkspaceContext
+    from domain import repo as repo_model, workspace as registry
+    from domain.context import Subproject, WorkspaceContext
     R = "/tmp/dlut_rr_dedup"
     shutil.rmtree(R, ignore_errors=True)
     os.makedirs(f"{R}/real/repo")
@@ -397,7 +397,7 @@ def test_resolve_repo_dir_deduplicates_canonical_matches():
 def test_code_unit_multi_dir():
     """多代码目录仓（server/ + cli/）：unit 由**操作目标路径**决定，不是 repo 单值属性。
     显式点名 cli 命中 cli；指向仓根 / 深层子目录归属到对应 unit；仓根回落默认 unit。"""
-    from lib import repo_layout, repo as repo_model
+    from domain import repo as repo_model, repo_layout
     R = "/tmp/dlut_unit"
     shutil.rmtree(R, ignore_errors=True)
     os.makedirs(f"{R}/repo/server/internal", exist_ok=True)
@@ -438,7 +438,7 @@ def test_code_unit_multi_dir():
 def test_select_units_by_change():
     """WorkSet 契约：验证目标由**本次改动**决定，不由解析来源猜——把「改 cli 不得跑 server」
     从约定升级成可执行约束。clean 从仓根 repo-wide 全选；显式=仓根不静默回落默认 server。"""
-    from lib import repo_layout, repo as repo_model
+    from domain import repo as repo_model, repo_layout
     R = "/tmp/dlut_select"
     shutil.rmtree(R, ignore_errors=True)
     repo = f"{R}/repo"
@@ -484,7 +484,7 @@ def test_discover_root_and_sub_units():
     2. `Makefile` 曾算 marker，于是 `docs/` 里一个 sphinx Makefile 就成了 code unit。Makefile
        是 unit 的动作入口（怎么 lint/test），不是身份。
     """
-    from lib import repo_layout
+    from domain import repo_layout
     R = "/tmp/dlut_discover"
     shutil.rmtree(R, ignore_errors=True)
     repo = f"{R}/repo"
@@ -524,8 +524,8 @@ def test_discover_root_and_sub_units():
 def test_active_repo_first_entry_symlink_workspace():
     """P1 回归:首次进入(尚无 context.json)+ symlink 子仓,record_active_repo 也要落
     active.json——workspace_for_repo 缺 context 时自刷新(解析 AGENTS.md 子项目表)。"""
-    from lib import workspace as registry
-    from lib.context import load_active_repo, record_active_repo
+    from domain import workspace as registry
+    from domain.context import load_active_repo, record_active_repo
     W = "/tmp/dlut_first"
     shutil.rmtree(W, ignore_errors=True)
     os.makedirs(f"{W}/ws"); os.makedirs(f"{W}/real/nb")
@@ -547,9 +547,9 @@ def test_active_repo_is_per_session():
     """session 运行态:active 绑定一 session 一文件(`.devloop/active/<sid>.json`,owner=session,
     铁律零例外)。并发 session 各干各的仓,兜底各回各家——B 的活动不劫持 A 的无参 /lint /gcam;
     绝不读别人的绑定当答案(candidates 仅作报错提示);SessionEnd 清掉本 session 的绑定。"""
-    from lib import workspace as registry
-    from lib.context import clear_active_repo, load_active_repo, record_active_repo
-    from lib.context.session import active_repo_candidates
+    from domain import workspace as registry
+    from domain.context import clear_active_repo, load_active_repo, record_active_repo
+    from domain.context.session import active_repo_candidates
     W = "/tmp/dlut_active_sess"
     shutil.rmtree(W, ignore_errors=True)
     os.makedirs(f"{W}/ws/nb"); os.makedirs(f"{W}/ws/svc")
@@ -578,7 +578,8 @@ def test_active_repo_is_per_session():
 def test_workspace_registry_user_level():
     """注册表住用户级 config.json(DEVLOOP_CONFIG_DIR 可覆写),不随 /plugin update 的
     版本化 cache 重置。"""
-    from lib import config, workspace as registry
+    from domain import workspace as registry
+    from lib import config
     W = "/tmp/dlut_reg"
     shutil.rmtree(W, ignore_errors=True); os.makedirs(f"{W}/cfg")
     old_env = os.environ.get("DEVLOOP_CONFIG_DIR")
@@ -689,7 +690,7 @@ def test_local_config_overrides_global():
 def test_maybe_register_workspace():
     """workspace 自动注册:非 git 目录 + AGENTS.md 带子项目表 → 注册;普通 git 仓 /
     无 AGENTS.md 的目录绝不误判。手工 init_workspace 不再是主路径的前置条件。"""
-    from lib import workspace as registry
+    from domain import workspace as registry
     W = "/tmp/dlut_auto"
     shutil.rmtree(W, ignore_errors=True)
     os.makedirs(f"{W}/cfg"); os.makedirs(f"{W}/ws/nb"); os.makedirs(f"{W}/plain"); os.makedirs(f"{W}/repo")
@@ -753,7 +754,7 @@ def test_session_log_is_append_only_and_kind_discriminated():
     记录类型——新类型直接落**同一个文件**，读者按 kind 过滤，不破坏既有行、也不用另开文件。
     `inject` 只是第一种。纯 exhaust：devloop 从不读回，删了不影响任何行为。"""
     import json as _json
-    from lib.context import record_session_event
+    from domain.context import record_session_event
     R = "/tmp/dlut_seslog"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -777,7 +778,7 @@ def test_inject_recorded_to_session_log():
     只记 devloop 注入的文本，不记用户 prompt（那在 CLI transcript 里，再存一份等于多一处没人
     审的留存）。"""
     import json as _json
-    from lib.context import RepoContext
+    from domain.context import RepoContext
     ui = _load_hook("userprompt_inject")
     R = "/tmp/dlut_injlog"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
@@ -814,7 +815,7 @@ def test_append_jsonl_ledger():
     的整体覆写）；写失败 best-effort 不抛。"""
     import json
 
-    from lib.context import base, store
+    from domain.context import base, store
     R = "/tmp/dlut_ledger"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     store.append_jsonl(R, "friction", {"a": 1})
@@ -828,7 +829,7 @@ def test_friction_records_deny():
     live branch）；allow → 不写文件。best-effort：append 抛错也不影响 guard（record_deny 不抛）。"""
     import json
 
-    from lib.context import store
+    from domain.context import store
     from hooks import friction
     from hooks.core.domain import Decision, Finding, Severity
     R = "/tmp/dlut_friction"
@@ -864,7 +865,7 @@ def test_friction_sink_wired_into_bash_guard():
     即"引擎已算出的 Decision 不再发射后即弃"。"""
     import json
 
-    from lib.context import RepoContext
+    from domain.context import RepoContext
     guard = _load_hook("pretool_policy_bash")
     R = "/tmp/dlut_friction_wire"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
@@ -886,8 +887,8 @@ def test_requirement_open_attach_resolve():
     resolve 反查；open 幂等（不重复 session_start）；note 对未索引分支惰性 open。"""
     import json
 
-    from lib.context import store
-    from lib.context.loopstate import requirement
+    from domain.context import store
+    from domain.context.loopstate import requirement
     R = "/tmp/dlut_req"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
 
@@ -927,8 +928,8 @@ def test_requirement_reconcile_closures():
     staleness backstop → assumed_done。"""
     import json
 
-    from lib.context import store
-    from lib.context.loopstate import requirement
+    from domain.context import store
+    from domain.context.loopstate import requirement
     R = "/tmp/dlut_req_close"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
 
@@ -977,8 +978,8 @@ def test_requirement_arcs_and_offwindow_closure():
     PR 掉出 5 条窗口时用 forge.get(number) 兜底，从不为未建 PR 的分支查 forge。"""
     import json
 
-    from lib.context import store
-    from lib.context.loopstate import requirement
+    from domain.context import store
+    from domain.context.loopstate import requirement
     R = "/tmp/dlut_req_arcs"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
 
@@ -1010,7 +1011,7 @@ def test_requirement_arcs_and_offwindow_closure():
     class _F:
         def get(self, num):
             assert num == 105                       # 只查 spine 里已知存在的 PR
-            from lib.context import PullRequest
+            from domain.context import PullRequest
             return PullRequest(number=105, state="merged", source_branch="feat/x")
     orig = requirement.forge_for_repo
     requirement.forge_for_repo = lambda repo: _F()
@@ -1037,8 +1038,8 @@ def test_requirement_attach_guards_arc_invariant():
     （否则 spine 首行是 branch_cut，工具靠首行识别原始流的约定被破坏）；
     ② 需求已关闭后 attach 后续分支（merge 后 follow-up）→ 新 arc 的 session_start 先行
     （否则 branch_cut 悬在 session_end 之后，_active_tail 看不见、永远不被 reconcile）。"""
-    from lib.context import store
-    from lib.context.loopstate import requirement
+    from domain.context import store
+    from domain.context.loopstate import requirement
     R = "/tmp/dlut_req_attach"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
 
@@ -1071,9 +1072,9 @@ def test_requirement_cross_repo_dev_root():
     （Mode B——仓不属任何 workspace——退化为 repo 根，即其余 requirement 测试的形态。）"""
     import json
 
-    from lib import workspace as registry
-    from lib.context import store
-    from lib.context.loopstate import requirement
+    from domain import workspace as registry
+    from domain.context import store
+    from domain.context.loopstate import requirement
 
     W = "/tmp/dlut_req_ws"
     shutil.rmtree(W, ignore_errors=True)
@@ -1128,10 +1129,10 @@ def test_state_domains_worktree():
     （branch/validation）状态全部落**主仓** .devloop（worktree 清理不再丢数据）；owner 锁留在
     worktree 自己的 .devloop（并行 worktree 不被误串行化）；submodule 形态的 .git 文件回落本地
     （绝不往宿主 .git/modules 里写）。"""
-    from lib.context import RepoContext, store
+    from domain.context import RepoContext, store
     from hooks import friction
-    from lib.context.loopstate import requirement
-    from lib.context import session as session_lock
+    from domain.context.loopstate import requirement
+    from domain.context import session as session_lock
     from hooks.core.domain import Decision, Finding, Severity
     M = "/tmp/dlut_domains_main"
     shutil.rmtree(M, ignore_errors=True); os.makedirs(M)
@@ -1167,7 +1168,7 @@ def test_state_domains_worktree():
     # unit 同为 "."。用绝对路径当 key 会写成 <M>/.worktrees/wt——戳落在主仓 branches/feat/wt/ 里，
     # 却带着一个只在那个 worktree 成立的 key：worktree 删掉再在主 checkout 上 feat/wt，戳就查不到，
     # 白跑一遍 lint；且 key 随 worktree 增删无限累积。
-    from lib.repo_layout import CodeUnit
+    from domain.repo_layout import CodeUnit
     assert CodeUnit.at(W, W).id == CodeUnit.at(M, M).id == "."
     wt_ctx.mark_lint_passed(CodeUnit.at(W, W).id, "fp1")
     RepoContext.refresh_all(M)

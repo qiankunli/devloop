@@ -10,7 +10,7 @@ signal：恒 `ok=True`、带 relay，从不挡 commit（信号发成功就是过
 from __future__ import annotations
 
 from lib import config
-from lib.lifecycle.base import BackgroundSpec, HookResult
+from domain.lifecycle.base import BackgroundSpec, HookResult
 
 
 def review(repo: str, paths: list[str] | None = None) -> HookResult:

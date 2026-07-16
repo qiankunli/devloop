@@ -1,7 +1,7 @@
 """Workspace registry — which directories are registered aggregate workspaces.
 
 Per-workspace state (`<workspace_root>/.devloop/context.json`) is owned by
-`lib.context.workspace`. This module owns only the registry and discovery
+`domain.context.workspace`. This module owns only the registry and discovery
 (`find_containing_workspace` / `maybe_register_workspace`).
 
 Persistence lives in the unified `lib.config` (`~/.devloop/config.json`,
@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import config
+from lib import config
 
 # Back-compat re-exports: other hooks call `workspace.config_dir()` / `workspace.plugin_root()`.
 config_dir = config.config_dir
@@ -62,7 +62,7 @@ def maybe_register_workspace(cwd: str | Path) -> str | None:
     agents_md = root / "AGENTS.md"
     if not agents_md.exists():
         return None
-    from . import parsers  # local import: keep this module's import graph flat
+    from lib import parsers  # local import: keep this module's import graph flat
     from .context import workspace as wsctx
     if not wsctx.discover_subproject_names(root) and not parsers.parse_subprojects_section(agents_md):
         return None

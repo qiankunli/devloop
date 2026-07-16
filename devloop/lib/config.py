@@ -48,7 +48,7 @@ _DEFAULTS: dict = {
     "workspaces": [],
     "forges": {},
     # devops 生命周期 hook：相位 → [hook 名]。opt-in，默认全空 = dispatch 每相位 no-op、零行为
-    # 变化。lib.lifecycle.dispatch 读它决定每个相位跑哪些 hook。
+    # 变化。domain.lifecycle.dispatch 读它决定每个相位跑哪些 hook。
     "lifecycle": {
         "default": {"pre_commit": [], "post_commit": [], "pre_mr": [], "post_mr": []},
         "repos": {},
@@ -169,7 +169,7 @@ def forge_token(host: str, provider: str, repo_dir: str | Path | None = None) ->
 
 def lifecycle(repo_dir: str | Path | None = None) -> dict:
     """已解析的 devops 生命周期 hook 配置：section 的 `default` 叠上 `repos[<repo_dir 绝对路径>]`，
-    返回 `phase → [hook 名]`。`lib.lifecycle.dispatch` 读它决定每个相位跑哪些 hook。
+    返回 `phase → [hook 名]`。`domain.lifecycle.dispatch` 读它决定每个相位跑哪些 hook。
     opt-in：默认全空 → 每相位 no-op、零行为变化。"""
     section = load(repo_dir).get("lifecycle") or {}
     merged = dict(section.get("default") or {})

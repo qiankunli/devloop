@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lib import workspace
-from lib.context import WorkspaceContext, load_active_repo
+from domain import workspace
+from domain.context import WorkspaceContext, load_active_repo
 from hooks.core.domain import Change, Command, Finding, Severity, TargetKind
 from hooks.core.protocol import Rule
 

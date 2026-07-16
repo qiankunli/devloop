@@ -72,7 +72,7 @@ def test_migrated_command_rules_parity():
     """平替校验：命令侧规则经新引擎跑通，行为与原 guard 一致。"""
     import json as _json
 
-    from lib.context import RepoContext, session as session_lock
+    from domain.context import RepoContext, session as session_lock
     bash = _load_hook("pretool_policy_bash")
 
     def d(cmd, cwd="/tmp", sid=""):
@@ -145,7 +145,7 @@ def test_command_guards_judge_the_parsed_run_dir():
     算成 cli/ 了，guard 却拿 `ctx.cwd`（= 仓根，cd **之前**的位置）去问 code unit——于是不管
     cd 到哪都在问默认 unit：该拦的不拦（下面 R），不该拦的误拦（下面 U）。
     """
-    from lib.context import RepoContext
+    from domain.context import RepoContext
     bash = _load_hook("pretool_policy_bash")
 
     def d(cmd, cwd):
@@ -183,7 +183,7 @@ def test_command_guards_judge_the_parsed_run_dir():
 def test_lifecycle_dispatch():
     """facade 机制：并发 join + 聚合。gate fail / 异常 fail-closed / 未知 hook 可见 /
     signal hook 不挡且其 relay 进 to_launch / 空配置 no-op / 未知相位抛。"""
-    from lib import lifecycle as lc
+    from domain import lifecycle as lc
     HR, BG = lc.HookResult, lc.BackgroundSpec
 
     seen: list = []
@@ -239,7 +239,7 @@ def test_lifecycle_dispatch():
 def test_code_unit_test_target_detect_matches_execute():
     """CodeUnit.test_target 探测即执行：只有 `test-ci` 的仓要跑 `make test-ci`，不能判成「有
     测试」却硬跑不存在的 `make test`（旧 `has_target(suffix=True)` bug）。无 test 目标 → None。"""
-    from lib.repo_layout import CodeUnit
+    from domain.repo_layout import CodeUnit
     D = "/tmp/dlut_testtarget"
     shutil.rmtree(D, ignore_errors=True)
     os.makedirs(f"{D}/ci"); os.makedirs(f"{D}/plain"); os.makedirs(f"{D}/none"); os.makedirs(f"{D}/go")
@@ -315,8 +315,8 @@ def test_ecosystem_environment_prepare_contract():
 def test_checks_prepare_environment_before_running_commands():
     """环境准备是 lint/test 的显式前置拍；失败时不启动 make，并标成环境错误。"""
     from lib import ecosystem
-    from lib.lifecycle import checks
-    from lib.repo_layout import CodeUnit
+    from domain.lifecycle import checks
+    from domain.repo_layout import CodeUnit
 
     R = "/tmp/dlut_check_env"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
@@ -338,7 +338,7 @@ def test_worktree_creation_prepares_every_code_unit():
     """`/enter --worktree` 提前准备全部 unit；gate 后续仍会走同一 ensure_ready 做兜底。"""
     from lib import ecosystem
 
-    from lib import worktree
+    from domain import worktree
     R = "/tmp/dlut_prepare_worktree"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/cli")
     Path(f"{R}/pyproject.toml").write_text("[project]\nname='root'\n")
@@ -355,7 +355,7 @@ def test_worktree_creation_prepares_every_code_unit():
 
 def test_enter_delegates_resolution_and_worktree_lifecycle():
     """`enter.py` keeps the line protocol but delegates policy to repo/worktree modules."""
-    from lib import repo as repo_model, worktree
+    from domain import repo as repo_model, worktree
 
     enter = _load_script("enter")
     original_resolve = repo_model.resolve_enter_target
@@ -389,9 +389,9 @@ def test_lint_passport_is_bound_to_content_not_to_edit_events():
     """
     import json as _json
 
-    from lib import repo_layout, repo as repo_model
-    from lib.context import RepoContext
-    from lib.lifecycle import checks
+    from domain import repo as repo_model, repo_layout
+    from domain.context import RepoContext
+    from domain.lifecycle import checks
     bash = _load_hook("pretool_policy_bash")
 
     R = str(Path("/tmp/dlut_passport").resolve())   # canonical：config 的 repos key 也用它
@@ -448,8 +448,8 @@ def test_shared_paths_own_no_unit_so_a_docs_change_validates_nothing():
     也刻意**不是**「共享路径 → 全部 unit」：那看着保守，实际是让每个纯文档 PR 都跑全仓 lint，
     任一 unit 有存量错就拦你——正是 phase_paths 那套范围收敛要消灭的失败，换扇门又回来。
     """
-    from lib import repo as repo_model
-    from lib.lifecycle import checks
+    from domain import repo as repo_model
+    from domain.lifecycle import checks
 
     R = str(Path("/tmp/dlut_shared_paths").resolve())
     shutil.rmtree(R, ignore_errors=True)
@@ -494,7 +494,7 @@ def test_precommit_gate_scopes_to_files_being_committed():
     扇门：那次是 clean tree 退化成全仓，这次是 --files 没被当成范围）。副作用还有一条：lint 的
     `make fix` 会去改 legacy/ 的文件，改完又不进本次 commit，凭空搅脏工作树。
     """
-    from lib.lifecycle import checks
+    from domain.lifecycle import checks
     sgo = _load_script("commit_flow")
 
     R = str(Path("/tmp/dlut_files_scope").resolve())
@@ -537,8 +537,8 @@ def test_dispatch_reaches_the_real_lint_handler():
     """
     import json as _json
 
-    from lib import lifecycle as lc
-    from lib.context import RepoContext
+    from domain import lifecycle as lc
+    from domain.context import RepoContext
 
     # macOS 的 /tmp 是指向 /private/tmp 的软链：config 的 repos key 用 canonical 路径，若拿
     # 未解析的 /tmp/... 去 dispatch 就匹配不上、names 落空 → results 为空 → proceed 空过为 True，
@@ -573,8 +573,8 @@ def test_phase_scope_survives_a_clean_tree():
     → select_units 读成「不知道范围」→ repo-wide 枚举全部 unit → 一个你根本没碰、却有存量 lint
     错误的 unit 让 gate fail → commit 已落地，push 和 MR 全被拦。
     """
-    from lib import repo as repo_model
-    from lib.lifecycle import checks
+    from domain import repo as repo_model
+    from domain.lifecycle import checks
     sgo = _load_script("commit_flow")
 
     R = "/tmp/dlut_phase_scope"
@@ -626,7 +626,7 @@ def test_phase_scope_survives_a_clean_tree():
 
 def test_lifecycle_checks_follow_changed_code_unit():
     """gcampr lifecycle 与 run-test 必须共用 WorkSet：只改 cli 时不得跑仓根 test。"""
-    from lib.lifecycle import checks
+    from domain.lifecycle import checks
 
     R = "/tmp/dlut_lifecycle_unit"
     shutil.rmtree(R, ignore_errors=True)
@@ -654,8 +654,8 @@ def test_partial_unit_lint_failure_does_not_unlock_bare_commit():
     """
     import json as _json
 
-    from lib.context import RepoContext
-    from lib.lifecycle import checks
+    from domain.context import RepoContext
+    from domain.lifecycle import checks
     bash = _load_hook("pretool_policy_bash")
 
     R = "/tmp/dlut_partial_unit"
@@ -709,7 +709,7 @@ def test_lifecycle_config_layering():
 
 def test_lifecycle_review_signal_hook():
     """code-review 是 signal hook：恒不挡（proceed），返回一个指向 run_review.py 的后台 relay。"""
-    from lib import lifecycle as lc
+    from domain import lifecycle as lc
     r = lc.dispatch("post_mr", "/some/repo", names=["review"])   # 走真实 _BUILTIN 解析
     assert r.proceed                                               # signal hook 永不挡
     assert [s.name for s in r.to_launch] == ["review"]

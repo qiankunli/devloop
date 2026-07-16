@@ -4,7 +4,7 @@
 
 > 架构 / 扩展看 [`AGENTS.md`](./AGENTS.md)；术语看 [`CONCEPTS.md`](./CONCEPTS.md)。
 
-代码结构与这条主链一致：`lib/` 承载 Workspace / Repo / CodeUnit、branch/PR 状态及其合法变化；`hooks/` 把 LLM/CLI 工具事件投影成领域决策，`scripts/` 编排 enter、git/PR 与验证工作流。两类入口都只向领域层依赖，让 LLM 对 workspace/repo 的作用经过可控路径。
+代码结构与这条主链一致：`domain/` 承载 Workspace / Repo / CodeUnit、branch/PR 状态及其合法变化，`lib/` 提供 Git/forge/ecosystem/notify/config 等技术能力；`hooks/` 把 LLM/CLI 工具事件投影成领域决策，`scripts/` 编排 enter、git/PR 与验证工作流，让 LLM 对 workspace/repo 的作用经过可控路径。
 
 独立 `.devloop/` 命名空间状态，与其它工具互不干扰。当前支持 **Claude Code + Codex**；Claude 使用完整 native event，Codex 使用其 hook 子集并在少数事件上降级。
 

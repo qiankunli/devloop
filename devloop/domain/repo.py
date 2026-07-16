@@ -26,7 +26,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import gitcmd, repo_layout, workspace
+from lib import gitcmd
+
+from . import repo_layout, workspace
 from .context import RepoContext, WorkspaceContext
 from .context.session import active_repo_candidates, load_active_repo
 from .context.workspace import workspace_for_repo

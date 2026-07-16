@@ -31,7 +31,8 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from ...forge import ForgeError, forge_for_repo
+from domain.forge import ForgeError
+from lib.forge import forge_for_repo
 from .. import base, store
 
 _INDEX = "requirements"   # segment name → .devloop/requirements.json + session dir root

@@ -10,7 +10,7 @@ from __future__ import annotations
 import urllib.parse
 
 from ._rest import RestClient
-from .base import Comment, Forge, ForgeError, MergeReadiness, PullRequest, Release
+from domain.forge import Comment, Forge, ForgeError, MergeReadiness, PullRequest, Release
 
 # GitLab persisted state → neutral.
 _STATE_IN = {"opened": "open", "merged": "merged", "closed": "closed", "locked": "closed"}

@@ -30,7 +30,7 @@ from datetime import datetime
 
 # The neutral code-review proposal lives in the forge domain (provider-agnostic). The
 # state layer persists it and joins it by number; it does not redefine it.
-from lib.forge.base import PRS_CAP, Comment, MergeReadiness, PullRequest, pr_label, vocab  # noqa: F401
+from domain.forge import PRS_CAP, Comment, MergeReadiness, PullRequest, pr_label, vocab  # noqa: F401
 
 # ── tunables (seconds unless noted) ──────────────────────────────────────────
 REPO_STALE_SEC = 300          # repo context older than this → refresh_all on next cd/prompt

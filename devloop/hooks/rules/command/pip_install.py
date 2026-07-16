@@ -4,7 +4,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from lib import ecosystem, repo_layout
+from domain import repo_layout
+from lib import ecosystem
 from hooks.core.domain import Command, Finding, Severity, TargetKind
 from hooks.core.protocol import Rule
 

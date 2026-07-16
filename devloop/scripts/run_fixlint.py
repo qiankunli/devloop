@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fix-lint skill 的 CLI 入口：解析 repo，跑 `make fix` + lint target，通过则盖 lint 戳。
 
-lint 逻辑见 `lib.lifecycle.checks.lint`（与 lifecycle 的 pre_commit gate 是同一段）。本脚本
+lint 逻辑见 `domain.lifecycle.checks.lint`（与 lifecycle 的 pre_commit gate 是同一段）。本脚本
 只做 repo 解析 + 实时输出 + 退出码。只有 `make fix` 能改文件，从不手改代码来满足 linter。
 
 Usage: run_fixlint.py [--repo R | R]   (R = 路径或 workspace 子项目名；
@@ -16,9 +16,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from lib import cli, repo as repo_model  # noqa: E402
-from lib.context import record_active_repo  # noqa: E402
-from lib.lifecycle import checks  # noqa: E402
+from domain import repo as repo_model  # noqa: E402
+from lib import cli  # noqa: E402
+from domain.context import record_active_repo  # noqa: E402
+from domain.lifecycle import checks  # noqa: E402
 
 
 def main(argv: list[str]) -> int:

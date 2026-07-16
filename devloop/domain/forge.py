@@ -8,7 +8,7 @@ module is PURE: dataclasses + the `Forge` port (ABC) + small domain helpers, no 
 
 Greenfield seams:
 - The boundary is at *provider*, not *transport*. GitHub and GitLab are two live adapters
-  picked per-repo (see `__init__.forge_for_repo`), each implementing this port.
+  picked per-repo by `lib.forge.forge_for_repo`, each implementing this port.
 - The port exposes only the *fetch/mutate primitives* devloop needs; cross-provider
   *policy* (the recent-PR window) lives once in `build_window`, composed over those
   primitives — not duplicated in each adapter.

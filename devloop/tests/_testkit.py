@@ -1,8 +1,8 @@
 """devloop 测试共享设施（非测试文件）：hermetic bootstrap + 公共 helper。
 
-import 本模块的副作用即完成两件 bootstrap（必须发生在任何 `lib.*` import 之前，
+import 本模块的副作用即完成两件 bootstrap（必须发生在任何 `domain.*` / `lib.*` import 之前，
 所以每个测试文件的第一条 import 都应是 _testkit）：
-1. 把 plugin root 加进 sys.path，使顶层 `lib` / `hooks` package 可导入；
+1. 把 plugin root 加进 sys.path，使顶层 `domain` / `lib` / `hooks` package 可导入；
 2. 把 DEVLOOP_CONFIG_DIR 指向空临时目录——测试绝不读开发机真实 ~/.devloop/config.json
    （否则一个全局 lifecycle.pre_commit 会让 precommit-gate 在每个测试 repo 上生效、拦住 commit）。
    需要 config 的测试各自写自己的。
@@ -29,8 +29,8 @@ shutil.rmtree(_GCFG, ignore_errors=True)
 os.makedirs(_GCFG, exist_ok=True)
 os.environ["DEVLOOP_CONFIG_DIR"] = _GCFG
 
-from lib.context import PullRequest  # noqa: E402
-from lib.forge.base import Comment, Forge, ForgeNotFound, Release  # noqa: E402
+from domain.context import PullRequest  # noqa: E402
+from domain.forge import Comment, Forge, ForgeNotFound, Release  # noqa: E402
 
 
 class _FakeForge(Forge):

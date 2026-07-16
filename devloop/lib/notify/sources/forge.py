@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lib.context import store
-from lib.forge import MergeReadiness, pr_label
+from domain.context import store
+from domain.forge import MergeReadiness, pr_label
 from lib.notify.base import Notification
 
 INSTRUCTIONS = (

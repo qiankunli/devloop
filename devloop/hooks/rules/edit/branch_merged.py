@@ -5,7 +5,7 @@ repo 从被编辑文件解析（ctx.git_root）。
 """
 from __future__ import annotations
 
-from lib.context import gate, pr_label
+from domain.context import gate, pr_label
 from hooks.core.domain import FileChange, Finding, Severity, TargetKind
 from hooks.core.protocol import Rule
 

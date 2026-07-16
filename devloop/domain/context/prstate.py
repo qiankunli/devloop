@@ -1,7 +1,7 @@
 """PR / remote-branch state acquisition — the shared library the monitor AND gcampr use to
 pull the forge + the server's trunk tips into the monitor-owned segments.
 
-It lives in `lib` (not the monitor *script*) so the gate path (`lib.context.gate`) and gcampr
+It lives in `domain` (not the monitor *script*) so the gate path (`domain.context.gate`) and gcampr
 can trigger an AUTHORITATIVE refresh without importing a script — the old arrangement had the
 poll logic in `scripts/poll_pr_status.py` and gcampr reached back into it, then discarded the
 result (a silent no-op). Both writers go through here.
@@ -15,8 +15,11 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from .. import git_state, review_feedback
-from ..forge import ForgeError, build_window, forge_for_repo
+from lib import git_state
+from domain.forge import ForgeError, build_window
+from lib.forge import forge_for_repo
+
+from .. import review_feedback
 from . import base, store
 
 # Conventional trunk names to track remote tips for. ls-remote returns only those that exist, so

@@ -35,7 +35,7 @@ commit_flow 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https://g
   两级都锚不上才进汇总。多这一级的理由是**可打标性**:只有锚点评论有线程、能被回复
   `ccr:label=`,汇总里的 finding 只是一行文本、没有可回复的对象,等于退出 ground truth 回收。
 - **打标闭环锚在 forge 上,不落本地**:finding comment 带 `ccr:fp=` 指纹,verdict 以
-  `ccr:label=` 回复落在同一线程,两者由 `lib/review_feedback.py` 从 `forge.comments()` join
+  `ccr:label=` 回复落在同一线程,两者由 `domain/review_feedback.py` 从 `forge.comments()` join
   回来。join 键跟着持久对象（comment body）走,所以换机器 / 换 worktree / 换 session 都接得上;
   本地存一份 fp→comment-id 表只会是这份数据的陈旧副本,丢了还会把 join 悄悄弄断。
   待打标数（`Review findings: N 条待打标`）由此派生,刻意不用 review.json 的 finding 数——
@@ -74,10 +74,10 @@ agent：pr findings <n> --pending → 逐条对照真实 diff 求证 → pr repl
 （`_BG_CAP`），因为它每文件都注、要控 token。AGENTS.md / 受影响 spec 等更多上下文是后续增量
 （往同一个 background 里加）。
 
-关键对象（锚点）：`lib/lifecycle/review.py`（`review` handler，返回 relay）、`commit_flow`
+关键对象（锚点）：`domain/lifecycle/review.py`（`review` handler，返回 relay）、`commit_flow`
 （`launch_background_relays`，各相位 git 动作后 detach 起）、`scripts/run_review.py`（后台执行体：
 审全量 diff + 机会性发评论，经 `lib/review_engine.py` 协议调引擎）、`lib/review_engine.py`（**review
-tool 协议** `ReviewEngine` + `ReviewResult` + ocr/ccr adapter）、`lib/review_feedback.py`（fp↔label
+tool 协议** `ReviewEngine` + `ReviewResult` + ocr/ccr adapter）、`domain/review_feedback.py`（fp↔label
 join，纯函数、无 HTTP）、`scripts/pr.py`（`pr findings` / `pr reply`：打标闭环的读写两半）、
 `forge.comment`（写评论原语，gitlab notes / github issue comment）、
 `.devloop/review.json`（结果段）、`context/repo.py` 的 `Review:` 注入行（pull）。

@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import ecosystem, gitcmd
+from lib import ecosystem, gitcmd
 
 
 @dataclass(frozen=True)

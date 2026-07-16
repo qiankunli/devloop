@@ -14,8 +14,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lib import gitcmd, repo_layout
-from lib.context import gate
+from domain import repo_layout
+from lib import gitcmd
+from domain.context import gate
 from hooks.core.domain import Command, Finding, Severity, TargetKind
 from hooks.core.protocol import Rule
 

@@ -17,10 +17,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from lib import ecosystem, repo as repo_model
-from lib.context import RepoContext
-from lib.repo_layout import CodeUnit
-from lib.lifecycle.base import HookResult
+from lib import ecosystem
+from domain import repo as repo_model
+from domain.context import RepoContext
+from domain.repo_layout import CodeUnit
+from domain.lifecycle.base import HookResult
 
 _TAIL_LINES = 40   # 失败时回带的输出尾行数（够定位、不淹没 PLAN）
 

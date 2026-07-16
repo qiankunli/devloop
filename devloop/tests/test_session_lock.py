@@ -9,7 +9,7 @@ HOOKS = Path(__file__).resolve().parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS.parent))
 
 from _testkit import _git, _load_hook  # noqa: E402
-from lib.context import session as session_lock  # noqa: E402
+from domain.context import session as session_lock  # noqa: E402
 
 
 def test_acquire_then_foreign_and_self(tmp_path):

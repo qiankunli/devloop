@@ -14,8 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hooks import hook_io
-from lib import repo_layout, workspace  # noqa: E402
-from lib.context import RepoContext, WorkspaceContext  # noqa: E402
+from domain import repo_layout, workspace  # noqa: E402
+from domain.context import RepoContext, WorkspaceContext  # noqa: E402
 
 
 def handle(inp: hook_io.HookInput) -> None:
