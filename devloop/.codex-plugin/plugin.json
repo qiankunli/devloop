@@ -1,6 +1,6 @@
 {
   "name": "devloop",
-  "version": "0.1.46",
+  "version": "0.1.47",
   "description": "Dev-loop workflow: git/PR (GitHub + GitLab) + workspace-aware state injection + lint/test gates + execution-level hard intercepts for Claude Code and Codex.",
   "author": {
     "name": "qiankunli",
