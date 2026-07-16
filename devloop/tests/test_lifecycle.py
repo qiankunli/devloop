@@ -9,7 +9,9 @@ import json
 import os
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 from _testkit import _git, _hook_input, _load_hook, _load_script, run_main  # noqa: E402  (bootstrap first)
 
@@ -237,6 +239,103 @@ def test_code_unit_test_target_detect_matches_execute():
     assert CodeUnit.at(f"{D}/go", D).test_command() == ("go", "test", "./...")
     # 身份在出生点算清，消费方直接读 .id（不再各自拿 git_root 重推）
     assert CodeUnit.at(f"{D}/ci", D).id == "ci" and CodeUnit.at(D, D).id == "."
+
+
+def test_ecosystem_environment_prepare_contract():
+    """worktree 环境契约：Node/Python 从 lockfile frozen 恢复、盖 manifest+lock 指纹；
+    lifecycle 的 lint/test 并发探测同一冷 unit 时只允许一次 install。"""
+    from lib import ecosystem
+
+    R = "/tmp/dlut_ecosystem"
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(R)
+    Path(f"{R}/package.json").write_text('{"devDependencies":{"typescript":"5"}}')
+    Path(f"{R}/pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
+
+    node = ecosystem.detect(R)
+    assert isinstance(node, ecosystem.NodeEcosystem)
+    assert node.prepare_command(R) == ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"]
+    assert "node_modules missing" in (node.env_problem(R) or "")
+
+    calls = []
+    original = ecosystem.subprocess.run
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs["cwd"]))
+        os.makedirs(f"{R}/node_modules", exist_ok=True)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    ecosystem.subprocess.run = fake_run
+    try:
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            assert list(ex.map(lambda _: ecosystem.ensure_ready(R), range(2))) == [None, None]
+    finally:
+        ecosystem.subprocess.run = original
+    assert calls == [(["pnpm", "install", "--frozen-lockfile", "--prefer-offline"], R)]
+    assert node.env_problem(R) is None
+    Path(f"{R}/package.json").write_text('{"devDependencies":{"typescript":"6"}}')
+    assert "package.json or lockfile changed" in (node.env_problem(R) or "")
+
+    # 没 lockfile 不允许裸 install 改项目状态；明确报环境问题，让检查别伪装成 tsc 报错。
+    N = "/tmp/dlut_ecosystem_nolock"
+    shutil.rmtree(N, ignore_errors=True); os.makedirs(N)
+    Path(f"{N}/package.json").write_text("{}")
+    no_lock = ecosystem.detect(N)
+    assert no_lock and no_lock.prepare_command(N) is None
+    assert "no supported lockfile" in (ecosystem.ensure_ready(N) or "")
+
+    P = "/tmp/dlut_ecosystem_python"
+    shutil.rmtree(P, ignore_errors=True); os.makedirs(f"{P}/.venv")
+    Path(f"{P}/pyproject.toml").write_text("[project]\nname='x'\n")
+    Path(f"{P}/uv.lock").write_text("version = 1\n")
+    py = ecosystem.detect(P)
+    assert isinstance(py, ecosystem.PythonEcosystem)
+    assert py.prepare_command(P) == ["uv", "sync", "--frozen"]
+    py.mark_prepared(P)
+    assert py.env_problem(P) is None
+    Path(f"{P}/uv.lock").write_text("version = 2\n")
+    assert "pyproject.toml or uv.lock changed" in (py.env_problem(P) or "")
+
+
+def test_checks_prepare_environment_before_running_commands():
+    """环境准备是 lint/test 的显式前置拍；失败时不启动 make，并标成环境错误。"""
+    from lib import ecosystem
+    from lib.lifecycle import checks
+    from lib.repo_layout import CodeUnit
+
+    R = "/tmp/dlut_check_env"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
+    Path(f"{R}/package.json").write_text("{}")
+    Path(f"{R}/Makefile").write_text("lint:\n\tfalse\ntest:\n\tfalse\n")
+    unit = CodeUnit.at(R, R)
+    original = ecosystem.ensure_ready
+    ecosystem.ensure_ready = lambda path: "dependency restore unavailable"
+    try:
+        lint = checks.lint(R, unit=unit)
+        test = checks.test(R, unit=unit)
+    finally:
+        ecosystem.ensure_ready = original
+    assert not lint.ok and not lint.advisory and "environment setup failed" in lint.summary
+    assert not test.ok and test.advisory and "environment setup failed" in test.summary
+
+
+def test_worktree_creation_prepares_every_code_unit():
+    """`/enter --worktree` 提前准备全部 unit；gate 后续仍会走同一 ensure_ready 做兜底。"""
+    from lib import ecosystem
+
+    resolver = _load_script("resolve_subproject")
+    R = "/tmp/dlut_prepare_worktree"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/cli")
+    Path(f"{R}/pyproject.toml").write_text("[project]\nname='root'\n")
+    Path(f"{R}/cli/package.json").write_text("{}")
+    seen = []
+    original = ecosystem.ensure_ready
+    ecosystem.ensure_ready = lambda path: seen.append(Path(path).name) or None
+    try:
+        assert resolver.prepare_worktree(R) == []
+    finally:
+        ecosystem.ensure_ready = original
+    assert seen == ["dlut_prepare_worktree", "cli"]
 
 def test_lint_passport_is_bound_to_content_not_to_edit_events():
     """lint 通行证绑**内容指纹**，不绑「有没有人报告过改动」。
