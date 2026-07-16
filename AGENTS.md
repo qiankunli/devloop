@@ -37,7 +37,7 @@ devloop/                              # ← 仓库根（marketplace）
 │   ├── .codex-plugin/plugin.json     #     Codex manifest（hooks 指向 hooks.codex.json）
 │   ├── skills/                       #     6 个 skill（CLI 共享）
 │   ├── commands/                     #     slash commands（Claude 端）
-│   ├── domain/                       #     领域模型与状态变化（workspace/repo/code unit/context/lifecycle）
+│   ├── domain/                       #     领域模型与状态变化（workspace/repo/component/context/lifecycle）
 │   ├── lib/                          #     技术能力（git/forge/ecosystem/notify/config/parser）
 │   ├── hooks/                        #     事件驱动 adapter 与 PreToolUse policy
 │   ├── scripts/                      #     git-ops 系列 + init_repo / init_workspace

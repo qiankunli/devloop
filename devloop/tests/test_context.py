@@ -80,7 +80,7 @@ def test_turn_block_stable_across_clock_when_state_unchanged():
                         "generated_at": base.now(), "comments": []})
     store.save_segment(G, "pr", {"branch": branch, "provider": "github",
                                  "label_pending": 2, "label_pending_key": "setA"})
-    RepoContext.load(G).mark_lint_passed(".", "fp1")   # Validation: <unit>: lint=<绝对时间戳>
+    RepoContext.load(G).mark_lint_passed(".", "fp1")   # Validation: <component>: lint=<绝对时间戳>
 
     t1 = RepoContext.load(G).turn_text()
     assert "Review: running" in t1 and "待打标" in t1 and "lint=" in t1   # 别测了个空 block
@@ -152,7 +152,7 @@ def test_concurrent_lint_and_test_marks_dont_lose_each_other():
     [t.start() for t in ts]
     [t.join() for t in ts]
 
-    v = RepoContext.load(R).validation.unit(".")
+    v = RepoContext.load(R).validation.component(".")
     assert v.last_lint_at and v.lint_fingerprint == "fp-abc", "lint 戳被 test 覆盖了"
     assert v.last_test_at, "test 戳被 lint 覆盖了 —— 状态会说「没测过」而其实测过"
 
@@ -182,11 +182,11 @@ def test_context_segments():
     ctx.mark_lint_passed(".", "fp1")
     assert (D / "branches/feat/a/lint.json").exists()
     assert not (D / "branches/feat/a/test.json").exists(), "盖 lint 戳不该碰 test 段"
-    assert RepoContext.load(R).validation.unit(".").lint_fingerprint == "fp1"
+    assert RepoContext.load(R).validation.component(".").lint_fingerprint == "fp1"
     RepoContext.load(R).mark_test_passed(".")
     assert (D / "branches/feat/a/test.json").exists()
     # 两段合并成一个内存视图（消费方看不到拆分）
-    v = RepoContext.load(R).validation.unit(".")
+    v = RepoContext.load(R).validation.component(".")
     assert v.lint_fingerprint == "fp1" and v.last_lint_at and v.last_test_at
 
     # monitor-owned pr write, branch-keyed; provider is repo-level (header, not per-PR)
@@ -351,7 +351,7 @@ def test_resolve_repo_dir():
         r, how = repo_model.resolve_repo_dir(f"{W}/real/nb", "/")           # 显式路径
         assert r and Path(r.git_root).resolve() == real_nb
         # 路径身份在解析边界一次算清(Repo),消费方不再各自 re-derive；显式路径解析
-        # 带出 target_path（喂 select_units 当 explicit 信号），unit 不再挂在解析结果上
+        # 带出 target_path（喂 select_components 当 explicit 信号），component 不再挂在解析结果上
         assert Path(r.real_git_root) == real_nb and r.target_path and r.source == how
         r, how = repo_model.resolve_repo_dir("nb", "/")                     # 子项目名 → canonical 仓库
         assert r and Path(r.git_root).resolve() == real_nb and "subproject" in how
@@ -394,9 +394,9 @@ def test_resolve_repo_dir_deduplicates_canonical_matches():
     finally:
         registry.load_workspaces = orig
 
-def test_code_unit_multi_dir():
-    """多代码目录仓（server/ + cli/）：unit 由**操作目标路径**决定，不是 repo 单值属性。
-    显式点名 cli 命中 cli；指向仓根 / 深层子目录归属到对应 unit；仓根回落默认 unit。"""
+def test_component_multi_dir():
+    """多代码目录仓（server/ + cli/）：component 由**操作目标路径**决定，不是 repo 单值属性。
+    显式点名 cli 命中 cli；指向仓根 / 深层子目录归属到对应 component；仓根回落默认 component。"""
     from domain import repo as repo_model, repo_layout
     R = "/tmp/dlut_unit"
     shutil.rmtree(R, ignore_errors=True)
@@ -408,34 +408,34 @@ def test_code_unit_multi_dir():
     Path(f"{R}/repo/cli/Makefile").write_text("test:\n\techo ok\n")
 
     # 向上归属：cli 目标 → cli（语言 ts）；server 深层 → server（语言 py）
-    u_cli = repo_layout.enclosing_code_unit(f"{R}/repo/cli", f"{R}/repo")
+    u_cli = repo_layout.enclosing_component(f"{R}/repo/cli", f"{R}/repo")
     assert Path(u_cli.path).name == "cli" and u_cli.language == "typescript"
-    u_srv = repo_layout.enclosing_code_unit(f"{R}/repo/server/internal", f"{R}/repo")
+    u_srv = repo_layout.enclosing_component(f"{R}/repo/server/internal", f"{R}/repo")
     assert Path(u_srv.path).name == "server" and u_srv.language == "python"
-    # 目标就是仓根 → 默认 unit（探测 server/ 优先），不被根级无 marker 抢成 repo 根
-    assert Path(repo_layout.enclosing_code_unit(f"{R}/repo", f"{R}/repo").path).name == "server"
-    assert Path(repo_layout.default_code_unit(f"{R}/repo").path).name == "server"
+    # 目标就是仓根 → 默认 component（探测 server/ 优先），不被根级无 marker 抢成 repo 根
+    assert Path(repo_layout.enclosing_component(f"{R}/repo", f"{R}/repo").path).name == "server"
+    assert Path(repo_layout.default_component(f"{R}/repo").path).name == "server"
 
     # 归属 vs 站位是**两个问题**，别混（`owning_` vs `enclosing_`）：
-    # 仓根的 README 在「根不是 unit」的仓里确实不属于任何 unit —— 归属答 None 才是事实。
-    # 硬派一个只能派 default_code_unit（server > backend > 根的**选择**启发式），得到的是
+    # 仓根的 README 在「根不是 component」的仓里确实不属于任何 component —— 归属答 None 才是事实。
+    # 硬派一个只能派 default_component（server > backend > 根的**选择**启发式），得到的是
     # 「改 README → 跑 server 的 lint」这种没理由的结论（为什么是 server 不是 cli？）。
-    assert repo_layout.owning_code_unit(f"{R}/repo/README.md", f"{R}/repo") is None
-    assert repo_layout.owning_code_unit(f"{R}/repo/.github/workflows/ci.yml", f"{R}/repo") is None
-    assert repo_layout.owning_code_unit(f"{R}/repo/cli/app.ts", f"{R}/repo").id == "cli"
-    # 站位仍必给答案：站在仓根跑命令，总得有个 unit 判 uv / make test（guard 用的就是这一支）
-    assert repo_layout.enclosing_code_unit(f"{R}/repo/README.md", f"{R}/repo").id == "server"
+    assert repo_layout.owning_component(f"{R}/repo/README.md", f"{R}/repo") is None
+    assert repo_layout.owning_component(f"{R}/repo/.github/workflows/ci.yml", f"{R}/repo") is None
+    assert repo_layout.owning_component(f"{R}/repo/cli/app.ts", f"{R}/repo").id == "cli"
+    # 站位仍必给答案：站在仓根跑命令，总得有个 component 判 uv / make test（guard 用的就是这一支）
+    assert repo_layout.enclosing_component(f"{R}/repo/README.md", f"{R}/repo").id == "server"
 
-    # 解析边界不再挂 unit：显式路径带出 target_path，选哪个 unit 交给 select_units（explicit 信号）
+    # 解析边界不再挂 component：显式路径带出 target_path，选哪个 component 交给 select_components（explicit 信号）
     r, _ = repo_model.resolve_repo_dir(f"{R}/repo/cli", "/")
-    ws = repo_model.select_units(r.git_root, explicit=r.target_path)
-    assert [Path(u.path).name for u in ws.units] == ["cli"] and "explicit" in ws.reason
-    assert ws.units[0].language == "typescript"
+    ws = repo_model.select_components(r.git_root, explicit=r.target_path)
+    assert [Path(u.path).name for u in ws.components] == ["cli"] and "explicit" in ws.reason
+    assert ws.components[0].language == "typescript"
     r, _ = repo_model.resolve_repo_dir(None, f"{R}/repo/cli")   # cwd 在 cli 下
-    ws = repo_model.select_units(r.git_root, explicit=r.target_path)
-    assert [Path(u.path).name for u in ws.units] == ["cli"]
+    ws = repo_model.select_components(r.git_root, explicit=r.target_path)
+    assert [Path(u.path).name for u in ws.components] == ["cli"]
 
-def test_select_units_by_change():
+def test_select_components_by_change():
     """WorkSet 契约：验证目标由**本次改动**决定，不由解析来源猜——把「改 cli 不得跑 server」
     从约定升级成可执行约束。clean 从仓根 repo-wide 全选；显式=仓根不静默回落默认 server。"""
     from domain import repo as repo_model, repo_layout
@@ -450,39 +450,39 @@ def test_select_units_by_change():
     Path(f"{repo}/cli/Makefile").write_text("test:\n\techo ok\n")
     _git(repo, "add", "-A")
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
-    names = lambda ws: sorted(Path(u.path).name for u in ws.units)
+    names = lambda ws: sorted(Path(u.path).name for u in ws.components)
 
-    # discover：两个 unit 都在
-    assert sorted(Path(u.path).name for u in repo_layout.discover_code_units(repo)) == ["cli", "server"]
+    # discover：两个 component 都在
+    assert sorted(Path(u.path).name for u in repo_layout.discover_components(repo)) == ["cli", "server"]
     # clean tree：repo-wide 全选（绝不静默 server-only）
-    ws = repo_model.select_units(repo)
-    assert names(ws) == ["cli", "server"] and "all units" in ws.reason
-    # 开发根里常有自指软链 + linked worktrees：它们不是本仓 code unit，也不是
+    ws = repo_model.select_components(repo)
+    assert names(ws) == ["cli", "server"] and "all components" in ws.reason
+    # 开发根里常有自指软链 + linked worktrees：它们不是本仓 component，也不是
     # 当前代码改动；不得污染 discover，更不得把 dirty WorkSet 拉回无语言的仓根。
     os.symlink(repo, f"{repo}/repo-link")
     os.makedirs(f"{repo}/worktrees/branch")
     _git(f"{repo}/worktrees/branch", "init", "-q")
     Path(f"{repo}/worktrees/branch/go.mod").write_text("module nested\n")
-    assert names(repo_model.select_units(repo)) == ["cli", "server"]
-    assert sorted(Path(u.path).name for u in repo_layout.discover_code_units(repo)) == ["cli", "server"]
+    assert names(repo_model.select_components(repo)) == ["cli", "server"]
+    assert sorted(Path(u.path).name for u in repo_layout.discover_components(repo)) == ["cli", "server"]
     # 只改 cli → dirty 只投影 cli（核心：改 cli 不跑 server）
     Path(f"{repo}/cli/app.ts").write_text("export const x = 1\n")
-    ws = repo_model.select_units(repo)
+    ws = repo_model.select_components(repo)
     assert names(ws) == ["cli"] and "changed files" in ws.reason
     # explicit == 仓根：不静默回 server，落回 dirty(cli)
-    assert names(repo_model.select_units(repo, explicit=repo)) == ["cli"]
-    # 两个 unit 都改 → 都进 WorkSet
+    assert names(repo_model.select_components(repo, explicit=repo)) == ["cli"]
+    # 两个 component 都改 → 都进 WorkSet
     Path(f"{repo}/server/mod.py").write_text("x = 1\n")
-    assert names(repo_model.select_units(repo)) == ["cli", "server"]
+    assert names(repo_model.select_components(repo)) == ["cli", "server"]
 
 def test_discover_root_and_sub_units():
-    """code unit 的身份 = **语言项目清单**，且仓根不是特例。两条都红过：
+    """component 的身份 = **语言项目清单**，且仓根不是特例。两条都红过：
 
-    1. 补根 unit 曾用 `default_code_unit`（`server/` > `backend/` > 根的**选择**启发式）来探——
+    1. 补根 component 曾用 `default_component`（`server/` > `backend/` > 根的**选择**启发式）来探——
        `server/` 存在时它返回 `server/`，而 `server/` 早被 walk 收过，于是「补根」永远补不进、
        根的 go.mod 从 catalog 里消失。旧 fixture 只造了「无 server/」那支，所以一直绿。
-    2. `Makefile` 曾算 marker，于是 `docs/` 里一个 sphinx Makefile 就成了 code unit。Makefile
-       是 unit 的动作入口（怎么 lint/test），不是身份。
+    2. `Makefile` 曾算 marker，于是 `docs/` 里一个 sphinx Makefile 就成了 component。Makefile
+       是 component 的动作入口（怎么 lint/test），不是身份。
     """
     from domain import repo_layout
     R = "/tmp/dlut_discover"
@@ -492,7 +492,7 @@ def test_discover_root_and_sub_units():
     _git(repo, "init", "-q")
     Path(f"{repo}/go.mod").write_text("module x\n")
     Path(f"{repo}/tools/pyproject.toml").write_text("[project]\n")
-    ids = lambda p: sorted(u.id for u in repo_layout.discover_code_units(p))
+    ids = lambda p: sorted(u.id for u in repo_layout.discover_components(p))
     assert ids(repo) == [".", "tools"]
 
     # 关键回归：`server/` 一出现，「补根」那支就哑火了——根必须仍在 catalog 里
@@ -500,12 +500,12 @@ def test_discover_root_and_sub_units():
     Path(f"{repo}/server/pyproject.toml").write_text("[project]\n")
     assert ids(repo) == [".", "server", "tools"]
     # catalog 与改动投影必须给同一个答案：根的文件归根，不归 server
-    assert repo_layout.enclosing_code_unit(f"{repo}/main.go", repo).id == "."
-    assert repo_layout.enclosing_code_unit(f"{repo}/server/app.py", repo).id == "server"
+    assert repo_layout.enclosing_component(f"{repo}/main.go", repo).id == "."
+    assert repo_layout.enclosing_component(f"{repo}/server/app.py", repo).id == "server"
     # 而「没有具体目标该选谁」仍是 server：选择启发式不变，与身份判据各答各的问题
-    assert repo_layout.default_code_unit(repo).id == "server"
+    assert repo_layout.default_component(repo).id == "server"
 
-    # 身份不是 Makefile：docs/ 的 sphinx Makefile 不让 docs 变成 code unit
+    # 身份不是 Makefile：docs/ 的 sphinx Makefile 不让 docs 变成 component
     os.makedirs(f"{repo}/docs", exist_ok=True)
     Path(f"{repo}/docs/Makefile").write_text("html:\n\tsphinx-build . _build\n")
     assert ids(repo) == [".", "server", "tools"]
@@ -515,11 +515,11 @@ def test_discover_root_and_sub_units():
     for manifest in ("go.mod", "pyproject.toml", "setup.py", "package.json"):
         d = Path(f"{R}/probe/{manifest}"); d.mkdir(parents=True)
         (d / manifest).write_text("{}" if manifest == "package.json" else "")
-        assert repo_layout._is_code_unit(d), f"{manifest} 应当是项目清单"
+        assert repo_layout._is_component(d), f"{manifest} 应当是项目清单"
     for weak in ("Makefile", "requirements.txt", "tsconfig.json"):
         d = Path(f"{R}/weak/{weak}"); d.mkdir(parents=True)
         (d / weak).write_text("{}" if weak.endswith(".json") else "")
-        assert not repo_layout._is_code_unit(d), f"{weak} 不是项目边界，不该独自构成 unit"
+        assert not repo_layout._is_component(d), f"{weak} 不是项目边界，不该独自构成 component"
 
 def test_active_repo_first_entry_symlink_workspace():
     """P1 回归:首次进入(尚无 context.json)+ symlink 子仓,record_active_repo 也要落
@@ -1164,13 +1164,13 @@ def test_state_domains_worktree():
     assert str(Path(M).resolve()) in header
     assert ".worktrees/wt" not in header
     assert "Branch: feat/wt (worktree)" in wt_turn
-    # validation 的 key 是 **checkout 相对**的 unit id：worktree 的根 unit 与主 checkout 的根
-    # unit 同为 "."。用绝对路径当 key 会写成 <M>/.worktrees/wt——戳落在主仓 branches/feat/wt/ 里，
+    # validation 的 key 是 **checkout 相对**的 component id：worktree 的根 component 与主 checkout 的根
+    # component 同为 "."。用绝对路径当 key 会写成 <M>/.worktrees/wt——戳落在主仓 branches/feat/wt/ 里，
     # 却带着一个只在那个 worktree 成立的 key：worktree 删掉再在主 checkout 上 feat/wt，戳就查不到，
     # 白跑一遍 lint；且 key 随 worktree 增删无限累积。
-    from domain.repo_layout import CodeUnit
-    assert CodeUnit.at(W, W).id == CodeUnit.at(M, M).id == "."
-    wt_ctx.mark_lint_passed(CodeUnit.at(W, W).id, "fp1")
+    from domain.repo_layout import Component
+    assert Component.at(W, W).id == Component.at(M, M).id == "."
+    wt_ctx.mark_lint_passed(Component.at(W, W).id, "fp1")
     RepoContext.refresh_all(M)
     assert (Path(M) / ".devloop/branches/feat/wt/lint.json").exists()
     assert (Path(M) / ".devloop/branches/feat/wt/branch.json").exists()

@@ -19,7 +19,7 @@ from .base import Ecosystem
 class PythonEcosystem(Ecosystem):
     name = "python"
     # setup.py 是 legacy 项目边界；requirements.txt 刻意不进（依赖清单≠项目边界，
-    # 常见形态是仓根放一份给容器构建、真项目在 server/——认它就把仓根误判成 unit）。
+    # 常见形态是仓根放一份给容器构建、真项目在 server/——认它就把仓根误判成 component）。
     manifests = ("pyproject.toml", "setup.py")
 
     def matches_language(self, path):

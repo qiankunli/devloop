@@ -94,7 +94,7 @@ HEAD 是谁」**：
 | 引擎的 `--to` | 传字面量 `HEAD` → 引擎在**它自己**启动那刻才解析，审的是切换后的分支，而 `reviewed_sha` 记的是启动时的 → **记录撒谎** |
 | `_open_mr` 找哪条 MR | 现问 → 可能把 A 的 findings 发到 B 的 PR 上 |
 
-这条与 `CodeUnit.id` 绑在出生点（CONCEPTS.md〈code unit〉）、lifecycle 范围在相位边界冻结
+这条与 `Component.id` 绑在出生点（CONCEPTS.md〈component〉）、lifecycle 范围在相位边界冻结
 （`docs/lifecycle-hooks.md`）是**同一条原则**的三处应用：一个对象在诞生时就确定了它的主体，
 「始终跟上最新」对它是错的语义。判据是**这个任务的主体会不会在它运行期间变**——会变就必须冻结。
 

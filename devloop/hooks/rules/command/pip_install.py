@@ -33,11 +33,11 @@ class PipInstallRule(Rule):
         git_root = repo_layout.find_git_root(target.run_dir)
         if not git_root:
             return []
-        # 按这条命令**实际运行的目录**（`run_dir`，parser 已把 cd / -C 解析完）归属 code unit：
-        # uv-managed 判定看你实际所在 unit 的 pyproject+uv.lock，多代码目录仓里不同 unit 的包管理
+        # 按这条命令**实际运行的目录**（`run_dir`，parser 已把 cd / -C 解析完）归属 component：
+        # uv-managed 判定看你实际所在 component 的 pyproject+uv.lock，多代码目录仓里不同 component 的包管理
         # 方式可能不同。**不读 `ctx.cwd`**——那是 session 的原始 cwd、cd 之前的位置，
         # `cd cli && pip install x` 会去问仓根有没有 uv.lock，于是 cli 是 uv 仓也拦不住。
-        code_dir = Path(repo_layout.enclosing_code_unit(target.run_dir, git_root).path)
+        code_dir = Path(repo_layout.enclosing_component(target.run_dir, git_root).path)
         eco = ecosystem.detect(code_dir)
         if not isinstance(eco, ecosystem.PythonEcosystem) or not eco.is_uv_managed(code_dir):
             return []

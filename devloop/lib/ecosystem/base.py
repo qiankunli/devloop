@@ -3,7 +3,7 @@
 键是 **ecosystem（manifest + 包管理器 + 工具链）**，不是 language：js/ts 共享 Node 生态、
 语言只是生态的一个展示属性。生态回答的是 Makefile 回答不了的四类问题——**身份**（manifest）、
 **环境**（prepare / ready，见 docs/worktree-env.md）、**canonical 回落命令**、**纪律谓词**
-（供 guard 用）。lint/test 的执行仍是 make-first（`CodeUnit.lint_target/test_target`），
+（供 guard 用）。lint/test 的执行仍是 make-first（`Component.lint_target/test_target`），
 生态**不接管**"怎么 lint/test"——往这里加 "python 用 ruff" 这类知识就是在破坏那条边界。
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ class Ecosystem:
     """
 
     name: str = ""
-    #: 项目清单（身份判据）：带其一即是 code unit。语言"线索"文件（requirements.txt）不进这里。
+    #: 项目清单（身份判据）：带其一即是 component。语言"线索"文件（requirements.txt）不进这里。
     manifests: tuple[str, ...] = ()
 
     def language(self, path: str | Path) -> str | None:
@@ -31,7 +31,7 @@ class Ecosystem:
 
     def matches_language(self, path: str | Path) -> bool:
         """`path` 是否"像"本生态的语言——比身份判据宽（可用依赖清单等线索）。
-        「这是什么语言」和「这是不是一个项目」是两个问题（见 repo_layout._is_code_unit）。"""
+        「这是什么语言」和「这是不是一个项目」是两个问题（见 repo_layout._is_component）。"""
         return any((Path(path) / m).exists() for m in self.manifests)
 
     def prepare_command(self, path: str | Path) -> list[str] | None:
