@@ -2,9 +2,19 @@
 
 # devloop
 
-**A guard-railed development loop for AI coding agents.** A cross-CLI plugin marketplace: `devloop` is the first (and flagship) plugin — a developer workflow for Claude Code and Codex, working with both **GitHub (PR)** and **GitLab (MR)** (picked per-repo from the origin remote); `example` is a placeholder showing the repo is built to host *multiple* plugins.
+**A controlled PR/MR development lifecycle for AI coding agents.** This repository is a cross-CLI plugin marketplace. Its flagship plugin, `devloop`, guides Claude Code and Codex through repo entry, branch development, affected-component validation, commit/push, and PR/MR creation while keeping merge in human hands. It supports both **GitHub (PR)** and **GitLab (MR)**, selected from each repo's origin; `example` remains a placeholder for the marketplace's multi-plugin structure.
 
 > Claude Code and Codex are supported. Design / architecture: [AGENTS.md](./AGENTS.md). Each plugin's own docs live in its directory.
+
+## The development lifecycle
+
+```
+enter repo → develop on branch → validate affected Components → commit / push → open PR/MR → human merge
+```
+
+The domain spine is **PR/MR → Repo → Component**: every PR/MR belongs to one repo, and each repo may contain multiple components with independent build/lint/test toolchains. A workspace is an optional context that aggregates multiple repos; plain single-repo use is fully supported.
+
+The branch is the development axis. For concurrent sessions, a worktree is a special form of branch that provides an isolated checkout; `/enter <repo> --worktree <tag>` manages its creation, reuse, dependency preparation, and cleanup. devloop then projects the current change onto affected components and records validation at the same granularity.
 
 ## The problem
 
@@ -14,14 +24,14 @@ When you code with an AI agent, the time sink usually isn't "is the code correct
 2. **Soft conventions can't enforce** — "don't commit to master", "don't `git add -A`" are just prompts. When the agent decides not to follow them, you have **no execution-level interception**. Committing to a protected branch, staging stray sensitive files, editing on a stale branch — all happen for real.
 3. **Concurrent sessions collide** — running several CLI sessions (or several agents) on one workspace is routine, but they share checkouts and state: a second session switches the branch under the first one's feet and scrambles its uncommitted work, or one session's no-arg command silently resolves to the repo *another* session just touched. Out of the box, nothing arbitrates who owns what.
 
-## What devloop does — two levers
+## How devloop keeps the lifecycle controlled
 
 - **A state bus eliminates information lag.** The current subproject's branch / working tree / recent MRs / validation state is injected into *every* prompt, so the agent knows reality before it edits the first line.
 - **Hard intercepts turn soft conventions into execution-level boundaries.** `PreToolUse` hooks return `deny`; the agent cannot route around them.
 
 Both levers share one hub: a structured state bus under `.devloop/`. State written on `git commit` / `cd` / background polling is reused across N later prompt injections and M protected-branch checks at zero extra cost.
 
-Loss 3 is answered by **session-grain state** riding the same two levers: an owner lock per checkout (guests' branch switches and edits are denied, routed to a worktree) plus a per-session repo binding (one session's fallback never resolves to another session's repo) — see *Aggregate-workspace & multi-session as first-class* below.
+Loss 3 is answered by **session-grain state** riding the same two levers: an owner lock per checkout (guests' branch switches and edits are denied, then routed to an isolated worktree form of the branch) plus a per-session repo binding (one session's fallback never resolves to another session's repo).
 
 ## Design ideas worth knowing
 
@@ -37,10 +47,6 @@ Loss 3 is answered by **session-grain state** riding the same two levers: an own
 `protected` and `inactive` hard-block cleanly — editing there has no legitimate reason. `in-flight` only hints, because there's a legal exception (you might be amending your own PR/MR) the machine can't reliably tell from new work, so it feeds the fact to the agent and lets it choose.
 
 **Structural guarantees, not just hints** — a new branch's base is decided by *intent, not by where HEAD happens to sit*: opening new work (`--branch`) always cuts from `origin/<target>`, and a freshly cut branch is asserted to carry only this run's commits before push/PR. So even if the agent ignores the `IN-FLIGHT` hint, forking off an in-flight branch can't smuggle its commits into the new PR.
-
-**Aggregate-workspace & multi-session as first-class** — a workspace root holds many independent git subprojects (often symlinked). Scripts never trust shell `cwd` (they resolve the repo by explicit `--repo` → cwd's repo → *this session's* last-active repo; with no binding of its own a session is asked for an explicit `--repo` rather than guessing from another session's activity), and an *owner lock* keeps two concurrent sessions from mixing changes into one working tree. Plain single-repo mode is fully supported too — auto-detected, no manual switch.
-
-**PR/MR → Repo → Component is the domain spine** — in its narrow scope, devloop manages PR/MR creation, development, and validation. Every PR/MR belongs to one repo, whose affected components own lint/test execution. A branch is the development axis; a worktree is only one isolated checkout form of that branch. `/enter <repo> --worktree <tag>` is the managed entrypoint for creating, reusing, pruning, and preparing `<repo>/.worktrees/`; raw `git worktree add` is blocked so it cannot bypass that lifecycle.
 
 The source layout follows the same boundary: `devloop/domain/` owns the Workspace / Repo / Component domain, branch/PR state, and legal transitions, while `devloop/lib/` provides technical capabilities such as Git, forge, ecosystem, notify, and config. `devloop/hooks/` and `devloop/scripts/` drive the domain from tool events and workflows, keeping LLM actions on a workspace/repo behind controlled entrypoints.
 
@@ -136,7 +142,7 @@ opencode remains placeholder-only until its plugin/hook protocol is wired.
 
 | Plugin | What it is | README |
 |--------|-----------|--------|
-| `devloop` | Developer workflow: git/PR (GitHub + GitLab) + cwd-aware state + lifecycle hooks (lint/test/code-review per phase) + live state injection + execution-level hard intercepts (Claude + Codex) | [devloop/README.md](./devloop/README.md) |
+| `devloop` | Controlled PR/MR lifecycle for AI coding: repo/branch entry, affected-component validation, commit/push/PR, live state, and execution-level guardrails (Claude + Codex; GitHub + GitLab) | [devloop/README.md](./devloop/README.md) |
 | `example` | Placeholder demonstrating the multi-plugin marketplace structure | [example/README.md](./example/README.md) |
 
 ## Adding a plugin
