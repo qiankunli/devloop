@@ -44,14 +44,14 @@ class PytestNakedRule(Rule):
         for inv in cmdparse.command_invocations(change.command):
             if inv.env or not _is_pytest(inv.argv):
                 continue      # 带 env 前缀（如 PYTHONPATH=.）→ 不算裸，放行
-            # 按这条调用**实际运行的目录**归属 code unit：`cd cli && pytest` 要查 cli/ 的 Makefile。
+            # 按这条调用**实际运行的目录**归属 component：`cd cli && pytest` 要查 cli/ 的 Makefile。
             # 此前这里读的是 `change.cwd`——session 的原始 cwd、cd **之前**的位置，于是多代码目录仓里
-            # 不管 cd 到哪都去问默认 unit（server/）：cli 有 make test 拦不住，server 有而 cli 没有则误拦。
+            # 不管 cd 到哪都去问默认 component（server/）：cli 有 make test 拦不住，server 有而 cli 没有则误拦。
             # cd 早已被 parser 解析好，guard 不该回头用未解析的 cwd 重猜。
-            unit = repo_layout.enclosing_code_unit(inv.run_dir(base), git_root)
-            if not unit.has_target("test", suffix=True):
+            component = repo_layout.enclosing_component(inv.run_dir(base), git_root)
+            if not component.has_target("test", suffix=True):
                 continue
-            code_dir = unit.path
+            code_dir = component.path
             return [
                 Finding(
                     rule=self.name,

@@ -9,14 +9,14 @@
 **devloop 的领域职责是管理 PR/MR 的创建、开发与验证生命周期**：
 
 ```
-enter repo → 基于 branch 开发 → 按 CodeUnit 验证 → commit / push → 创建 PR/MR → 人工 merge
+enter repo → 基于 branch 开发 → 按 Component 验证 → commit / push → 创建 PR/MR → 人工 merge
 ```
 
-**领域主链是 `PR/MR → Repo → CodeUnit`**：PR/MR 始终锚定一个 repo；repo 是 git、branch、forge 状态和提交历史的边界；code unit 是 repo 内 build/lint/test 的验证单位。Branch 是开发生命周期主轴；面向多 session 并发时，worktree 是 branch 的一种特殊形态。
+**领域主链是 `PR/MR → Repo → Component`**：PR/MR 始终锚定一个 repo；repo 是 git、branch、forge 状态和提交历史的边界；component 是 repo 内 build/lint/test 的验证单位。Branch 是开发生命周期主轴；面向多 session 并发时，worktree 是 branch 的一种特殊形态。
 
 **Workspace 是运行上下文，不是 PR/MR 的归属边界**：它可以聚合多个 repo，为跨 repo 需求、项目知识和多 session 协作提供共同根；单仓库模式同样完整支持。跨 repo 需求当前仍按 repo 分别进入生命周期，0.1 不编排 fanout 或发包依赖顺序。
 
-**目录按 owner 表达这个模型**：`domain/` 承载 Workspace / Repo / CodeUnit、branch/PR 状态、生命周期规则及合法变化；`lib/` 提供 Git、forge、ecosystem、notify、config、parser 等技术能力；`hooks/` 与 `scripts/` 是事件和工作流两类驱动 adapter。入口只向 `domain/lib` 调用，两层都不反向依赖入口，让 LLM 对 workspace/repo 的作用落在可观测、可约束的路径上，而不是散落 shell 副作用。
+**目录按 owner 表达这个模型**：`domain/` 承载 Workspace / Repo / Component、branch/PR 状态、生命周期规则及合法变化；`lib/` 提供 Git、forge、ecosystem、notify、config、parser 等技术能力；`hooks/` 与 `scripts/` 是事件和工作流两类驱动 adapter。入口只向 `domain/lib` 调用，两层都不反向依赖入口，让 LLM 对 workspace/repo 的作用落在可观测、可约束的路径上，而不是散落 shell 副作用。
 
 AGENTS.md 是项目边界与 References 的**文字知识源**；`.devloop/*.json` 是由 hooks、scripts、monitors 从 git、forge、验证命令和文字源派生的**结构化运行态**。两者共同服务于同一个目标：让 LLM 对 workspace/repo 的作用可控、可观测、可验证。一轮循环的端到端时序见 [`docs/loop.md`](./docs/loop.md)。
 
@@ -40,9 +40,9 @@ AGENTS.md 是项目边界与 References 的**文字知识源**；`.devloop/*.jso
 devloop/
 ├── .claude-plugin/plugin.json     # Claude manifest（靠目录约定自动发现）
 ├── domain/                         # 领域 owner：模型、状态变化与生命周期规则
-│   ├── repo.py                    #   ★Repo 模型 + cwd 无关解析 + WorkSet（本轮 code units）
+│   ├── repo.py                    #   ★Repo 模型 + cwd 无关解析 + WorkSet（本轮 components）
 │   ├── workspace.py               #   ★Workspace 注册、发现与归属
-│   ├── repo_layout.py             #   ★CodeUnit 模型 + repo/code-unit 路径边界
+│   ├── repo_layout.py             #   ★Component 模型 + repo/component 路径边界
 │   ├── context/                   #   ★状态总线：repo/workspace/session + gate/prstate + requirement ledger
 │   ├── lifecycle/                 #   ★pre/post commit/MR dispatch + lint/test/review handlers
 │   ├── forge.py                   #   ★PullRequest/Comment/Release 中立模型 + Forge port
@@ -81,9 +81,9 @@ devloop/
 
 ## 关键约定
 
-1. **领域归属沿 `PR/MR → Repo → CodeUnit`**：PR/MR 与 branch 生命周期归 Repo，验证范围与验证结果归 CodeUnit；Workspace 只聚合上下文。不得重新引入“一个 repo 只有一个代码目录”的假设，具体选择与身份语义见 [`CONCEPTS.md`](./CONCEPTS.md)。
+1. **领域归属沿 `PR/MR → Repo → Component`**：PR/MR 与 branch 生命周期归 Repo，验证范围与验证结果归 Component；Workspace 只聚合上下文。不得重新引入“一个 repo 只有一个代码目录”的假设，具体选择与身份语义见 [`CONCEPTS.md`](./CONCEPTS.md)。
 2. **入口驱动领域，依赖不反向**：`hooks/scripts → domain/lib`；`domain/` 持有业务事实和合法变化，`lib/` 只提供 Git、forge、配置、通知等技术能力。Git、forge、配置分别经统一 seam，入口不得散调外部协议或复制领域判断。
-3. **状态按事实 owner 分段，guard 读取 live truth**：AGENTS.md 是文字知识源，`.devloop/` 是结构化运行态；Repo、Branch、WorkingTree 与 Session 状态按归属和写入者隔离，验证戳按 CodeUnit 记录。状态文件、解析优先级和生命周期见 [`CONCEPTS.md`](./CONCEPTS.md)。
+3. **状态按事实 owner 分段，guard 读取 live truth**：AGENTS.md 是文字知识源，`.devloop/` 是结构化运行态；Repo、Branch、WorkingTree 与 Session 状态按归属和写入者隔离，验证戳按 Component 记录。状态文件、解析优先级和生命周期见 [`CONCEPTS.md`](./CONCEPTS.md)。
 4. **生命周期动作走唯一入口，合法例外才软提示**：commit/push/PR 走 `commit_flow`/smart 脚本；worktree 形态的创建、复用和清理走 `enter.py`。保护分支、失活分支、guest session 等无合法编辑路径的情况硬拦截，有合法例外的 in-flight PR/MR 只注入提示。具体流程见 [`docs/loop.md`](./docs/loop.md) 与 [`docs/lifecycle-hooks.md`](./docs/lifecycle-hooks.md)。
 
 ---
@@ -96,6 +96,6 @@ devloop/
 - Worktree 依赖环境（checkout-local 依赖视图 + 共享包缓存；生态 prepare 与验证前置条件）：[`docs/worktree-env.md`](./docs/worktree-env.md)
 - 提交期 code-review（signal hook `review`，任意相位由 config 决定：detach 起、审全量 diff、不挡 commit、结果经状态总线 pull 注入；分支有开放 MR 时（典型 post_mr）机会性发评论到 MR 做历史）：[`docs/code-review.md`](./docs/code-review.md)
 - 使用 / 安装 / 配置：[`README.md`](./README.md)
-- 共享术语（repo_dir / **code unit** + default unit / 保护分支 / PR 模型 / 验证状态 / `<PLUGIN_ROOT>`）：[`CONCEPTS.md`](./CONCEPTS.md)
+- 共享术语（repo_dir / **component** + default component / 保护分支 / PR 模型 / 验证状态 / `<PLUGIN_ROOT>`）：[`CONCEPTS.md`](./CONCEPTS.md)
 - 仓库级（marketplace / 多 CLI）：[`../AGENTS.md`](../AGENTS.md)
 - 完整方案与设计决策：plan 文档（开发者本地 `~/.claude/plans/devloop-plugin-0.1.md`）

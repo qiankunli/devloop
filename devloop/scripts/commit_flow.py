@@ -575,13 +575,13 @@ def phase_paths(intent: GitIntent, phase: str) -> list[str] | None:
     """本相位的「本次改动」是哪些文件（仓相对）——**每个相位的答案不同**，且只有这里知道。
 
     handler 手里只有 `repo`，要范围只能读工作树；那个答案只在 pre_commit（改动尚未提交）成立。
-    commit 之后工作树是干净的，读出来是「什么都没改」→ 被 `select_units` 读成「不知道范围」→
-    退化成 repo-wide 跑**全部** unit：一个你根本没碰的 unit 有存量 lint 错误，就会在 commit 已
+    commit 之后工作树是干净的，读出来是「什么都没改」→ 被 `select_components` 读成「不知道范围」→
+    退化成 repo-wide 跑**全部** component：一个你根本没碰的 component 有存量 lint 错误，就会在 commit 已
     落地之后拦掉 push 和 MR。所以范围必须在相位边界由这里算好、冻结下传。
 
     - `pre_commit`：**将要提交的**那些文件。`--files` 给了就是它——不是「工作树里所有脏文件」：
-      那是个超集，会把你压根不打算提交的 unit 拖进 gate（它有存量 lint 错误就拦掉你的 commit——
-      与 #86 修的是同一类失败，只是换了扇门），还会让 lint 的 `make fix` 去改那些 unit、改完又
+      那是个超集，会把你压根不打算提交的 component 拖进 gate（它有存量 lint 错误就拦掉你的 commit——
+      与 #86 修的是同一类失败，只是换了扇门），还会让 lint 的 `make fix` 去改那些 component、改完又
       不进本次 commit，凭空搅脏工作树。没给 `--files` → `None`：那时工作树确实**就是**将要提交
       的全部，交给 handler 读，语境本就一致。
     - `post_commit`：刚落地的那个 commit 自身。

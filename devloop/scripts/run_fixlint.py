@@ -28,18 +28,18 @@ def main(argv: list[str]) -> int:
     ns = ap.parse_args(argv)
     resolved, how = cli.resolve_repo_or_exit(ns, "run_fixlint")
     repo = resolved.git_root
-    ws = repo_model.select_units(repo, explicit=resolved.target_path)
+    ws = repo_model.select_components(repo, explicit=resolved.target_path)
     if how != "cwd":
         print(f"run_fixlint: repo = {repo} ({how})")
-    # 每次执行前自述本轮 unit 与选择原因——目标选错要一眼可见。
-    names = ", ".join(Path(u.path).name for u in ws.units)
-    print(f"run_fixlint: units = {names}  [{ws.reason}]")
+    # 每次执行前自述本轮 component 与选择原因——目标选错要一眼可见。
+    names = ", ".join(Path(u.path).name for u in ws.components)
+    print(f"run_fixlint: components = {names}  [{ws.reason}]")
     record_active_repo(repo)
 
-    # 对本轮命中的每个 unit 各跑各的 fix + lint，不让 checks 从 git_root 重探默认 unit 盖掉选择。
+    # 对本轮命中的每个 component 各跑各的 fix + lint，不让 checks 从 git_root 重探默认 component 盖掉选择。
     ok = True
-    for unit in ws.units:
-        res = checks.lint(repo, capture=False, unit=unit)   # capture=False：实时走终端
+    for component in ws.components:
+        res = checks.lint(repo, capture=False, component=component)   # capture=False：实时走终端
         print(("✓ " if res.ok else "✗ ") + res.summary)
         ok = ok and res.ok
     return 0 if ok else 1

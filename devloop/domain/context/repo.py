@@ -168,18 +168,18 @@ class BranchTopology:
 
 
 @dataclass
-class UnitValidation:
-    """**一个** code unit 的验证戳。
+class ComponentValidation:
+    """**一个** component 的验证戳。
 
-    `lint_fingerprint` 是 lint 通过那一刻、该 unit 待验证内容的指纹（`repo_model.unit_fingerprint`）
+    `lint_fingerprint` 是 lint 通过那一刻、该 component 待验证内容的指纹（`repo_model.component_fingerprint`）
     ——通行证绑**内容**，不绑「有没有人报告过改动」。gate 拿当前指纹与它比：不等 = 内容变过 = 这张
-    通行证已作废。这样谁改的、用什么工具改的都不重要（见 `unit_fingerprint` 的 why）。"""
+    通行证已作废。这样谁改的、用什么工具改的都不重要（见 `component_fingerprint` 的 why）。"""
     last_lint_at: float | None = None
     lint_fingerprint: str = ""
     last_test_at: float | None = None
 
     @classmethod
-    def from_dict(cls, d: dict | None) -> "UnitValidation":
+    def from_dict(cls, d: dict | None) -> "ComponentValidation":
         d = d or {}
         return cls(
             last_lint_at=d.get("last_lint_at"),
@@ -190,20 +190,20 @@ class UnitValidation:
 
 @dataclass
 class Validation:
-    """验证戳，**按 code unit 键**（key = `CodeUnit.id`，仓相对路径 `.` / `server`）。
+    """验证戳，**按 component 键**（key = `Component.id`，仓相对路径 `.` / `server`）。
 
-    key 的粒度必须与**执行**的粒度一致：lint/test 本就按 unit 跑（一个仓可有 `server/` + `cli/`
-    两套工具链、各自的 Makefile），repo 级单戳表达不了「A 过 B 挂」——unit A 通过盖下的戳会让
+    key 的粒度必须与**执行**的粒度一致：lint/test 本就按 component 跑（一个仓可有 `server/` + `cli/`
+    两套工具链、各自的 Makefile），repo 级单戳表达不了「A 过 B 挂」——component A 通过盖下的戳会让
     `precommit_gate` 读到「已验、无待验编辑」而放行整个仓，于是**一次 partial-fail 的 fan-out
     恰好把防绕过守卫的锁打开**（gate 挡住了 gcampr，却给裸 `git commit` 发了通行证）。
-    按 unit 键之后这类偏差不可表达，而不是靠各消费方记得多问一句。
+    按 component 键之后这类偏差不可表达，而不是靠各消费方记得多问一句。
 
-    旧格式（repo 级扁平 / 单个 validation.json）读进来是空 units——即「都没验过」，gate 要求重跑
+    旧格式（repo 级扁平 / 单个 validation.json）读进来是空 components——即「都没验过」，gate 要求重跑
     一次 lint。**刻意不写迁移**：`.devloop` 是 cache 不是事实源，退化方向是 fail-closed。
 
     **落盘按 check 拆两个段**（`branches/<b>/lint.json` + `test.json`），本类是 `load` 合并出的
     内存视图。三个维度各归各位：**branch** 是目录（域，切分支即自动隔离）、**check** 是文件
-    （= writer-role）、**unit** 是文件内的 JSON key。
+    （= writer-role）、**component** 是文件内的 JSON key。
 
     为什么 check 必须拆到文件：`dispatch` 用线程池**并发**跑 lint 与 test，而 segment 的纪律是
     「single-writer whole-file overwrite」（见 `context/store`）。两个 writer 写同一个文件 =
@@ -211,42 +211,42 @@ class Validation:
     「没测过」而其实测过，是记录失真。拆开之后各写各的文件，这一类**结构上不可能**（store 的原话），
     不需要锁、也不需要「写前重读合并」那种把不可能降级成窗口更窄的 race 的做法。
 
-    为什么 unit 不拆成目录：unit **不是 writer**（同一个 check 内部 fan-out 是顺序的），拆了不解决
-    这个 race；且 unit id 不是安全路径分量（根 unit 是 `.`、`eval/reviewbench` 带斜杠），当目录还得
+    为什么 component 不拆成目录：component **不是 writer**（同一个 check 内部 fan-out 是顺序的），拆了不解决
+    这个 race；且 component id 不是安全路径分量（根 component 是 `.`、`eval/reviewbench` 带斜杠），当目录还得
     枚举目录才能读回全集。当 JSON key 三个问题都没有。
     """
-    units: dict[str, UnitValidation] = field(default_factory=dict)
+    components: dict[str, ComponentValidation] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, lint: dict | None, test: dict | None) -> "Validation":
-        """两个 check 段 → 一个视图。段形状 `{unit_id: {...}}`（unit 是 key，不是目录）。"""
+        """两个 check 段 → 一个视图。段形状 `{unit_id: {...}}`（component 是 key，不是目录）。"""
         out = cls()
-        for uid, v in (lint or {}).items():
+        for cid, v in (lint or {}).items():
             if isinstance(v, dict):
-                u = out.of(uid)
+                u = out.of(cid)
                 u.last_lint_at = v.get("passed_at")
                 u.lint_fingerprint = v.get("fingerprint", "") or ""
-        for uid, v in (test or {}).items():
+        for cid, v in (test or {}).items():
             if isinstance(v, dict):
-                out.of(uid).last_test_at = v.get("passed_at")
+                out.of(cid).last_test_at = v.get("passed_at")
         return out
 
     def lint_segment(self) -> dict:
         """lint 段的落盘形状——只含 lint 拥有的字段，绝不带 test 的（那是另一个 writer 的）。"""
-        return {uid: {"passed_at": u.last_lint_at, "fingerprint": u.lint_fingerprint}
-                for uid, u in self.units.items() if u.last_lint_at is not None}
+        return {cid: {"passed_at": u.last_lint_at, "fingerprint": u.lint_fingerprint}
+                for cid, u in self.components.items() if u.last_lint_at is not None}
 
     def test_segment(self) -> dict:
-        return {uid: {"passed_at": u.last_test_at}
-                for uid, u in self.units.items() if u.last_test_at is not None}
+        return {cid: {"passed_at": u.last_test_at}
+                for cid, u in self.components.items() if u.last_test_at is not None}
 
-    def unit(self, uid: str) -> UnitValidation:
-        """`uid` 的戳，只读；从未验过 → 全空默认值（无戳即未验，fail-closed）。"""
-        return self.units.get(uid) or UnitValidation()
+    def component(self, cid: str) -> ComponentValidation:
+        """`cid` 的戳，只读；从未验过 → 全空默认值（无戳即未验，fail-closed）。"""
+        return self.components.get(cid) or ComponentValidation()
 
-    def of(self, uid: str) -> UnitValidation:
-        """`uid` 的戳，可写（缺则建）——mutator 专用。"""
-        return self.units.setdefault(uid, UnitValidation())
+    def of(self, cid: str) -> ComponentValidation:
+        """`cid` 的戳，可写（缺则建）——mutator 专用。"""
+        return self.components.setdefault(cid, ComponentValidation())
 
 
 def _review_status(rv: dict) -> str:
@@ -490,17 +490,17 @@ class RepoContext:
         return base.is_stale(meta.get("updated_at"), ttl)
 
     # ── mutators (each touches exactly one segment) ─────────────────────────────
-    def mark_lint_passed(self, uid: str, fingerprint: str) -> None:
+    def mark_lint_passed(self, cid: str, fingerprint: str) -> None:
         """`fingerprint` 必填、且必须是**刚验过的那份内容**的指纹（lint 跑完后现算，不是跑之前）——
         lint 的 `make fix` 会改文件，跑前算的指纹配不上跑后的树。空串 = 算不出，gate 会按未验证
         处理（fail-closed）。"""
-        u = self.validation.of(uid)
+        u = self.validation.of(cid)
         u.last_lint_at = base.now()
         u.lint_fingerprint = fingerprint
         self._save_lint()
 
-    def mark_test_passed(self, uid: str) -> None:
-        self.validation.of(uid).last_test_at = base.now()
+    def mark_test_passed(self, cid: str) -> None:
+        self.validation.of(cid).last_test_at = base.now()
         self._save_test()
 
     def set_branch_pr_number(self, number: int | None) -> None:
@@ -710,18 +710,18 @@ def _format_turn(ctx: "RepoContext") -> str:
     else:
         lines.append("Workspace: clean")
 
-    # 按 unit 逐段渲染（key 排序：dict 序来自落盘顺序，会随哪个 unit 先盖戳而变；整块 hash 去重
-    # 下那等于无意义重发）。没有任何 unit 验过 → 一句话，不摆两个 never。
+    # 按 component 逐段渲染（key 排序：dict 序来自落盘顺序，会随哪个 component 先盖戳而变；整块 hash 去重
+    # 下那等于无意义重发）。没有任何 component 验过 → 一句话，不摆两个 never。
     v = ctx.validation
-    if not v.units:
+    if not v.components:
         lines.append("Validation: never run")
     else:
         # 只报「什么时候验过」，**不报「验的还算不算数」**：后者要现算指纹（读改动文件的 bytes），
         # 而这里每轮都跑——按成本铁律（AGENTS.md〈成本原则〉）不值当。而且它本就不该由提示承担：
         # 陈旧与否由 gate 在 commit 时判（那里算一次指纹是合算的），gcam 路径更是直接把 lint 跑掉。
         # 旧的「N edits since」看着便宜，代价是它在 Codex 侧恒为 0——一个说谎的提示比没有更糟。
-        segs = [f"{uid}: lint={base.fmt_ts(v.units[uid].last_lint_at)}; test={base.fmt_ts(v.units[uid].last_test_at)}"
-                for uid in sorted(v.units)]
+        segs = [f"{cid}: lint={base.fmt_ts(v.components[cid].last_lint_at)}; test={base.fmt_ts(v.components[cid].last_test_at)}"
+                for cid in sorted(v.components)]
         lines.append("Validation: " + " | ".join(segs))
 
     # 后台 code-review 的结果回流（pull）：run_review（由 commit_flow detach 起）跑完写

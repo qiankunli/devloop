@@ -142,8 +142,8 @@ def test_command_guards_judge_the_parsed_run_dir():
     """命令侧 guard 必须按**解析后的 run_dir**（cd/-C 已算完）判，不能回头读 session 原始 cwd。
 
     这两条红过的样子：`cd cli && pip install x` / `cd cli && pytest` 里，parser 早把 run_dir
-    算成 cli/ 了，guard 却拿 `ctx.cwd`（= 仓根，cd **之前**的位置）去问 code unit——于是不管
-    cd 到哪都在问默认 unit：该拦的不拦（下面 R），不该拦的误拦（下面 U）。
+    算成 cli/ 了，guard 却拿 `ctx.cwd`（= 仓根，cd **之前**的位置）去问 component——于是不管
+    cd 到哪都在问默认 component：该拦的不拦（下面 R），不该拦的误拦（下面 U）。
     """
     from domain.context import RepoContext
     bash = _load_hook("pretool_policy_bash")
@@ -196,7 +196,7 @@ def test_lifecycle_dispatch():
     }
 
     # 相位范围下传到 handler：dispatch 不解释 paths，只如实转交（None 与 [] 是两种不同的语义，
-    # 见 select_units——「不知道范围」vs「知道且为空」，dispatch 不得把它们抹平）
+    # 见 select_components——「不知道范围」vs「知道且为空」，dispatch 不得把它们抹平）
     lc.dispatch("post_commit", "/r", names=["spy"], registry=reg, paths=["cli/a.py"])
     lc.dispatch("post_commit", "/r", names=["spy"], registry=reg, paths=[])
     lc.dispatch("post_commit", "/r", names=["spy"], registry=reg)
@@ -236,10 +236,10 @@ def test_lifecycle_dispatch():
     # 内置注册表解析得到可调用 handler
     assert callable(lc.resolve_handler("lint")) and lc.resolve_handler("nope") is None
 
-def test_code_unit_test_target_detect_matches_execute():
-    """CodeUnit.test_target 探测即执行：只有 `test-ci` 的仓要跑 `make test-ci`，不能判成「有
+def test_component_test_target_detect_matches_execute():
+    """Component.test_target 探测即执行：只有 `test-ci` 的仓要跑 `make test-ci`，不能判成「有
     测试」却硬跑不存在的 `make test`（旧 `has_target(suffix=True)` bug）。无 test 目标 → None。"""
-    from domain.repo_layout import CodeUnit
+    from domain.repo_layout import Component
     D = "/tmp/dlut_testtarget"
     shutil.rmtree(D, ignore_errors=True)
     os.makedirs(f"{D}/ci"); os.makedirs(f"{D}/plain"); os.makedirs(f"{D}/none"); os.makedirs(f"{D}/go")
@@ -247,18 +247,18 @@ def test_code_unit_test_target_detect_matches_execute():
     Path(f"{D}/plain/Makefile").write_text("test:\n\techo ok\ntest-local:\n\techo ok\n")
     Path(f"{D}/none/Makefile").write_text("build:\n\techo ok\n")
     Path(f"{D}/go/go.mod").write_text("module x\n")
-    assert CodeUnit.at(f"{D}/ci", D).test_target() == "test-ci"   # 判据==执行目标，不再错跑 make test
-    assert CodeUnit.at(f"{D}/plain", D).test_target() == "test"   # canonical `test` 优先
-    assert CodeUnit.at(f"{D}/none", D).test_target() is None      # 无 test 目标 → 跳过
-    assert CodeUnit.at(f"{D}/ci", D).test_command() == ("make", "test-ci")
-    assert CodeUnit.at(f"{D}/go", D).test_command() == ("go", "test", "./...")
+    assert Component.at(f"{D}/ci", D).test_target() == "test-ci"   # 判据==执行目标，不再错跑 make test
+    assert Component.at(f"{D}/plain", D).test_target() == "test"   # canonical `test` 优先
+    assert Component.at(f"{D}/none", D).test_target() is None      # 无 test 目标 → 跳过
+    assert Component.at(f"{D}/ci", D).test_command() == ("make", "test-ci")
+    assert Component.at(f"{D}/go", D).test_command() == ("go", "test", "./...")
     # 身份在出生点算清，消费方直接读 .id（不再各自拿 git_root 重推）
-    assert CodeUnit.at(f"{D}/ci", D).id == "ci" and CodeUnit.at(D, D).id == "."
+    assert Component.at(f"{D}/ci", D).id == "ci" and Component.at(D, D).id == "."
 
 
 def test_ecosystem_environment_prepare_contract():
     """worktree 环境契约：Node/Python 从 lockfile frozen 恢复、盖 manifest+lock 指纹；
-    lifecycle 的 lint/test 并发探测同一冷 unit 时只允许一次 install。"""
+    lifecycle 的 lint/test 并发探测同一冷 component 时只允许一次 install。"""
     from lib import ecosystem
 
     R = "/tmp/dlut_ecosystem"
@@ -316,26 +316,26 @@ def test_checks_prepare_environment_before_running_commands():
     """环境准备是 lint/test 的显式前置拍；失败时不启动 make，并标成环境错误。"""
     from lib import ecosystem
     from domain.lifecycle import checks
-    from domain.repo_layout import CodeUnit
+    from domain.repo_layout import Component
 
     R = "/tmp/dlut_check_env"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     Path(f"{R}/package.json").write_text("{}")
     Path(f"{R}/Makefile").write_text("lint:\n\tfalse\ntest:\n\tfalse\n")
-    unit = CodeUnit.at(R, R)
+    component = Component.at(R, R)
     original = ecosystem.ensure_ready
     ecosystem.ensure_ready = lambda path: "dependency restore unavailable"
     try:
-        lint = checks.lint(R, unit=unit)
-        test = checks.test(R, unit=unit)
+        lint = checks.lint(R, component=component)
+        test = checks.test(R, component=component)
     finally:
         ecosystem.ensure_ready = original
     assert not lint.ok and not lint.advisory and "environment setup failed" in lint.summary
     assert not test.ok and test.advisory and "environment setup failed" in test.summary
 
 
-def test_worktree_creation_prepares_every_code_unit():
-    """`/enter --worktree` 提前准备全部 unit；gate 后续仍会走同一 ensure_ready 做兜底。"""
+def test_worktree_creation_prepares_every_component():
+    """`/enter --worktree` 提前准备全部 component；gate 后续仍会走同一 ensure_ready 做兜底。"""
     from lib import ecosystem
 
     from domain import worktree
@@ -433,20 +433,20 @@ def test_lint_passport_is_bound_to_content_not_to_edit_events():
     assert commit_denied()
 
     # 指纹算不出（None）→ 按未验证，fail-closed：宁可多拦一次，不可拿不准还放行
-    unit = repo_layout.CodeUnit.at(f"{R}/cli", R)
-    assert repo_model.unit_fingerprint("/tmp/definitely-not-a-repo-xyz", unit) is None
+    component = repo_layout.Component.at(f"{R}/cli", R)
+    assert repo_model.component_fingerprint("/tmp/definitely-not-a-repo-xyz", component) is None
 
 
 def test_shared_paths_own_no_unit_so_a_docs_change_validates_nothing():
-    """不属于任何 unit 的路径（仓根 README / docs/ / .github/）**不贡献 unit**。
+    """不属于任何 component 的路径（仓根 README / docs/ / .github/）**不贡献 component**。
 
-    红过的样子：它们走 `enclosing_code_unit` → 回落 `default_code_unit` → `server`。于是纯文档
+    红过的样子：它们走 `enclosing_component` → 回落 `default_component` → `server`。于是纯文档
     改动去跑 server 的 lint——server 有存量错就把你的文档 PR 拦了，而「为什么是 server 不是 cli」
     没有任何理由：那是**选择**启发式（server > backend > 根）在答**归属**问题（#88 消灭的同一个
     混淆，这是它最后残留的一处）。
 
-    也刻意**不是**「共享路径 → 全部 unit」：那看着保守，实际是让每个纯文档 PR 都跑全仓 lint，
-    任一 unit 有存量错就拦你——正是 phase_paths 那套范围收敛要消灭的失败，换扇门又回来。
+    也刻意**不是**「共享路径 → 全部 component」：那看着保守，实际是让每个纯文档 PR 都跑全仓 lint，
+    任一 component 有存量错就拦你——正是 phase_paths 那套范围收敛要消灭的失败，换扇门又回来。
     """
     from domain import repo as repo_model
     from domain.lifecycle import checks
@@ -456,15 +456,15 @@ def test_shared_paths_own_no_unit_so_a_docs_change_validates_nothing():
     os.makedirs(f"{R}/server"); os.makedirs(f"{R}/cli"); os.makedirs(f"{R}/docs")
     _git(R, "init", "-q", "-b", "main")
     _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
-    # server 是「探测出的默认 unit」且有存量坏 lint —— 旧行为下它会接住所有根文件
+    # server 是「探测出的默认 component」且有存量坏 lint —— 旧行为下它会接住所有根文件
     Path(f"{R}/server/pyproject.toml").write_text("[project]\nname = 'server'\nversion = '0'\n")
     Path(f"{R}/server/Makefile").write_text("lint:\n\tfalse\n")
     Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
     Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\n")
     _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
 
-    ids = lambda paths: sorted(u.id for u in repo_model.select_units(R, paths=paths).units)
-    assert ids(["README.md"]) == []                       # 纯文档 → 0 个 unit
+    ids = lambda paths: sorted(u.id for u in repo_model.select_components(R, paths=paths).components)
+    assert ids(["README.md"]) == []                       # 纯文档 → 0 个 component
     assert ids(["docs/guide.md"]) == []
     assert ids([".github/workflows/ci.yml"]) == []
     assert ids(["README.md", "cli/a.py"]) == ["cli"]      # 共享路径不贡献，也不减少
@@ -476,17 +476,17 @@ def test_shared_paths_own_no_unit_so_a_docs_change_validates_nothing():
     assert res.ok, f"纯文档改动被拦了：{res.summary}"
     assert "no changed files in scope" in res.summary and "server" not in res.summary
 
-    # 根**是** unit 时，根文件有主 —— 仍归根，不是 None（catalog 与归属必须给同一个答案）
+    # 根**是** component 时，根文件有主 —— 仍归根，不是 None（catalog 与归属必须给同一个答案）
     G = str(Path("/tmp/dlut_shared_rootunit").resolve())
     shutil.rmtree(G, ignore_errors=True); os.makedirs(f"{G}/cli")
     _git(G, "init", "-q")
     Path(f"{G}/go.mod").write_text("module x\n")
     Path(f"{G}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
-    assert sorted(u.id for u in repo_model.select_units(G, paths=["README.md"]).units) == ["."]
+    assert sorted(u.id for u in repo_model.select_components(G, paths=["README.md"]).components) == ["."]
 
 
 def test_precommit_gate_scopes_to_files_being_committed():
-    """`--files` 划定的就是 pre_commit 的验证范围：只验你真要提交的那些 unit。
+    """`--files` 划定的就是 pre_commit 的验证范围：只验你真要提交的那些 component。
 
     红过的样子：pre_commit 的范围是「工作树里所有脏文件」——那是 `--files` 的**超集**。于是
     `gcam --files cli/a.py` 会连带把你压根不打算提交的 `legacy/` 也拖进 gate，它有存量 lint
@@ -503,12 +503,12 @@ def test_precommit_gate_scopes_to_files_being_committed():
     _git(R, "init", "-q", "-b", "main")
     _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
     Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
-    Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\n")            # 你要提交的 unit：干净
+    Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\n")            # 你要提交的 component：干净
     Path(f"{R}/legacy/pyproject.toml").write_text("[project]\nname = 'legacy'\nversion = '0'\n")
     Path(f"{R}/legacy/Makefile").write_text("lint:\n\tfalse\n")        # 没打算提交：存量坏 lint
     _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
 
-    # 两个 unit 都脏，但本次只提交 cli/a.py
+    # 两个 component 都脏，但本次只提交 cli/a.py
     Path(f"{R}/cli/a.py").write_text("x = 1\n")
     Path(f"{R}/legacy/b.py").write_text("y = 1\n")
 
@@ -570,8 +570,8 @@ def test_phase_scope_survives_a_clean_tree():
     """commit 之后（工作树已干净）的相位必须仍按**本次改动**收范围，不得退化成跑全仓。
 
     这条红过的样子：post_commit / pre_mr 的 handler 手里只有 repo，去读工作树得到「什么都没改」
-    → select_units 读成「不知道范围」→ repo-wide 枚举全部 unit → 一个你根本没碰、却有存量 lint
-    错误的 unit 让 gate fail → commit 已落地，push 和 MR 全被拦。
+    → select_components 读成「不知道范围」→ repo-wide 枚举全部 component → 一个你根本没碰、却有存量 lint
+    错误的 component 让 gate fail → commit 已落地，push 和 MR 全被拦。
     """
     from domain import repo as repo_model
     from domain.lifecycle import checks
@@ -582,9 +582,9 @@ def test_phase_scope_survives_a_clean_tree():
     os.makedirs(f"{R}/cli"); os.makedirs(f"{R}/legacy")
     _git(R, "init", "-q", "-b", "main")
     _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
-    Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\n")            # 你改的 unit：干净
+    Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\n")            # 你改的 component：干净
     Path(f"{R}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
-    Path(f"{R}/legacy/Makefile").write_text("lint:\n\tfalse\n")        # 没碰的 unit：存量坏 lint
+    Path(f"{R}/legacy/Makefile").write_text("lint:\n\tfalse\n")        # 没碰的 component：存量坏 lint
     Path(f"{R}/legacy/pyproject.toml").write_text("[project]\nname = 'legacy'\nversion = '0'\n")
     _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
     _git(R, "checkout", "-q", "-b", "feat/x")
@@ -600,7 +600,7 @@ def test_phase_scope_survives_a_clean_tree():
                              files=files or [], repo=R, source="test", invoke_cwd=R)
     assert sgo.phase_paths(intent(), "pre_commit") is None             # 无 --files → 工作树即答案
     assert sgo.phase_paths(intent(), "post_commit") == ["cli/a.py"]
-    # `--files` 给了就是 pre_commit 的范围：只验你真要提交的那些，不把工作树里其它脏 unit
+    # `--files` 给了就是 pre_commit 的范围：只验你真要提交的那些，不把工作树里其它脏 component
     # 拖进 gate（它有存量 lint 错误就会拦掉你的 commit——与本文件上面那条同一类失败）
     assert sgo.phase_paths(intent(files=["cli/a.py"]), "pre_commit") == ["cli/a.py"]
 
@@ -609,13 +609,13 @@ def test_phase_scope_survives_a_clean_tree():
     assert res.ok, f"没碰 legacy 却被它拦下：{res.summary}"
     assert "changed files under: cli" in res.summary and "legacy" not in res.summary
 
-    # 对照：范围丢失（老行为）→ clean tree 回落 repo-wide → 被无关 unit 拦下
+    # 对照：范围丢失（老行为）→ clean tree 回落 repo-wide → 被无关 component 拦下
     degraded = checks.lint(R)
-    assert not degraded.ok and "clean tree, all units" in degraded.summary
+    assert not degraded.ok and "clean tree, all components" in degraded.summary
 
-    # 「知道范围且为空」≠「不知道范围」：前者 0 个 unit 干净跳过，后者才全跑
-    assert repo_model.select_units(R, paths=[]).units == ()
-    assert len(repo_model.select_units(R).units) == 2
+    # 「知道范围且为空」≠「不知道范围」：前者 0 个 component 干净跳过，后者才全跑
+    assert repo_model.select_components(R, paths=[]).components == ()
+    assert len(repo_model.select_components(R).components) == 2
 
     # git 算不出范围 → **None（不知道）而非 []（知道且为空）**。gitcmd 是 failure-safe 的，
     # 两者原始输出都是空；读成 [] 就等于 origin/<target> 没 fetch 时静默跳过整个 lint gate。
@@ -624,7 +624,7 @@ def test_phase_scope_survives_a_clean_tree():
     assert sgo.phase_paths(intent(target="nope-not-fetched"), "pre_mr") is None   # → handler 回落全跑，不放行
 
 
-def test_lifecycle_checks_follow_changed_code_unit():
+def test_lifecycle_checks_follow_changed_component():
     """gcampr lifecycle 与 run-test 必须共用 WorkSet：只改 cli 时不得跑仓根 test。"""
     from domain.lifecycle import checks
 
@@ -646,9 +646,9 @@ def test_lifecycle_checks_follow_changed_code_unit():
 
 
 def test_partial_unit_lint_failure_does_not_unlock_bare_commit():
-    """一个 unit 过、另一个挂时，防绕过守卫必须**仍然拦**裸 `git commit`。
+    """一个 component 过、另一个挂时，防绕过守卫必须**仍然拦**裸 `git commit`。
 
-    这是 validation 按 unit 键的理由本身。repo 级单戳下这条必红：fan-out 里 cli 通过盖的那个
+    这是 validation 按 component 键的理由本身。repo 级单戳下这条必红：fan-out 里 cli 通过盖的那个
     戳是 repo 级的，`precommit_gate` 读到「已验、无待验编辑」就放行——于是 gate 挡住了 gcampr，
     却正好给它唯一要拦的东西（裸 commit）发了通行证。守卫和正常路径必须是同一份策略。
     """
@@ -672,15 +672,15 @@ def test_partial_unit_lint_failure_does_not_unlock_bare_commit():
     _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
     RepoContext.refresh_all(R)
 
-    # 两个 unit 都有改动 → WorkSet 命中两个；lint fan-out 一过一挂 → 整体不放行
+    # 两个 component 都有改动 → WorkSet 命中两个；lint fan-out 一过一挂 → 整体不放行
     Path(f"{R}/cli/a.py").write_text("x = 1\n")
     Path(f"{R}/server/b.py").write_text("y = 2\n")
     res = checks.lint(R)
     assert not res.ok, "server 的 lint 挂了，聚合结果必须 ok=False"
 
-    # cli 已盖戳，但 server 没有——裸 commit 守卫要看的是「本轮 required units 是否都验过」
+    # cli 已盖戳，但 server 没有——裸 commit 守卫要看的是「本轮 required components 是否都验过」
     v = RepoContext.load(R).validation
-    assert v.unit("cli").last_lint_at and not v.unit("server").last_lint_at
+    assert v.component("cli").last_lint_at and not v.component("server").last_lint_at
     msg = bash.decide(_hook_input("Bash", {"cwd": R, "session_id": "",
                                            "tool_input": {"command": "git commit -m x"}})) or ""
     assert "Refusing `git commit`" in msg, "cli 的戳把守卫的锁打开了 —— 正是 repo 级单戳的 bug"

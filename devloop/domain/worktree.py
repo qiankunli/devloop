@@ -16,11 +16,11 @@ from .context import session
 
 
 def prepare_environment(path: str) -> list[str]:
-    """Prepare every code unit in a new/reused worktree; return environment warnings."""
+    """Prepare every component in a new/reused worktree; return environment warnings."""
     warnings = []
-    for unit in repo_layout.discover_code_units(path):
-        if problem := ecosystem.ensure_ready(unit.path):
-            warnings.append(f"unit {unit.id}: {problem}")
+    for component in repo_layout.discover_components(path):
+        if problem := ecosystem.ensure_ready(component.path):
+            warnings.append(f"component {component.id}: {problem}")
     return warnings
 
 

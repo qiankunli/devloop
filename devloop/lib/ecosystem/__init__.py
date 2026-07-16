@@ -25,7 +25,7 @@ _READY_LOCKS: dict[str, threading.Lock] = {}
 
 
 def _ready_lock(path: str | Path) -> threading.Lock:
-    """同一进程内每个 unit 一把 single-flight 锁。
+    """同一进程内每个 component 一把 single-flight 锁。
 
     lifecycle 会并发跑 lint/test；两边同时发现冷环境时，不能并发写同一份 node_modules/.venv。
     锁内必须重查 ready：先拿锁的一方 prepare 完，后拿锁的一方应直接返回。
@@ -36,7 +36,7 @@ def _ready_lock(path: str | Path) -> threading.Lock:
 
 
 def detect(path: str | Path) -> Ecosystem | None:
-    """`path` 这个 code unit 属于哪个生态（按身份判据 manifest）。None = 不认识。"""
+    """`path` 这个 component 属于哪个生态（按身份判据 manifest）。None = 不认识。"""
     p = Path(path)
     for eco in ECOSYSTEMS:
         if any((p / m).exists() for m in eco.manifests):
