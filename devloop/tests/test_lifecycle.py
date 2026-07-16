@@ -86,7 +86,10 @@ def test_migrated_command_rules_parity():
     R = "/tmp/dlut_co"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
     session_lock.acquire(R, "other", "br", pid=os.getpid())
-    assert "worktree" in (d("git checkout main", cwd=R, sid="me") or "")
+    checkout_denied = d("git checkout main", cwd=R, sid="me") or ""
+    assert "worktree" in checkout_denied
+    assert '${PLUGIN_ROOT}/scripts/enter.py' in checkout_denied
+    assert "MATCH\\t<path>" in checkout_denied and "workdir" in checkout_denied
     assert d("git switch main", cwd=R, sid="me")
     assert d("git checkout -- f", cwd=R, sid="me") is None      # 文件恢复(非切分支)
     assert d("git checkout main", cwd=R, sid="other") is None   # owner 自己

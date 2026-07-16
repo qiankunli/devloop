@@ -43,8 +43,11 @@ class EditOwnerGuardRule(Rule):
                         f"⚠️  This checkout ('{name}') is in use by another devloop session "
                         f"(branch '{owner.get('branch') or '?'}', session {str(owner.get('session_id', ''))[:8]}…). "
                         f"Editing it would mix your changes into that session's working tree.\n"
-                        f"Work in an isolated git worktree instead — e.g. `/enter {name} --worktree <tag>` "
-                        f"(then edit under the worktree path it prints).\n"
+                        f"Work in an isolated git worktree instead. In Claude Code, run "
+                        f"`/enter {name} --worktree <tag>`. In Codex, choose a short unique tag and run "
+                        f"`python3 \"${{PLUGIN_ROOT}}/scripts/enter.py\" {name} --worktree <tag>`. "
+                        f"Read the returned `MATCH\\t<path>`, set subsequent tool calls' `workdir` "
+                        f"to that path, then retry this edit there.\n"
                         f"If you intentionally share this checkout, ask the user to remove "
                         f"`{git_root}/.devloop/owner.lock` and retry."
                     ),

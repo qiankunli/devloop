@@ -206,6 +206,8 @@ def test_edit_owner_guard():
     inp_b = _hook_input("Edit", {"session_id": "sess-B", "cwd": R, "tool_input": {"file_path": fp}})
     reason = guard.decide(inp_b)
     assert reason and "worktree" in reason and "owner.lock" in reason
+    assert '${PLUGIN_ROOT}/scripts/enter.py' in reason
+    assert "MATCH\\t<path>" in reason and "workdir" in reason
 
     # gitignored 文件不进 owner 的 status/diff,guest 写它无混入风险 → 放行,
     # 且不抢锁(owner 仍是 sess-A)
@@ -249,6 +251,8 @@ def test_apply_patch_owner_guard_uses_target_path():
     })
     reason = guard.decide(inp_b)
     assert reason and "worktree" in reason and "owner.lock" in reason
+    assert '${PLUGIN_ROOT}/scripts/enter.py' in reason
+    assert "MATCH\\t<path>" in reason and "workdir" in reason
 
 def test_codex_exec_envelope_runs_edit_and_command_guards():
     """Codex unified tools expose only top-level ``exec`` to hooks; nested mutations must still
