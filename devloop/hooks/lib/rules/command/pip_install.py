@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from lib import repo_layout
+from lib import ecosystem, repo_layout
 from lib.core.domain import Command, Finding, Severity, TargetKind
 from lib.core.protocol import Rule
 
@@ -37,7 +37,8 @@ class PipInstallRule(Rule):
         # 方式可能不同。**不读 `ctx.cwd`**——那是 session 的原始 cwd、cd 之前的位置，
         # `cd cli && pip install x` 会去问仓根有没有 uv.lock，于是 cli 是 uv 仓也拦不住。
         code_dir = Path(repo_layout.enclosing_code_unit(target.run_dir, git_root).path)
-        if not ((code_dir / "pyproject.toml").exists() and (code_dir / "uv.lock").exists()):
+        eco = ecosystem.detect(code_dir)
+        if not isinstance(eco, ecosystem.PythonEcosystem) or not eco.is_uv_managed(code_dir):
             return []
         return [
             Finding(

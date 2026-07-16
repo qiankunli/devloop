@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import gitcmd
+from . import ecosystem, gitcmd
 
 
 @dataclass(frozen=True)
@@ -88,14 +88,14 @@ class CodeUnit:
         return None
 
     def test_command(self) -> tuple[str, ...] | None:
-        """本 unit 的 canonical test 命令。Makefile target 优先；纯 Go module 回落
-        `go test ./...`，避免多 unit 仓已正确识别 Go unit 却因没有 Makefile 被误跳过。"""
+        """本 unit 的 canonical test 命令。Makefile target 优先；无 Makefile 时回落所属
+        生态的 canonical 命令（如 Go 的 `go test ./...`），避免多 unit 仓已正确识别的
+        unit 因没有 Makefile 被误跳过。"""
         target = self.test_target()
         if target is not None:
             return ("make", target)
-        if (Path(self.path) / "go.mod").exists():
-            return ("go", "test", "./...")
-        return None
+        eco = ecosystem.detect(self.path)
+        return eco.fallback_test_command(self.path) if eco else None
 
 
 def find_git_root(cwd: str | Path) -> str | None:
@@ -227,15 +227,9 @@ def discover_code_units(git_root: str | Path, *, max_depth: int = 4) -> list[Cod
     return units
 
 
-# 语言的**项目清单**：一个目录是不是 code unit，由「某个语言的工具链认不认它是项目根」定义。
-# 这是身份判据，逐语言一条：
-_PROJECT_MANIFESTS = (
-    "go.mod",          # Go module
-    "pyproject.toml",  # Python（PEP 621，现代）
-    "setup.py",        # Python（legacy）
-    "package.json",    # Node/npm —— JS 与 TS 共用的项目边界（tsconfig.json 只是 TS 的编译配置，
-                       # 不定义项目：一个 package 里可以有多份 tsconfig）
-)
+# 生态的**项目清单**：一个目录是不是 code unit，由「某个生态的工具链认不认它是项目根」定义。
+# 判据数据归各生态自己（`lib/ecosystem/`——语言差异的唯一入口），这里只做聚合消费。
+_PROJECT_MANIFESTS = ecosystem.PROJECT_MANIFESTS
 
 
 def _is_code_unit(path: Path) -> bool:
@@ -254,21 +248,9 @@ def _is_code_unit(path: Path) -> bool:
 
 
 def detect_language(repo_code_dir: str | Path) -> str | None:
-    """Detect primary language of repo_code_dir. Returns 'python' / 'go' / 'typescript' / 'javascript' / None."""
-    p = Path(repo_code_dir)
-    if (p / "pyproject.toml").exists() or (p / "setup.py").exists() or (p / "requirements.txt").exists():
-        return "python"
-    if (p / "go.mod").exists():
-        return "go"
-    if (p / "package.json").exists():
-        try:
-            content = (p / "package.json").read_text(encoding="utf-8")
-            if "typescript" in content.lower() or "@types/" in content:
-                return "typescript"
-        except OSError:
-            pass
-        return "javascript"
-    return None
+    """Detect primary language of repo_code_dir. Returns 'python' / 'go' / 'typescript' /
+    'javascript' / None. 委托生态注册表（含 ts/js 嗅探、requirements.txt 语言线索）。"""
+    return ecosystem.detect_language(repo_code_dir)
 
 
 def find_agents_md(repo_dir: str | Path, repo_code_dir: str | Path | None = None) -> str | None:

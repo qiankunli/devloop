@@ -56,6 +56,7 @@ devloop/
 │   │   │   └── review.py          #     code-review signal handler（任意相位；审全量 diff，分支有开放 MR 时机会性发评论）
 │   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）+ select_units→WorkSet（本轮跑哪些 code unit，按本次改动定）
 │   │   ├── repo_layout.py         #   ★code unit 模型：CodeUnit（path 执行身份 / id 持久化身份 / 工具链动作）+ at() 唯一构造入口 + enclosing/discover
+│   │   ├── ecosystem/             #   ★工具链生态注册表：项目身份/语言/环境准备/canonical 回落；worktree 与 gate 共用 ensure_ready
 │   │   ├── git_state.py  parsers.py  workspace.py
 │   │   └── context/               #   .devloop/ 状态总线，五族分模块：store(磁盘原语/三域) + base(共享词汇) / repo+workspace(视图) / gate+prstate(真相接缝) / session(运行态+owner锁+session 日志 `sessions/<sid>.jsonl`——devloop 自己干了什么的 append-only 账,`kind` 分类(首个 `inject`),纯 exhaust、从不读回)
 │   │       └── loopstate/         #     经验沉淀 ledger 半（loop-state / requirement-first，见 workspace docs/）：friction(guard deny→friction.jsonl，per-repo) + requirement(域落 dev root——workspace 根、单仓退化 repo 根；单 spine 跨仓、事件带 repo；turn_line 派生任务视图；monitor reconcile 收口)
@@ -140,6 +141,7 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 - **本轮跑哪些 unit 由「本次改动」定**，不由解析来源定：`select_units` → `WorkSet`（显式目标 > dirty 改动投影 > repo-wide 全量），任何一级都**不静默回落 default unit**。lifecycle gate 与 fix-lint / run-test skill **共用这一个入口**——正常路径与防绕过守卫必须是同一份策略，分叉了守卫就拦不住它唯一要拦的东西。
 - **unit 有两个身份，别混**：`path`（绝对）是「这次在哪跑 make」的执行事实；`id`（仓相对）是**持久化身份**，落 `.devloop` 的一切 key 用它。两者都在出生点由唯一构造入口 `CodeUnit.at(path, git_root)` 算清，`id` 必填无默认值——给默认值则漏传就是静默的空 key，让消费方自算又要各自再传 `git_root`（传错 root 就算错）。
 - **验证戳按 unit 键**，不是 repo 级单值：单戳表达不了「A 过 B 挂」，会让一次 partial-fail 的 fan-out 反而给裸 commit 发通行证。key 与执行范围同粒度，这类偏差才不可表达。
+- **依赖环境也按 unit 判**：worktree 创建时预热、lint/test 启动前用同一个 `ecosystem.ensure_ready` 兜底；每个 checkout 保留自己的依赖视图，只共享包管理器缓存，恢复必须 frozen 且失败明确归为环境错误。
 - `default_unit`（`server/` > `backend/` > 仓根）只留作**交互兜底**（按名字 `/enter` 一个仓、cwd 恰在仓根），**不进 correctness 路径**。
 
 模型与落盘细节见 CONCEPTS.md〈code unit〉〈验证状态〉。
@@ -151,6 +153,7 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 - 一轮循环端到端流程（事件 → hook/script → 状态）：[`docs/loop.md`](./docs/loop.md)
 - 外部事件驱动的会话续跑（感知 → 唤醒 → 按 auto-mode 决策，含设计/实现分层）：[`docs/event-driven-resume.md`](./docs/event-driven-resume.md)
 - devops 生命周期 hook（pre_commit/post_commit/pre_mr/post_mr，统一 lint/test/review 等的触发；hook 皆阻塞，异步=发信号+既有 wake）：[`docs/lifecycle-hooks.md`](./docs/lifecycle-hooks.md)
+- Worktree 依赖环境（checkout-local 依赖视图 + 共享包缓存；生态 prepare 与验证前置条件）：[`docs/worktree-env.md`](./docs/worktree-env.md)
 - 提交期 code-review（signal hook `review`，任意相位由 config 决定：detach 起、审全量 diff、不挡 commit、结果经状态总线 pull 注入；分支有开放 MR 时（典型 post_mr）机会性发评论到 MR 做历史）：[`docs/code-review.md`](./docs/code-review.md)
 - 使用 / 安装 / 配置：[`README.md`](./README.md)
 - 共享术语（repo_dir / **code unit** + default unit / 保护分支 / PR 模型 / 验证状态 / `<PLUGIN_ROOT>`）：[`CONCEPTS.md`](./CONCEPTS.md)

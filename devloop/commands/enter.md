@@ -20,6 +20,10 @@ context and surfaces AGENTS.md References right after the cd — so this command
    - `CANDIDATES\t<name1>\t<path1>\t<name2>\t<path2>...` — multiple fuzzy hits. Use **AskUserQuestion** with one option per candidate (label = `<name>`, description = `<path>`); re-run the resolver with the chosen path.
    - `NONE\t<reason>` — print the reason and stop.
 
+   A worktree match may include a following `INFO\t<message>` line describing dependency
+   preparation. Surface an `environment warning` to the user; it means the worktree exists and
+   can be entered, but lint/test will retry the same frozen preparation before running.
+
 2. `cd "<resolved-path>"` — **bare cd only**, do not bundle `git branch` / `git status` / etc. The CwdChanged hook handles context refresh.
 
 3. Briefly tell the user where they landed. Branch / workspace / validation / recent-MR state is in the auto-injected `.devloop/context.json` segment — no extra git commands needed.

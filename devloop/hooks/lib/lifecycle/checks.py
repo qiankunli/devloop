@@ -17,7 +17,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from lib import repo_resolve
+from lib import ecosystem, repo_resolve
 from lib.context import RepoContext
 from lib.repo_layout import CodeUnit
 from lib.lifecycle.base import HookResult
@@ -57,6 +57,19 @@ def _tail(sink: list[str]) -> str:
     return "\n".join(lines[-_TAIL_LINES:])
 
 
+def _environment_failure(name: str, unit: CodeUnit, *, advisory: bool = False) -> HookResult | None:
+    """验证命令的环境前置条件：缺依赖先按生态 frozen 恢复，失败单列为环境错误。
+
+    lint/test 会在 lifecycle 里并发进入；`ecosystem.ensure_ready` 自带 per-unit single-flight，
+    所以同一份 node_modules/.venv 只会有一个 writer。
+    """
+    problem = ecosystem.ensure_ready(unit.path)
+    if problem is None:
+        return None
+    return HookResult(name, ok=False, advisory=advisory,
+                      summary=f"environment setup failed in {unit.path}: {problem}")
+
+
 def lint(repo: str, *, capture: bool = True, unit: CodeUnit | None = None,
          paths: list[str] | None = None) -> HookResult:
     """`make fix` 后跑 lint target；通过则盖 lint 戳。只有 `make fix` 能改文件——此处从不手改代码。
@@ -75,6 +88,9 @@ def lint(repo: str, *, capture: bool = True, unit: CodeUnit | None = None,
     target = unit.lint_target()
     if target is None:
         return HookResult("lint", ok=True, summary=f"no make lint/lint-ci target in {code_dir} — skipped")
+    env_failure = _environment_failure("lint", unit)
+    if env_failure is not None:
+        return env_failure
 
     sink: list[str] = []
     if unit.has_target("fix"):
@@ -109,6 +125,9 @@ def test(repo: str, *, capture: bool = True, extra: list[str] | None = None,
     command = unit.test_command()
     if command is None:
         return HookResult("test", ok=True, advisory=True, summary=f"no test command in {code_dir} — skipped")
+    env_failure = _environment_failure("test", unit, advisory=True)
+    if env_failure is not None:
+        return env_failure
 
     extra = extra or []
     argv = [*command, *extra]

@@ -19,7 +19,7 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_ROOT / "hooks"))
 
-from lib import config, git_state, gitcmd, workspace  # noqa: E402
+from lib import config, ecosystem, git_state, gitcmd, repo_layout, workspace  # noqa: E402
 from lib.context import WorkspaceContext, session  # noqa: E402
 from lib.repo_resolve import best_score, looks_like_path  # noqa: E402  (shared fuzzy scoring)
 
@@ -29,6 +29,20 @@ MAX_CANDIDATES = 4
 def emit(line: str, code: int) -> int:
     print(line)
     return code
+
+
+def prepare_worktree(path: str) -> list[str]:
+    """把新建/复用 worktree 里的每个 code unit 带到可验证状态；返回环境告警。
+
+    monorepo 的 lockfile 通常只在根 unit：根的一次 install 会准备整个 workspace，子 package
+    没 lockfile 会自然 no-op。这里与 lifecycle gate 共用 `ecosystem.ensure_ready`，提前准备是
+    降低首次验证延迟，gate 再查一次才是 correctness 兜底。
+    """
+    warnings = []
+    for unit in repo_layout.discover_code_units(path):
+        if problem := ecosystem.ensure_ready(unit.path):
+            warnings.append(f"unit {unit.id}: {problem}")
+    return warnings
 
 
 def make_worktree(repo_dir: str, tag: str) -> tuple[str | None, str]:
@@ -44,7 +58,11 @@ def make_worktree(repo_dir: str, tag: str) -> tuple[str | None, str]:
         if (base / legacy).is_dir():
             path = str((base / legacy).resolve())
             _prune_old_worktrees(repo_dir, keep_path=path)
-            return path, "reused existing worktree"
+            warnings = prepare_worktree(path)
+            msg = "reused existing worktree"
+            if warnings:
+                msg += "; environment warning: " + " | ".join(warnings)
+            return path, msg
     target = git_state.local_default_target(repo_dir)
     branch = f"worktree-{tag}"
     r = gitcmd.git(repo_dir, "worktree", "add", "-b", branch,
@@ -56,7 +74,11 @@ def make_worktree(repo_dir: str, tag: str) -> tuple[str | None, str]:
             return None, f"worktree add failed: {r.err or r2.err}"
     path = str((base / rel).resolve())
     _prune_old_worktrees(repo_dir, keep_path=path)
-    return path, "created worktree"
+    warnings = prepare_worktree(path)
+    msg = "created worktree"
+    if warnings:
+        msg += "; environment warning: " + " | ".join(warnings)
+    return path, msg
 
 
 def _worktree_activity(path: str) -> float:
@@ -196,7 +218,9 @@ def main(argv: list[str]) -> int:
         wt, msg = make_worktree(path, tag)
         if wt is None:
             return emit(f"NONE\t{msg}", 1)
-        return emit(f"MATCH\t{wt}", 0)
+        print(f"MATCH\t{wt}")
+        print(f"INFO\t{msg}")
+        return 0
     return emit(f"MATCH\t{path}", 0)
 
 
