@@ -5,6 +5,7 @@ Standalone: `python3 devloop/tests/test_lifecycle.py`（也 pytest-collectable�
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -37,6 +38,13 @@ def test_code_policy_engine():
     assert e.targets[0].mode == "edit"
     ap = engine.project(_hook_input("apply_patch", {"tool_input": {"patch": "*** Begin Patch\n*** Update File: /r/a.py\n@@\n-x\n+y\n*** End Patch\n"}}))
     assert isinstance(ap.targets[0], FileChange) and ap.targets[0].path == "/r/a.py" and ap.targets[0].mode == "edit"
+    patch = "*** Begin Patch\n*** Update File: /r/b.py\n@@\n-x\n+y\n*** End Patch\n"
+    source = f"const patch = {json.dumps(patch)};\ntext(await tools.apply_patch(patch));\n"
+    unified = engine.project(_hook_input("exec", {"cwd": "/r", "tool_input": {"input": source}}))
+    assert isinstance(unified.targets[0], FileChange) and unified.targets[0].path == "/r/b.py"
+    source = 'const r = await tools.exec_command({"cmd":"git add -A","workdir":"/r"});\ntext(r.output);'
+    unified = engine.project(_hook_input("exec", {"cwd": "/", "tool_input": {"input": source}}))
+    assert isinstance(unified.targets[0], Command) and unified.targets[0].run_dir == Path("/r")
     bash = engine.project(_hook_input("Bash", {"cwd": "/r", "tool_input": {"command": "cd x && go build ./..."}}))
     assert len(bash.targets) == 2 and all(isinstance(t, Command) for t in bash.targets)
 

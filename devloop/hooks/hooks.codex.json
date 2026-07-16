@@ -14,13 +14,13 @@
         ]
       },
       {
-        "matcher": "Edit|Write|NotebookEdit|apply_patch",
+        "matcher": "Edit|Write|NotebookEdit|apply_patch|exec",
         "hooks": [
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/python\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pretool_policy_edit.py\"",
             "timeout": 5,
-            "statusMessage": "Checking edit policy"
+            "statusMessage": "Checking change policy"
           }
         ]
       }
@@ -65,7 +65,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|exec",
         "hooks": [
           {
             "type": "command",

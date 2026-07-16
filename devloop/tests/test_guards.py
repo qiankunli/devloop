@@ -30,6 +30,11 @@ def test_protocol_files_schema():
     codex_plugin = json.loads((P / ".codex-plugin/plugin.json").read_text())
     assert codex_plugin.get("skills") == "./skills/"
     assert codex_plugin.get("hooks") == "./hooks/hooks.codex.json"
+    codex_hooks = json.loads((P / "hooks/hooks.codex.json").read_text())["hooks"]
+    assert any("exec" in (group.get("matcher") or "").split("|")
+               for group in codex_hooks["PreToolUse"])
+    assert any("exec" in (group.get("matcher") or "").split("|")
+               for group in codex_hooks["PostToolUse"])
 
     def assert_hooks(path, known_events):
         hooks = json.loads(path.read_text())["hooks"]
@@ -244,6 +249,46 @@ def test_apply_patch_owner_guard_uses_target_path():
     })
     reason = guard.decide(inp_b)
     assert reason and "worktree" in reason and "owner.lock" in reason
+
+def test_codex_exec_envelope_runs_edit_and_command_guards():
+    """Codex unified tools expose only top-level ``exec`` to hooks; nested mutations must still
+    acquire owner and nested shell commands must still pass through command policy.
+    """
+    import json
+    guard = _load_hook("pretool_policy_edit")
+    from lib.context import session as session_lock
+    R = "/tmp/dlut_exec_owner"
+    repo = f"{R}/repo"
+    shutil.rmtree(R, ignore_errors=True); os.makedirs(repo, exist_ok=True)
+    _git(repo, "init", "-q")
+    fp = f"{repo}/a.py"
+    Path(fp).write_text("old\n")
+    patch = f"*** Begin Patch\n*** Update File: {fp}\n@@\n-old\n+new\n*** End Patch\n"
+    source = f"const patch = {json.dumps(patch)};\ntext(await tools.apply_patch(patch));\n"
+
+    inp = _hook_input("exec", {
+        "session_id": "sess-A", "cwd": R, "tool_input": {"input": source},
+    })
+    assert guard.decide(inp) is None
+    assert session_lock.read(repo)["session_id"] == "sess-A"
+
+    command = f'const r = await tools.exec_command({{"cmd":"git add -A","workdir":{json.dumps(repo)}}});'
+    reason = guard.decide(_hook_input("exec", {
+        "session_id": "sess-A", "cwd": R, "tool_input": {"input": command},
+    }))
+    assert reason and "git add" in reason
+
+    # PostToolUse sees the same envelope and refreshes the repo/session binding after the edit.
+    post = _load_hook("posttool_codex_refresh")
+    from lib.context import load_active_repo
+    from lib import workspace
+    previous = workspace.load_workspaces()
+    try:
+        workspace.register_workspace(R)
+        post.handle(inp)
+        assert load_active_repo(R, "sess-A") == str(Path(repo).resolve())
+    finally:
+        workspace.save_workspaces(previous)
 
 def test_branch_merged_guard_uses_file_path():
     """INACTIVE 分支编辑拦截按 file_path 解析 repo——session cwd 在 workspace 根时

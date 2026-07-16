@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PostToolUse (Bash): after a git state-changing command, refresh the branch
+"""PostToolUse (Bash/Codex exec): after a git state-changing command, refresh the branch
 segment (`.devloop/branch.json`).
 
 cd is NOT handled here — that's the native `CwdChanged` hook's job (older hook setups handled
@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib import git_state, hook_io, repo_layout  # noqa: E402
 from lib.cmdtree import cmdparse  # noqa: E402
 from lib.context import RepoContext, record_active_repo, session  # noqa: E402
+from lib.core import engine  # noqa: E402
+from lib.core.domain import Command  # noqa: E402
 
 _STATE_SUBCOMMANDS = {"commit", "push", "checkout", "switch", "reset", "merge", "rebase", "pull", "fetch"}
 # fetch only updates remote-tracking refs — it never touches the working tree or the
@@ -44,11 +46,22 @@ def affected_roots(command: str, cwd: str, subcommands: set[str] = _STATE_SUBCOM
     return roots
 
 
+def _affected_input_roots(inp: hook_io.HookInput, subcommands: set[str]) -> set[str]:
+    roots: set[str] = set()
+    for target in engine.project(inp).targets:
+        if not isinstance(target, Command) or target.subcommand not in subcommands:
+            continue
+        root = repo_layout.find_git_root(target.run_dir)
+        if root:
+            roots.add(root)
+    return roots
+
+
 def handle(inp: hook_io.HookInput) -> None:
-    if not inp.is_tool("Bash"):
+    if not inp.is_tool("Bash", "exec"):
         return
-    owning_roots = affected_roots(inp.command, inp.cwd, _OWNERSHIP_SUBCOMMANDS)
-    for git_root in affected_roots(inp.command, inp.cwd):
+    owning_roots = _affected_input_roots(inp, _OWNERSHIP_SUBCOMMANDS)
+    for git_root in _affected_input_roots(inp, _STATE_SUBCOMMANDS):
         RepoContext.refresh_branch(git_root)
         record_active_repo(git_root, inp.session_id)
         # ownership follows activity: a session doing git work in a checkout claims it
