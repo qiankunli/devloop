@@ -1,0 +1,29 @@
+devloop/hooks/lib/context/repo.py
+  s_aed14c121cf6d2::t_a0bf4af0f94c82 37,440
+devloop/hooks/lib/context/workspace.py
+  s_aed14c121cf6d2::t_5b1ee603101e23 218-219
+devloop/hooks/lib/core/context.py
+  s_aed14c121cf6d2::t_afb126c798e073 14,62
+devloop/hooks/lib/ecosystem/__init__.py
+  s_aed14c121cf6d2::t_e351bd6df3c3d6 3-5,18-19
+devloop/hooks/lib/repo_layout.py
+  s_aed14c121cf6d2::t_4f0284a4196840 58,240,242-244
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "06b4ad9f854cca02d6626530f241f5eca9120969",
+  "prompts": {},
+  "sessions": {
+    "s_aed14c121cf6d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8db9647c-7cf0-4023-b00a-feba475170ad",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
