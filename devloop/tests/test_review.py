@@ -238,7 +238,7 @@ def test_label_nudge_decays_then_reopens_on_new_findings():
 
 def test_launch_background_relays():
     """detach 起后台 relay：不抛、写 PLAN 行；空列表 no-op。"""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     from lib.lifecycle import BackgroundSpec
     G = "/tmp/dlut_relay"; shutil.rmtree(G, ignore_errors=True); os.makedirs(f"{G}/.devloop")
     plan: list = []

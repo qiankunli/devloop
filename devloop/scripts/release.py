@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 _SCRIPTS = Path(__file__).resolve().parent
-sys.path.insert(0, str(_SCRIPTS.parent / "hooks"))
+sys.path.insert(0, str(_SCRIPTS.parent))
 
 from lib import cli, git_state  # noqa: E402
 from lib.forge import ForgeError, forge_for_repo, pr_label  # noqa: E402

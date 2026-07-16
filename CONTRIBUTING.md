@@ -28,7 +28,7 @@
 
 ## 跨 CLI 友好
 
-- **共享纯逻辑放 `hooks/lib/`**：CLI-agnostic，将来给 Codex 写 hook 时直接 import
+- **领域模型与状态变化放 `lib/`**：归属看事实/生命周期的 owner；被 hooks/scripts 复用是结果，不是唯一判据
 - **manifest 各自一份**：`.claude-plugin/plugin.json` / `.codex-plugin/plugin.json` 等
 - **skills / commands 两个 CLI 兼容**：SKILL.md 格式两边都用；commands frontmatter 各 CLI 略有差异，按需调整
 
@@ -43,5 +43,5 @@
 
 - Hook 脚本放 `<plugin>/hooks/`，命名按事件类型前缀：`pretool_*` / `posttool_*` / `stop_*` / `userprompt_*`
 - Hook 注册在 `<plugin>/hooks/hooks.json`
-- 业务逻辑下沉到 `hooks/lib/` 模块，hook 脚本只做"输入解析 + 调 lib + 输出序列化"三步
+- hooks/scripts 作为驱动 adapter 只向 `lib/` 调用；hook 专属协议/policy 留 `hooks/`，工作流编排留 `scripts/`
 - 失败兜底：hook 报错时 `sys.exit(0)` 输出空 JSON，**不要阻塞用户**

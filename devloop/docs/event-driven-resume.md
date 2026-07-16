@@ -80,10 +80,10 @@ Claude Code 的 **channels**（research preview，v2.1.80+；[channels-reference
 
 通知机制是一个**端口**，拆成三个互相解耦的角色——`Source` 决定「盯什么、何时触发」，`Notifier` 决定「怎么投」，runner 把二者跑起来。**同一个 Source 被两套 transport 复用**，所以 channel 推和 waiter 退出对"何时唤醒"判定**逐字一致**：
 
-- **`hooks/lib/notify/base.py`** —— 三个端口：`Notification`（content/kind/meta，只说"surface 什么"）、`Notifier` 协议（`deliver`）、`Source` 协议（`name`/`instructions` + `seed(repo)`/`step(repo,carry)→(carry, [Notification])`，纯函数式触发判定，可脱离 runner 单测）。
-- **`hooks/lib/notify/channel.py`** —— channel transport。`ChannelNotifier`（push 成 `notifications/claude/channel`）+ `run_channel(source, repos)`（MCP server 壳，长驻 pump 一个 Source、多次唤醒、set-and-forget）。`mcp` lazy import，无依赖也能导入 / 测。
-- **`hooks/lib/notify/waiter.py`** —— waiter transport。`StdoutNotifier`（print content 到一次性任务的 stdout）+ `run_waiter(source, repo)`（步进 Source 到首次触发即 deliver + 返回、进程退出 = 唤醒；单次唤醒、stdlib only，不碰 `mcp`/`anyio`）。
-- **`hooks/lib/notify/sources/`** —— 各 Source（触发判定收在这里，不在 runner）：`review.py`（`ReviewSource`/`wake_key`，盯 `.devloop/review.json`，终态且有可动作内容才 fire `review_done`、带 findings inline；`generated_at` 入 key 故同 sha 重跑唤一次；clean/running/skipped 不唤，留给 next-prompt pull——见 `context/repo.py`）；`forge.py`（`ForgeSource`，盯 `.devloop/pr.json`，两独立信号：`pr_change` 走 lifecycle level-key、`merge_blocked` 走边沿+迟滞）。`SOURCES` 是 name→Source 注册表；`composite.py`（`CompositeSource`，token `all`）扇出所有叶子 Source、合并 fire，让一条 transport 盯**整条总线**、与"哪个源 fire"无关——聚合在代码层(读各权威段)，**不落 notify 文件**(无重复状态可漂)。
+- **`lib/notify/base.py`** —— 三个端口：`Notification`（content/kind/meta，只说"surface 什么"）、`Notifier` 协议（`deliver`）、`Source` 协议（`name`/`instructions` + `seed(repo)`/`step(repo,carry)→(carry, [Notification])`，纯函数式触发判定，可脱离 runner 单测）。
+- **`lib/notify/channel.py`** —— channel transport。`ChannelNotifier`（push 成 `notifications/claude/channel`）+ `run_channel(source, repos)`（MCP server 壳，长驻 pump 一个 Source、多次唤醒、set-and-forget）。`mcp` lazy import，无依赖也能导入 / 测。
+- **`lib/notify/waiter.py`** —— waiter transport。`StdoutNotifier`（print content 到一次性任务的 stdout）+ `run_waiter(source, repo)`（步进 Source 到首次触发即 deliver + 返回、进程退出 = 唤醒；单次唤醒、stdlib only，不碰 `mcp`/`anyio`）。
+- **`lib/notify/sources/`** —— 各 Source（触发判定收在这里，不在 runner）：`review.py`（`ReviewSource`/`wake_key`，盯 `.devloop/review.json`，终态且有可动作内容才 fire `review_done`、带 findings inline；`generated_at` 入 key 故同 sha 重跑唤一次；clean/running/skipped 不唤，留给 next-prompt pull——见 `context/repo.py`）；`forge.py`（`ForgeSource`，盯 `.devloop/pr.json`，两独立信号：`pr_change` 走 lifecycle level-key、`merge_blocked` 走边沿+迟滞）。`SOURCES` 是 name→Source 注册表；`composite.py`（`CompositeSource`，token `all`）扇出所有叶子 Source、合并 fire，让一条 transport 盯**整条总线**、与"哪个源 fire"无关——聚合在代码层(读各权威段)，**不落 notify 文件**(无重复状态可漂)。
 - **`scripts/notify.py`** —— 统一 dispatcher：`notify.py {channel|waiter|should-arm} {forge|review|all} <target>`。`should-arm` 是**前台、不唤醒**的能力决议,调用方**先**跑它:exit 0(无常驻 channel)→ `run_in_background` 起 `waiter`;exit 1(`channel all` 已覆盖,按 `config.notify().channels` / env `DEVLOOP_NOTIFY_CHANNELS`)→ 跳过。决议留在后台进程**之外**,常驻 channel 才能零 arm(否则后台决议进程自身退出也会多唤醒一次)。加一个 deploy / verdict 源 = 写个 `Source` 模块 + `_LEAVES` 加一条,`all` 与三套入口自动覆盖,不碰 runner。
 
 **实验启用**（channel 是 preview，**不自动挂载**——以免给非 channel 用户起 MCP server / 强加 `mcp` 依赖）：需 `mcp` 包，并以 dev flag 起会话（forge / review 可同挂、按需取舍）：
@@ -125,7 +125,7 @@ claude --dangerously-load-development-channels server:notify
 
 ### 与现有机制的接口
 
-- 推给 agent 走 **notify 端口**（`hooks/lib/notify`：`Source` 决定何时 fire、`Notifier` 决定怎么投）。`Source`（`sources/forge.py`、`sources/review.py`）盯状态总线、build `Notification`；channel（`ChannelNotifier`+`run_channel`）与 waiter（`StdoutNotifier`+`run_waiter`）是同一 Source 的两个**出口**，都带内容；`scripts/notify.py` 是统一 dispatcher。
+- 推给 agent 走 **notify 端口**（`lib/notify`：`Source` 决定何时 fire、`Notifier` 决定怎么投）。`Source`（`sources/forge.py`、`sources/review.py`）盯状态总线、build `Notification`；channel（`ChannelNotifier`+`run_channel`）与 waiter（`StdoutNotifier`+`run_waiter`）是同一 Source 的两个**出口**，都带内容；`scripts/notify.py` 是统一 dispatcher。
 - 状态总线 = `.devloop/`：monitor 写 `pr.json`；follow-up 意图、（fallback 下）持久化 mode 各一个 segment。
 
 ### 已知局限 / 仍待平台

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""smart_git_ops 编排：staging 过滤、分支决策/切分、CLI 入参（message/title/repo）、PR 描述同步。
+"""commit_flow 编排：staging 过滤、分支决策/切分、CLI 入参（message/title/repo）、PR 描述同步。
 
 Standalone: `python3 devloop/tests/test_git_ops.py`（也 pytest-collectable）；共享设施见 _testkit.py。
 """
@@ -16,7 +16,7 @@ from lib.forge.base import ForgeError  # noqa: E402
 
 
 def test_sensitive_filter():
-    is_sensitive = _load_script("smart_git_ops")._is_sensitive
+    is_sensitive = _load_script("commit_flow")._is_sensitive
     assert is_sensitive(".env") and is_sensitive("sub/.env.local")
     assert is_sensitive("a/.idea/x") and is_sensitive("pkg/__pycache__/m.pyc")
     assert not is_sensitive("src/main.py") and not is_sensitive("README.md")
@@ -24,7 +24,7 @@ def test_sensitive_filter():
 def test_gitlink_guard_exempts_registered_submodule():
     """160000 守卫只拦**未注册**的嵌套仓（误 add 的 accident）；`.gitmodules` 注册过的
     submodule 指针 bump 是合法提交（super-repo 的本职就是 bump 指针），放行。"""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     R = "/tmp/dlut_gitlink"; shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
     Path(f"{R}/README").write_text("x"); _git(R, "add", "README"); _git(R, "commit", "-qm", "init")
@@ -47,7 +47,7 @@ def test_gitlink_guard_exempts_registered_submodule():
 def test_decide_branch_is_intent_driven():
     """--branch 一律基于 base(默认 origin/<target>),与当前停在哪条分支无关——避免新 MR
     夹带上一条未合 feature 分支的提交。"""
-    decide = _load_script("smart_git_ops").decide_branch
+    decide = _load_script("commit_flow").decide_branch
     B = "origin/release"
     # 新 --branch:即便当前停在另一条未合 feature 分支,也切自 base 而非当前 HEAD
     assert decide("chat-fix", "bump-x", protected=False, stale=False, base=B) == ("cut", B)
@@ -68,7 +68,7 @@ def test_refusal_detail_quotes_pr_evidence():
     """A stale-branch refusal embeds the live-polled PR evidence (number/state/sha/url) so the
     caller trusts the verdict instead of re-querying the forge; protected branches (no PR) and an
     open PR (not inactive) fall back to the plain reason."""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     from lib.context import gate
     from lib.forge import PullRequest
 
@@ -91,7 +91,7 @@ def test_cut_new_branch_carries_dirty_tree():
     """cut_new_branch stashes a dirty tree before `checkout -b` and pops after, so uncommitted
     work done before the branch was decided (e.g. a version bump) follows you onto the fresh
     branch instead of `checkout -b` refusing with 'would be overwritten'."""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     R = "/tmp/dlut_cut"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q", "-b", "main"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -112,7 +112,7 @@ def test_prepare_branch_reads_gate_pr_state():
     """prepare_branch decides on gate truth (GateView), not the cached ctx. decide_branch's
     unit test bypasses this call, so an end-to-end run guards the wiring (and that gcampr reads
     the LIVE-branch / SHA-validated PR state, not ctx.branch_pr_inactive)."""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     from lib.context import RepoContext, gate, prstate
     R = "/tmp/dlut_prep"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
@@ -139,7 +139,7 @@ def test_prepare_branch_reads_gate_pr_state():
 def test_normalize_files_rebase():
     """--files 自动 rebase 到 repo-root 相对路径——调用方从 workspace 根 / server 子目录
     传来的路径不再死于裸 `git add` 报错;删除文件等不存在路径保持原样。"""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     R = "/tmp/dlut_nf"
     shutil.rmtree(R, ignore_errors=True)
     os.makedirs(f"{R}/repo/server", exist_ok=True)
@@ -153,7 +153,7 @@ def test_normalize_files_rebase():
 
 def test_version_bump_mix_hint():
     """版本 bump 与功能文件混在同一 commit → PLAN 软提示(不拦);单独 bump 不提示。"""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     R = "/tmp/dlut_vb"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -189,7 +189,7 @@ def test_message_file_and_stdin_input():
     for multi-line / quote-heavy messages (mirrors git -F / gh --body-file). Content round-trips
     exactly, including the chars that break inline shell quoting."""
     import io
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     ap = sgo._build_parser()
     msg = 'feat(x): subj\n\nbody "dq" (paren) $VAR `bt` \'apos\'.'
     p = "/tmp/dlut_msgfile.txt"
@@ -205,7 +205,7 @@ def test_message_file_and_stdin_input():
 
 def test_inline_message_still_supported():
     """Back-compat: inline --message / -m is unchanged (just no longer the only option)."""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     ap = sgo._build_parser()
     assert sgo._resolve_message(ap.parse_args(["mr", "--message", "fix: x"]), ap) == "fix: x"
     assert sgo._resolve_message(ap.parse_args(["mr", "-m", "fix: y"]), ap) == "fix: y"
@@ -214,7 +214,7 @@ def test_message_required_with_hint():
     """Neither --message nor --message-file → exits with an actionable hint, not a bare usage dump."""
     import contextlib
     import io
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     ap = sgo._build_parser()
     err = io.StringIO()
     raised = False
@@ -263,7 +263,7 @@ def test_cli_argparser_hint_only_on_unrecognized():
 def test_title_defaults_to_message_first_line():
     """--title omitted → PR title is the message's FIRST line, so a multi-line body can't yield a
     multi-line (invalid) PR title — the gcampr 422 that bit us."""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     R = "/tmp/dlut_title"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -285,7 +285,7 @@ def test_sync_pr_description_append_only():
     """sync_pr_description: sets an empty body, appends to a non-empty one (human edits
     survive), no-ops when the paragraph is already present (retry-safe), and a forge
     failure degrades to a PLAN note — never an exception (commit/push already landed)."""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     pr = PullRequest(number=7, state="open", source_branch="feat/x")
 
     f = _FakeForge([pr])
@@ -323,7 +323,7 @@ def test_ensure_requirement_wiring():
     cut 无参 → 新开（id=该分支）；--requirement → 续接，**手工切的分支（continue 路径）也不得静默丢弃**；
     continue 无参 → 不动；重复调用幂等。"""
     from lib.context.loopstate import requirement
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     R = "/tmp/dlut_req_wire"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q", "-b", "main"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")

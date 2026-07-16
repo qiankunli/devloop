@@ -1,7 +1,7 @@
 # 提交期 code-review（异步、不阻塞、全自动）
 
 code-review 是 lifecycle 的 **signal hook**：触发但**不挡 commit**、**不阻塞主线程**——
-smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https://github.com/qiankunli/case-code-review)，
+commit_flow 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https://github.com/qiankunli/case-code-review)，
 可切 `ocr`，见 `review.tool` 配置），审 `origin/<target>..HEAD`（整条分支 vs target 的全量改动），结果写
 `.devloop/review.json`（→ 下一轮注入浮现，**通用交付**）。**机会性地**:relay 跑时若分支已有
 开放 MR,就**额外**把结果发一条评论到 MR 上（→ MR 攒出 review 历史，可跟踪对比）。承接
@@ -44,7 +44,7 @@ smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https:/
 - **signal hook,不挡 commit**:review 跑得久,且写码 AI 与 review AI 同源——结论仅供参考、
   **merge 必须人拍**。故不像 lint/test 那样 inline 挡。
 - **detach、不靠 agent 起后台**:dispatch(subprocess)不能起「跑完唤醒 session」的 harness 后台
-  任务（早期让 agent 读 `ARMED:` 行自己起,实测不可靠）。改由 smart_git_ops
+  任务（早期让 agent 读 `ARMED:` 行自己起,实测不可靠）。改由 commit_flow
   `Popen(start_new_session=True)` fire-and-forget 起;每相位的 relay 在它所裹的 git 动作后起
   （pre/post_commit 在 commit 后、pre/post_mr 在 publish 后）。
 
@@ -52,7 +52,7 @@ smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https:/
 
 ```
 gcampr → … → commit → publish（建/复用 MR）→ post_mr relay
-   → smart_git_ops detach 起 run_review（PLAN 出 `review: launched in background`）
+   → commit_flow detach 起 run_review（PLAN 出 `review: launched in background`）
 run_review（后台、独立进程）：**启动即冻结 (branch, sha)**（见下）→ 先写 status=running
    → 自动拼 --background（业务上下文）：本次提交说明（git log）+ MR 标题/描述（forge）
    → <engine> review --from origin/<target> --to <冻结的 sha> --background <ctx> --format json   # engine=ccr(默认)/ocr
@@ -74,7 +74,7 @@ agent：pr findings <n> --pending → 逐条对照真实 diff 求证 → pr repl
 （`_BG_CAP`），因为它每文件都注、要控 token。AGENTS.md / 受影响 spec 等更多上下文是后续增量
 （往同一个 background 里加）。
 
-关键对象（锚点）：`lib/lifecycle/review.py`（`review` handler，返回 relay）、`smart_git_ops`
+关键对象（锚点）：`lib/lifecycle/review.py`（`review` handler，返回 relay）、`commit_flow`
 （`launch_background_relays`，各相位 git 动作后 detach 起）、`scripts/run_review.py`（后台执行体：
 审全量 diff + 机会性发评论，经 `lib/review_engine.py` 协议调引擎）、`lib/review_engine.py`（**review
 tool 协议** `ReviewEngine` + `ReviewResult` + ocr/ccr adapter）、`lib/review_feedback.py`（fp↔label

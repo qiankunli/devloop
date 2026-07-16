@@ -19,9 +19,9 @@ from _testkit import _git, _hook_input, _load_hook, _load_script, run_main  # no
 def test_code_policy_engine():
     """变更策略引擎纵切：project(工具→Target) + codemodel(惰性解析改后全文) + LayerDepsRule(层级方向)。
     现有 10 个 guard 尚未迁入，这里只验代码侧 lint-deps 这条新规则端到端跑通。"""
-    from lib import rules
-    from lib.core import engine
-    from lib.core.domain import Command, FileChange
+    from hooks import rules
+    from hooks.core import engine
+    from hooks.core.domain import Command, FileChange
 
     arch = {"enabled": True, "layers": {"/dao/": "dao", "/service/": "service"},
             "order": ["api", "service", "dao", "model"]}
@@ -69,7 +69,7 @@ def test_code_policy_engine():
     assert evl(ed).action == "deny"
 
 def test_migrated_command_rules_parity():
-    """平替校验：5 个原先无测试的命令侧规则经新引擎跑通，行为与原 guard 一致。"""
+    """平替校验：命令侧规则经新引擎跑通，行为与原 guard 一致。"""
     import json as _json
 
     from lib.context import RepoContext, session as session_lock
@@ -90,6 +90,21 @@ def test_migrated_command_rules_parity():
     assert d("git switch main", cwd=R, sid="me")
     assert d("git checkout -- f", cwd=R, sid="me") is None      # 文件恢复(非切分支)
     assert d("git checkout main", cwd=R, sid="other") is None   # owner 自己
+
+    # worktree_add：所有裸创建（含正确目录）都拦；只读/清理子命令与规范入口放行。
+    denied = d("git worktree add ../topic main", cwd=R)
+    assert denied and "managed worktree lifecycle" in denied and "enter.py" in denied
+    assert d("git -C . worktree add .worktrees/topic main", cwd=R)
+    assert d("cd . && git worktree add .worktrees/topic main", cwd=R)
+    assert d("git worktree list", cwd=R) is None
+    assert d("git worktree remove .worktrees/topic", cwd=R) is None
+    assert d("python3 /plugin/scripts/enter.py repo --worktree topic", cwd=R) is None
+
+    # Codex unified exec envelope 走 edit policy，但投影出的同一 Command 必须命中同一规则。
+    edit = _load_hook("pretool_policy_edit")
+    source = 'const r = await tools.exec_command({"cmd":"git worktree add ../topic main"}); text(r.output);'
+    codex = edit.decide(_hook_input("exec", {"cwd": R, "tool_input": {"input": source}}))
+    assert codex and "managed worktree lifecycle" in codex
 
     # pip_install：uv-managed 仓拦 pip install，放行 -e . 与非 uv 仓
     P = "/tmp/dlut_pip"; shutil.rmtree(P, ignore_errors=True); os.makedirs(P)
@@ -323,7 +338,7 @@ def test_worktree_creation_prepares_every_code_unit():
     """`/enter --worktree` 提前准备全部 unit；gate 后续仍会走同一 ensure_ready 做兜底。"""
     from lib import ecosystem
 
-    resolver = _load_script("resolve_subproject")
+    from lib import worktree
     R = "/tmp/dlut_prepare_worktree"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/cli")
     Path(f"{R}/pyproject.toml").write_text("[project]\nname='root'\n")
@@ -332,10 +347,36 @@ def test_worktree_creation_prepares_every_code_unit():
     original = ecosystem.ensure_ready
     ecosystem.ensure_ready = lambda path: seen.append(Path(path).name) or None
     try:
-        assert resolver.prepare_worktree(R) == []
+        assert worktree.prepare_environment(R) == []
     finally:
         ecosystem.ensure_ready = original
     assert seen == ["dlut_prepare_worktree", "cli"]
+
+
+def test_enter_delegates_resolution_and_worktree_lifecycle():
+    """`enter.py` keeps the line protocol but delegates policy to repo/worktree modules."""
+    from lib import repo as repo_model, worktree
+
+    enter = _load_script("enter")
+    original_resolve = repo_model.resolve_enter_target
+    original_create = worktree.create_or_reuse
+    seen = []
+    try:
+        repo_model.resolve_enter_target = lambda query: repo_model.EnterResolution(path="/repo")
+        worktree.create_or_reuse = lambda repo, tag: (seen.append((repo, tag)) or
+                                                        ("/repo/.worktrees/topic", "created worktree"))
+        assert enter.parse_args(["enter.py", "repo", "--worktree", "topic"]) == ("repo", "topic")
+        assert enter.main(["enter.py", "repo", "--worktree", "topic"]) == 0
+        assert seen == [("/repo", "topic")]
+
+        repo_model.resolve_enter_target = lambda query: repo_model.EnterResolution(
+            candidates=(("repo-a", "/a"), ("repo-b", "/b")))
+        path, code, line = enter.resolve_base("repo")
+        assert path is None and code == 2
+        assert line == "CANDIDATES\trepo-a\t/a\trepo-b\t/b"
+    finally:
+        repo_model.resolve_enter_target = original_resolve
+        worktree.create_or_reuse = original_create
 
 def test_lint_passport_is_bound_to_content_not_to_edit_events():
     """lint 通行证绑**内容指纹**，不绑「有没有人报告过改动」。
@@ -348,7 +389,7 @@ def test_lint_passport_is_bound_to_content_not_to_edit_events():
     """
     import json as _json
 
-    from lib import repo_layout, repo_resolve
+    from lib import repo_layout, repo as repo_model
     from lib.context import RepoContext
     from lib.lifecycle import checks
     bash = _load_hook("pretool_policy_bash")
@@ -393,7 +434,7 @@ def test_lint_passport_is_bound_to_content_not_to_edit_events():
 
     # 指纹算不出（None）→ 按未验证，fail-closed：宁可多拦一次，不可拿不准还放行
     unit = repo_layout.CodeUnit.at(f"{R}/cli", R)
-    assert repo_resolve.unit_fingerprint("/tmp/definitely-not-a-repo-xyz", unit) is None
+    assert repo_model.unit_fingerprint("/tmp/definitely-not-a-repo-xyz", unit) is None
 
 
 def test_shared_paths_own_no_unit_so_a_docs_change_validates_nothing():
@@ -407,7 +448,7 @@ def test_shared_paths_own_no_unit_so_a_docs_change_validates_nothing():
     也刻意**不是**「共享路径 → 全部 unit」：那看着保守，实际是让每个纯文档 PR 都跑全仓 lint，
     任一 unit 有存量错就拦你——正是 phase_paths 那套范围收敛要消灭的失败，换扇门又回来。
     """
-    from lib import repo_resolve
+    from lib import repo as repo_model
     from lib.lifecycle import checks
 
     R = str(Path("/tmp/dlut_shared_paths").resolve())
@@ -422,7 +463,7 @@ def test_shared_paths_own_no_unit_so_a_docs_change_validates_nothing():
     Path(f"{R}/cli/Makefile").write_text("lint:\n\ttrue\n")
     _git(R, "add", "-A"); _git(R, "commit", "-qm", "init")
 
-    ids = lambda paths: sorted(u.id for u in repo_resolve.select_units(R, paths=paths).units)
+    ids = lambda paths: sorted(u.id for u in repo_model.select_units(R, paths=paths).units)
     assert ids(["README.md"]) == []                       # 纯文档 → 0 个 unit
     assert ids(["docs/guide.md"]) == []
     assert ids([".github/workflows/ci.yml"]) == []
@@ -441,7 +482,7 @@ def test_shared_paths_own_no_unit_so_a_docs_change_validates_nothing():
     _git(G, "init", "-q")
     Path(f"{G}/go.mod").write_text("module x\n")
     Path(f"{G}/cli/pyproject.toml").write_text("[project]\nname = 'cli'\nversion = '0'\n")
-    assert sorted(u.id for u in repo_resolve.select_units(G, paths=["README.md"]).units) == ["."]
+    assert sorted(u.id for u in repo_model.select_units(G, paths=["README.md"]).units) == ["."]
 
 
 def test_precommit_gate_scopes_to_files_being_committed():
@@ -454,7 +495,7 @@ def test_precommit_gate_scopes_to_files_being_committed():
     `make fix` 会去改 legacy/ 的文件，改完又不进本次 commit，凭空搅脏工作树。
     """
     from lib.lifecycle import checks
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
 
     R = str(Path("/tmp/dlut_files_scope").resolve())
     shutil.rmtree(R, ignore_errors=True)
@@ -532,9 +573,9 @@ def test_phase_scope_survives_a_clean_tree():
     → select_units 读成「不知道范围」→ repo-wide 枚举全部 unit → 一个你根本没碰、却有存量 lint
     错误的 unit 让 gate fail → commit 已落地，push 和 MR 全被拦。
     """
-    from lib import repo_resolve
+    from lib import repo as repo_model
     from lib.lifecycle import checks
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
 
     R = "/tmp/dlut_phase_scope"
     shutil.rmtree(R, ignore_errors=True)
@@ -551,8 +592,8 @@ def test_phase_scope_survives_a_clean_tree():
     _git(R, "add", "-A"); _git(R, "commit", "-qm", "touch cli only")   # 工作树现在是干净的
 
     # 相位边界各自算出的范围：post_commit=刚落地那个 commit；pre_mr=整条分支 vs target
-    assert repo_resolve.committed_paths(R) == ["cli/a.py"]
-    assert repo_resolve.range_paths(R, "main") == ["cli/a.py"]
+    assert repo_model.committed_paths(R) == ["cli/a.py"]
+    assert repo_model.range_paths(R, "main") == ["cli/a.py"]
     def intent(target="main", files=None):
         return sgo.GitIntent(mode="commit", message="m", title="m", requested_branch=None,
                              target=target, base=f"origin/{target}", explicit_base=False,
@@ -573,13 +614,13 @@ def test_phase_scope_survives_a_clean_tree():
     assert not degraded.ok and "clean tree, all units" in degraded.summary
 
     # 「知道范围且为空」≠「不知道范围」：前者 0 个 unit 干净跳过，后者才全跑
-    assert repo_resolve.select_units(R, paths=[]).units == ()
-    assert len(repo_resolve.select_units(R).units) == 2
+    assert repo_model.select_units(R, paths=[]).units == ()
+    assert len(repo_model.select_units(R).units) == 2
 
     # git 算不出范围 → **None（不知道）而非 []（知道且为空）**。gitcmd 是 failure-safe 的，
     # 两者原始输出都是空；读成 [] 就等于 origin/<target> 没 fetch 时静默跳过整个 lint gate。
-    assert repo_resolve.range_paths(R, "origin/nope-not-fetched") is None
-    assert repo_resolve.committed_paths(R, "deadbeef") is None
+    assert repo_model.range_paths(R, "origin/nope-not-fetched") is None
+    assert repo_model.committed_paths(R, "deadbeef") is None
     assert sgo.phase_paths(intent(target="nope-not-fetched"), "pre_mr") is None   # → handler 回落全跑，不放行
 
 

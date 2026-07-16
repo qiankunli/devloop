@@ -11,13 +11,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import git_state, hook_io, repo_layout  # noqa: E402
-from lib.cmdtree import cmdparse  # noqa: E402
+from hooks import hook_io  # noqa: E402
+from lib import git_state, repo_layout  # noqa: E402
+from hooks.cmdtree import cmdparse  # noqa: E402
 from lib.context import RepoContext, record_active_repo, session  # noqa: E402
-from lib.core import engine  # noqa: E402
-from lib.core.domain import Command  # noqa: E402
+from hooks.core import engine  # noqa: E402
+from hooks.core.domain import Command  # noqa: E402
 
 _STATE_SUBCOMMANDS = {"commit", "push", "checkout", "switch", "reset", "merge", "rebase", "pull", "fetch"}
 # fetch only updates remote-tracking refs — it never touches the working tree or the

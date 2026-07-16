@@ -14,6 +14,10 @@
 enter 某子模块 → 提需求(可能跨多个 subproject) → 开发 → commit / 建 PR(含 lint/test) → 人工 merge → 下一轮
 ```
 
+**窄义领域主链是 `PR/MR → Repo → CodeUnit`**：一个 PR/MR 的创建、开发、验证始终锚定一个 repo；repo 是 git/branch/forge 状态的边界，一个 repo 可含多个 code unit，lint/test 按本次改动投影到对应 unit，review 审 repo 的分支 diff。branch 是开发主轴，worktree 只是 branch 用于多 session 并发隔离的一种 checkout 形态；devloop 管理这套形态的创建、复用、环境准备和清理，但不另建一套与 branch 平级的 worktree 领域状态。
+
+**目录按依赖方向表达这个模型**：`lib/` 是领域层，承载 Workspace / Repo / CodeUnit、branch/PR 状态及其合法变化；`hooks/` 与 `scripts/` 是两类驱动 adapter——前者把 CLI 事件 / LLM 工具调用投影成领域决策，后者把 enter、commit、PR、验证等工作流意图编排成领域操作。两者都只向 `lib/` 依赖，目的是让 LLM 对 workspace/repo 的作用落在可观测、可约束的路径上，而不是散落 shell 副作用。
+
 排查问题也在同一 workspace：用 as-ops / as-web-ops / infra-ops 等发现问题后，带着上下文切到对应 subproject 开发。**workspace 是开发与排查的共同根，subproject 是动手的落点**——devloop 的全部能力，都是为提高这个循环里 AI 的首次成功率而生。一轮循环的端到端时序（每拍触发什么事件、哪些 hook/script 参与、三条贯穿流程线）见 [`docs/loop.md`](./docs/loop.md)。
 
 **两个杠杆**（怎么提高首次成功率）：
@@ -36,30 +40,24 @@ enter 某子模块 → 提需求(可能跨多个 subproject) → 开发 → comm
 ```
 devloop/
 ├── .claude-plugin/plugin.json     # Claude manifest（0.0.1；靠目录约定自动发现）
-├── hooks/
+├── lib/                            # 领域模型、状态变化与基础能力（常被 hooks/scripts 共同驱动）
+│   ├── repo.py                    #   ★Repo 模型 + cwd 无关解析 + WorkSet（本轮 code units）
+│   ├── workspace.py               #   ★Workspace 注册、发现与归属
+│   ├── repo_layout.py             #   ★CodeUnit 模型 + repo/code-unit 路径边界
+│   ├── context/                   #   ★状态总线：repo/workspace/session + gate/prstate + requirement ledger
+│   ├── gitcmd.py  git_state.py    #   ★统一 git runner 与 git/branch/worktree 事实
+│   ├── forge/                     #   ★GitHub/GitLab 中立 facade 与平级 adapter
+│   ├── lifecycle/                 #   ★pre/post commit/MR dispatch + lint/test/review handlers
+│   ├── ecosystem/                 #   ★工具链身份、环境准备与 canonical fallback
+│   ├── notify/                    #   ★外部状态 Source/Notifier 端口
+│   └── worktree.py                #   branch 隔离 checkout 的创建/复用、依赖准备与清理
+├── hooks/                          # 事件驱动 adapter：把 LLM/CLI 工具调用投影成领域决策
 │   ├── hooks.json                 # Claude 事件注册
 │   ├── hooks.codex.json           # Codex 事件注册（支持事件子集 + PostToolUse 降级）
-│   ├── lib/                        # CLI-agnostic 纯逻辑（无协议依赖，sys.path 自定位）
-│   │   ├── hook_io.py             #   ★hook harness：guard / inject / observe / run 四个 runner（CC 原生 event 侧）
-│   │   ├── notify/                 #   ★notify 端口：Notification/Notifier/Source（base）；channel + waiter 两投递；sources/（forge/review + CompositeSource `all`）；should-arm 按能力决定是否 arm
-│   │   ├── gitcmd.py              #   ★统一 git runner（超时 + failure-safe，唯一 git 入口）
-│   │   ├── forge/                 #   ★统一 forge facade（GitHub/GitLab，按 repo 分发）
-│   │   │   ├── base.py            #     中立领域：PullRequest / Comment / Forge port（仅原语）/ build_window 策略 / pr_label / parse_pr_number
-│   │   │   ├── _rest.py           #     唯一 HTTP 传输（urllib，可配 base/auth）
-│   │   │   ├── gitlab.py github.py#     两个 adapter（iid↔number / state 归一 / 路径差异）
-│   │   │   └── __init__.py        #     resolve_forge（origin+config+env 一处合一）+ forge_for_repo 分发
-│   │   ├── cmdtree/               #   ★命令解析子系统（可插拔后端）：base（中立命令树 IR + Parser 接口）+ parable（Parable AST→IR 后端）+ cmdparse（在 IR 上走 commands/git_invocations/cd-scope 的 walker+facade）；换 parser=改 cmdparse 一行 import
-│   │   ├── _vendor/               #   ★第三方原样 vendor（parable.py MIT + LICENSE/PROVENANCE）；永不手改
-│   │   ├── lifecycle/             #   ★devops 生命周期 hook 子系统（pre_commit/post_commit/pre_mr/post_mr）
-│   │   │   ├── base.py            #     facade：dispatch 并发 join + 聚合 + 内置注册表
-│   │   │   ├── checks.py          #     内置 inline-gate handler（lint/test，与 fix-lint / run-test skill 共用）
-│   │   │   └── review.py          #     code-review signal handler（任意相位；审全量 diff，分支有开放 MR 时机会性发评论）
-│   │   ├── repo_resolve.py        #   ★脚本的 cwd 无关 repo 解析（--repo 名/路径 → cwd 仓 → last-active）+ select_units→WorkSet（本轮跑哪些 code unit，按本次改动定）
-│   │   ├── repo_layout.py         #   ★code unit 模型：CodeUnit（path 执行身份 / id 持久化身份 / 工具链动作）+ at() 唯一构造入口 + enclosing/discover
-│   │   ├── ecosystem/             #   ★工具链生态注册表：项目身份/语言/环境准备/canonical 回落；worktree 与 gate 共用 ensure_ready
-│   │   ├── git_state.py  parsers.py  workspace.py
-│   │   └── context/               #   .devloop/ 状态总线，五族分模块：store(磁盘原语/三域) + base(共享词汇) / repo+workspace(视图) / gate+prstate(真相接缝) / session(运行态+owner锁+session 日志 `sessions/<sid>.jsonl`——devloop 自己干了什么的 append-only 账,`kind` 分类(首个 `inject`),纯 exhaust、从不读回)
-│   │       └── loopstate/         #     经验沉淀 ledger 半（loop-state / requirement-first，见 workspace docs/）：friction(guard deny→friction.jsonl，per-repo) + requirement(域落 dev root——workspace 根、单仓退化 repo 根；单 spine 跨仓、事件带 repo；turn_line 派生任务视图；monitor reconcile 收口)
+│   ├── hook_io.py                 # hook payload/output harness
+│   ├── core/  rules/              # Change→Target→Rule→Decision 引擎与规则
+│   ├── cmdtree/  codemodel/       # Bash/FileChange 投影，只服务 hook policy
+│   ├── friction.py                # guard deny → friction ledger adapter
 │   ├── cwdchanged_enter.py        # Claude CwdChanged：自动 enter
 │   ├── posttool_codex_refresh.py  # Codex PostToolUse：补 cwd/state 刷新
 │   ├── sessionstart_init.py       # SessionStart：References(additionalContext) + watchPaths + 预热
@@ -68,8 +66,8 @@ devloop/
 │   ├── filechanged_refs.py        # FileChanged：AGENTS.md 变更重注入
 │   ├── posttool_git_refresh.py       # PostToolUse：git 状态命令后刷新 branch 段
 │   ├── sessionend_release.py      # SessionEnd：释放本 session 的 owner 锁（正常退出路径）
-│   └── pretool_*.py               # 10 个硬拦截（guard harness；含 checkout/edit owner 锁）
-├── scripts/                        # smart_git_ops + smart_*.sh / pr.py（show/list/update/close；create 归 gcampr）/ release.py（发版：forge 服务端建 tag+Release，免 push tag）/ run_fixlint / run_tests / run_review（后台 ocr→review.json）/ poll_pr_status / init_*
+│   └── pretool_*.py               # 命令/编辑硬拦截（guard harness；含 owner 锁与裸 worktree add 拦截）
+├── scripts/                        # 工作流驱动 adapter：enter / commit_flow + smart_* / pr / release / lint/test/review / init_*
 ├── monitors/monitors.json          # ★PR-sweep 后台轮询（替代 hook 心跳 scheduler）
 ├── commands/                       # slash：enter / gcam / gcamp / gcampr（lint/test 归 skill，gate 自动触发）
 ├── skills/                         # git-ops / gcam / gcamp / gcampr / fix-lint / run-test
@@ -81,8 +79,8 @@ devloop/
 ## 关键约定
 
 ### 1. hook harness + notify 端口（两个 producer 侧）
-- **hook 侧（CC 原生 event）→ `hooks/lib/hook_io.py`**：每个 hook = 一个函数 + 一个 runner：`guard(decide)`（PreToolUse，返回 deny 理由或 None，异常→放行 fail-open）、`inject(produce, event)`（返回注入文本）、`observe(handle)`（副作用，恒输出 `{}`）、`run(build, event)`（富 payload，如 SessionStart 的 additionalContext+watchPaths）。runner 保证 hook 永不打断用户工具调用。
-- **非 hook 侧（外部系统）→ monitor（拉）+ `hooks/lib/notify`（推）**：forge / deploy / verdict 这类外部状态没有 CC 原生 event。**拉**：monitor 轮询写状态总线（`poll_pr_status.py` 写 `.devloop/pr.json`，**persist-only**，喂 guard / inject）。**推**：走 notify 端口（三角色：`Source` 决定何时 fire、`Notifier` 决定怎么投、runner 跑二者）——`sources/`（`forge` 盯 pr.json、`review` 盯 review.json 带 findings）是触发判定真源，被两套 transport 复用：`channel`（push 成 Claude Code channel 事件、唤醒会话、多次）与 `waiter`（一次性进程退出唤醒、stdlib only），二者共享 Source 故判定一致、都带内容 inline。`CompositeSource`(token `all`)扇出所有叶子 Source 让一条 transport 盯整条总线、与"哪个源 fire"无关(聚合在代码层、不落 notify 文件)；`scripts/notify.py` 是统一 dispatcher，其 `should-arm` 动词是前台、不唤醒的能力决议(按 `config.notify().channels`)——调用方先跑它,exit 0 才 `run_in_background` 起 `waiter`、exit 1 表示 `channel all` 已覆盖则跳过,触发方对走 channel 还是 waiter 无感。deploy/verdict 源 = 加个 `Source` 模块 + `_LEAVES` 一条,`all` 自动覆盖。channel 是 research preview / opt-in（见 References）。
+- **hook 侧（CC 原生 event）→ `hooks/hook_io.py`**：每个 hook = 一个函数 + 一个 runner：`guard(decide)`（PreToolUse，返回 deny 理由或 None，异常→放行 fail-open）、`inject(produce, event)`（返回注入文本）、`observe(handle)`（副作用，恒输出 `{}`）、`run(build, event)`（富 payload，如 SessionStart 的 additionalContext+watchPaths）。runner 保证 hook 永不打断用户工具调用。
+- **非 hook 侧（外部系统）→ monitor（拉）+ `lib/notify`（推）**：forge / deploy / verdict 这类外部状态没有 CC 原生 event。**拉**：monitor 轮询写状态总线（`poll_pr_status.py` 写 `.devloop/pr.json`，**persist-only**，喂 guard / inject）。**推**：走 notify 端口（三角色：`Source` 决定何时 fire、`Notifier` 决定怎么投、runner 跑二者）——`sources/`（`forge` 盯 pr.json、`review` 盯 review.json 带 findings）是触发判定真源，被两套 transport 复用：`channel`（push 成 Claude Code channel 事件、唤醒会话、多次）与 `waiter`（一次性进程退出唤醒、stdlib only），二者共享 Source 故判定一致、都带内容 inline。`CompositeSource`(token `all`)扇出所有叶子 Source 让一条 transport 盯整条总线、与"哪个源 fire"无关(聚合在代码层、不落 notify 文件)；`scripts/notify.py` 是统一 dispatcher，其 `should-arm` 动词是前台、不唤醒的能力决议(按 `config.notify().channels`)——调用方先跑它,exit 0 才 `run_in_background` 起 `waiter`、exit 1 表示 `channel all` 已覆盖则跳过,触发方对走 channel 还是 waiter 无感。deploy/verdict 源 = 加个 `Source` 模块 + `_LEAVES` 一条,`all` 自动覆盖。channel 是 research preview / opt-in（见 References）。
 
 一个变化同时走"喂状态总线（拉）"与"推给 agent"两条路：
 
@@ -119,12 +117,12 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 - **脚本与 cwd 解耦**：session cwd 在聚合工作区常驻 workspace 根，smart 脚本一律不依赖 cwd——repo 按"显式 `--repo` → cwd 仓库 → 本 session 绑定的最近活跃仓"解析并在 PLAN 里自述来源（active 一 session 一文件，互不劫持；无本 session 绑定即拒绝兜底，他人绑定仅作提示）。解析链见 CONCEPTS.md〈脚本的 repo 解析〉，生命周期见〈Session 运行态〉。
 - **PR 模型**：中立 `PullRequest`（provider 随对象走）；单 anchor（`branch.pr_number`）+ 近期窗口（`prs`）**派生**失活 / 在途，不存 bool；`pr.json` 由 monitor 独占且按 branch 归属——切分支即自动失效、无人去清（gcampr 建 PR 后也只触发 monitor poll，不自己写）。字段语义与窗口规则见 CONCEPTS.md〈PR 模型〉。
 - **注入两 cadence**：turn（branch/dirty/validation/PR 摘要，每轮，内容哈希 dedup + TTL 兜底）、session（References，SessionStart 发一次、变更才重发）。`PostCompact` 清两者。
-- 字段 schema / TTL / cap 数值、段读写原语（`load/save_segment` / `_write_atomic`）都在 `hooks/lib/context/base.py`，文档不复述。
+- 字段 schema / TTL / cap 数值、段读写原语（`load/save_segment` / `_write_atomic`）都在 `lib/context/base.py`，文档不复述。
 
 **成本原则（token 是第一约束，"非必要不注入"）**——prompt 注入是跟 AI 沟通最直接也最贵的通道，加任何东西进 prompt 前先过这几条：
 1. **只注入当前 subproject + workspace 级**的 References / 状态；**绝不**注入其它 subproject 的 AGENTS.md 正文（多 subproject 场景下这是最大的省 token 点）。
 2. **`watchPaths` / `monitor` 输出是给 harness 的指令 / 通知，不进模型 prompt**——所以"注册全部 subproject 的 AGENTS.md 监听""轮询全部 subproject 的 MR"都是 token-free 的；真正进 prompt 的只有当前 repo 的那点状态。
-3. **列表一律 cap**（子项目清单、PR 窗口都有定长上限，数值在 `hooks/lib/context/base.py`），长描述压成一行。
+3. **列表一律 cap**（子项目清单、PR 窗口都有定长上限，数值在 `lib/context/base.py`），长描述压成一行。
 4. **只在内容变化时才注入**（最大的省 token 手段之一）：每段注入文本按内容哈希比上次，**一样就不发**（`Cadence.should_emit`）——RepoContext 也是这样，branch/dirty/validation/MR 没变的轮次零增量；session 段一会话发一次。仅 TTL 到期或 `PostCompact` 才强制重发兜底。
 5. 新增任何注入前自问：这真得**每轮**进 prompt 吗？hook 内部读 context 决策不行吗？（硬规则 deny 通常不需要进 prompt。）
 
@@ -132,11 +130,12 @@ hook 的后果通常是写一个段、直接写状态总线；非 hook 外部源
 
 ### 5. 不走原生通道的硬规矩
 - AI **绝不**直接 `git commit/push`（guard 会拦）或散调 forge——commit/push/PR 一律走 `scripts/smart_*.sh`（内部用 gitcmd + facade，自陈 `PLAN:` banner）。保护分支（main/master/release*）判定见 CONCEPTS.md。
-- **新分支基点由意图定，不由 HEAD 当前态定**：`--branch`（开新工作）一律 cut 自 `origin/<target>`（`--base` 显式栈式），与当前停在哪条分支无关——否则上一轮留下的 in-flight 分支会被当成基底、新 PR 夹带其提交（夹带在 push/PR 前由 `smart_git_ops` 外来提交自检拦下）。当前分支在循环里的四态流转（protected / healthy / in-flight / inactive）见 CONCEPTS.md〈分支状态流转〉。
-- **Owner 锁（owner / guest session）**：多 CLI / session 并发操作同一 checkout 时，第一笔**变更动作**的 session 占有它，guest 的切分支与编辑被硬拦、引导去 worktree——锁保护 checkout 的可变面，防止两个 session 的改动混进同一工作树；enter / 只读不占有，避免假冲突。占有点、豁免与逃逸口见 CONCEPTS.md〈Owner / guest session〉，实现见 `hooks/lib/context/session.py`。
+- AI **不直接 `git worktree add`**：需要隔离 branch 时统一走 `scripts/enter.py <repo> --worktree <tag>`（Claude 的交互入口是 `/enter`）。入口委托 `lib/worktree.py` 完成规范目录、基线、复用、依赖准备与安全清理；裸创建会被 guard 拒绝。
+- **新分支基点由意图定，不由 HEAD 当前态定**：`--branch`（开新工作）一律 cut 自 `origin/<target>`（`--base` 显式栈式），与当前停在哪条分支无关——否则上一轮留下的 in-flight 分支会被当成基底、新 PR 夹带其提交（夹带在 push/PR 前由 `commit_flow` 外来提交自检拦下）。当前分支在循环里的四态流转（protected / healthy / in-flight / inactive）见 CONCEPTS.md〈分支状态流转〉。
+- **Owner 锁（owner / guest session）**：多 CLI / session 并发操作同一 checkout 时，第一笔**变更动作**的 session 占有它，guest 的切分支与编辑被硬拦、引导去 worktree——锁保护 checkout 的可变面，防止两个 session 的改动混进同一工作树；enter / 只读不占有，避免假冲突。占有点、豁免与逃逸口见 CONCEPTS.md〈Owner / guest session〉，实现见 `lib/context/session.py`。
 
 ### 6. repo ≠ code unit（工具链与验证的真实粒度）
-「一个 repo = 一个代码目录」是 devloop 早期的隐含假设，也是这里最容易被重新写回去的错误——每条都在防它复辟：
+repo 是 PR/MR 与 branch 生命周期的边界，code unit 是 repo 内的验证单位。「一个 repo = 一个代码目录」是 devloop 早期的隐含假设，也是这里最容易被重新写回去的错误——每条都在防它复辟：
 - **一个 git 仓可含多个 code unit**：自带工具链、可独立 build/lint/test 的目录（`server/` + `cli/`、`packages/*`、`cmd/*`）。「操作落在哪个 unit」由**操作目标路径**决定（`enclosing_code_unit`），**不是 repo 的单值属性**——单值 `code_dir` 正是多代码目录仓上静默选错目录的根因。
 - **本轮跑哪些 unit 由「本次改动」定**，不由解析来源定：`select_units` → `WorkSet`（显式目标 > dirty 改动投影 > repo-wide 全量），任何一级都**不静默回落 default unit**。lifecycle gate 与 fix-lint / run-test skill **共用这一个入口**——正常路径与防绕过守卫必须是同一份策略，分叉了守卫就拦不住它唯一要拦的东西。
 - **unit 有两个身份，别混**：`path`（绝对）是「这次在哪跑 make」的执行事实；`id`（仓相对）是**持久化身份**，落 `.devloop` 的一切 key 用它。两者都在出生点由唯一构造入口 `CodeUnit.at(path, git_root)` 算清，`id` 必填无默认值——给默认值则漏传就是静默的空 key，让消费方自算又要各自再传 `git_root`（传错 root 就算错）。

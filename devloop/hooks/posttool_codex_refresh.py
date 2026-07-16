@@ -13,13 +13,13 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import posttool_git_refresh  # noqa: E402
-from lib import hook_io, repo_layout, workspace  # noqa: E402
+from hooks import hook_io, posttool_git_refresh  # noqa: E402
+from lib import repo_layout, workspace  # noqa: E402
 from lib.context import RepoContext, WorkspaceContext, record_active_repo, workspace_for_repo  # noqa: E402
-from lib.core import engine  # noqa: E402
-from lib.core.domain import Command, FileChange  # noqa: E402
+from hooks.core import engine  # noqa: E402
+from hooks.core.domain import Command, FileChange  # noqa: E402
 
 
 def _candidate_roots_for_input(inp: hook_io.HookInput) -> list[str]:

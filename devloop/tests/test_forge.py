@@ -287,7 +287,7 @@ def test_release_cli_dispatch():
 def test_reuse_or_create_pr_over_narrowed_port():
     """reuse_or_create_pr: reuse the branch's OPEN pr if present (via prs_for_branch),
     else create. Over the narrowed port + a fake forge — no HTTP; label is repo-level."""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     orig = sgo.forge_for_repo
     try:
         # reuse: an open PR exists for the branch

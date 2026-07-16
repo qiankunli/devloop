@@ -1,6 +1,6 @@
 # 分支状态——三态 freshness 模型
 
-devloop 关于分支的所有事实,过去挤在一个 `branch.json` + 一次 `RepoContext.load()` 里、同一种 freshness 待遇。它们其实分三类,**信任来源根本不同**,该用不同待遇。本文讲清这件事的 why;字段/常量的具体形状以代码为准(`hooks/lib/context/repo.py` / `gate.py` / `prstate.py`、`hooks/lib/git_state.py`)。
+devloop 关于分支的所有事实,过去挤在一个 `branch.json` + 一次 `RepoContext.load()` 里、同一种 freshness 待遇。它们其实分三类,**信任来源根本不同**,该用不同待遇。本文讲清这件事的 why;字段/常量的具体形状以代码为准(`lib/context/repo.py` / `gate.py` / `prstate.py`、`lib/git_state.py`)。
 
 ## 1. 理念:一个事实该多"新",取决于它会变得多快、读它要多贵、以及谁会偷偷改它
 

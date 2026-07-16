@@ -37,7 +37,8 @@ devloop/                              # ← 仓库根（marketplace）
 │   ├── .codex-plugin/plugin.json     #     Codex manifest（hooks 指向 hooks.codex.json）
 │   ├── skills/                       #     6 个 skill（CLI 共享）
 │   ├── commands/                     #     slash commands（Claude 端）
-│   ├── hooks/lib/                    #     统一 git runner(gitcmd) + GitLab facade(gitlab/) + hook harness(hook_io) + 状态总线(context/)
+│   ├── lib/                          #     领域模型、状态变化与基础能力（workspace/repo/code unit/context/git/forge）
+│   ├── hooks/                        #     事件驱动 adapter 与 PreToolUse policy
 │   ├── scripts/                      #     git-ops 系列 + init_repo / init_workspace
 │   ├── config/                       #     用户配置模板（config.json：workspaces / gitlab / precommit）
 │   ├── monitors/monitors.json        #     MR-sweep 后台轮询
@@ -87,7 +88,8 @@ devloop/                              # ← 仓库根（marketplace）
 每个 plugin 内部建议以下目录跨 CLI 共享：
 
 - `<plugin>/skills/`、`<plugin>/commands/`、`<plugin>/scripts/`：内容 CLI 无关
-- `<plugin>/hooks/lib/`：纯逻辑模块（无 CLI 协议依赖），各 CLI 的 hook 脚本各自包装这些共享逻辑
+- `<plugin>/lib/`：领域模型、状态变化与稳定基础能力；归属看领域事实的 owner，不以“是否被两边复用”为唯一判据
+- `<plugin>/hooks/` / `<plugin>/scripts/`：事件与工作流两类驱动 adapter；依赖方向只能是 `hooks/scripts → lib`
 
 Codex 与 Claude 的 hook payload schema 几乎一致（同样 stdin JSON、同样字段名 `session_id` / `transcript_path` / `cwd` / `hook_event_name` / `tool_name` / `tool_input` 等），入口脚本用 `sys.path.insert(0, Path(__file__).parent)` 自定位 lib、不读任何 plugin-root env var → 跨两端零修改运行。opencode 待协议明确时再决定差异隔离层。
 

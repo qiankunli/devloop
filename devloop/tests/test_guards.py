@@ -136,7 +136,7 @@ def test_workspace_cwd_guard_cd_scope():
     """cmdtree cd-scope 让守卫变 sound:在 workspace 根直接跑子项目命令 → 拦;同 shell `cd <sub>`
     进了真仓 → 放行;而 cd 在子 shell `(cd sub); uv`(对 uv 无效)→ 仍拦——粗判"有没有 cd"放过了它。"""
     guard = _load_hook("pretool_policy_bash")
-    from lib.rules.command import workspace_cwd as wc
+    from hooks.rules.command import workspace_cwd as wc
     root = "/tmp/dlut_wsg"; os.makedirs(root, exist_ok=True)
     wc.workspace = type("W", (), {"load_workspaces": staticmethod(lambda: [root])})
     wc.WorkspaceContext = type("WC", (), {"load": staticmethod(lambda p: None)})
@@ -418,16 +418,28 @@ def test_gate_branch_name_reuse_not_falsely_inactive():
                            "prs": [{"number": 1, "state": "merged", "source_branch": "feat/x", "sha": sha1}]})
     assert gate.evaluate(R).inactive() is False         # sha1 not an ancestor of HEAD → not ours
 
+def test_source_tree_reflects_dependency_direction():
+    """lib 是领域层；hooks/scripts 驱动它，领域层不得反向依赖入口 adapter。"""
+    shared = HOOKS.parent / "lib"
+    assert (shared / "repo.py").is_file() and (shared / "workspace.py").is_file()
+    assert not list((HOOKS / "lib").glob("*.py")), "hook-only code must not regrow hooks/lib"
+    for path in shared.rglob("*.py"):
+        source = path.read_text()
+        assert "from hooks" not in source and "import hooks" not in source, (
+            f"shared lib must not depend on hook adapters: {path.relative_to(shared)}"
+        )
+
+
 def test_gates_use_gate_seam_not_cached_identity():
     """CI invariant: the hard gates resolve branch facts through lib.context.gate (LIVE), never
     the cached RepoContext identity. Prevents a future guard from silently regressing to the
     stale-cache fail-open / false-block the gate seam exists to kill."""
-    for rel in ("lib/rules/command/protect_branch.py", "lib/rules/edit/branch_merged.py"):
+    for rel in ("rules/command/protect_branch.py", "rules/edit/branch_merged.py"):
         src = (HOOKS / rel).read_text()
         assert "gate.evaluate" in src, f"{rel} must read gate truth"
         for forbidden in ("branch_pr_inactive", ".branch.current", ".branch.local"):
             assert forbidden not in src, f"{rel} must not read cached branch identity ({forbidden})"
-    sgo = (SCRIPTS / "smart_git_ops.py").read_text()
+    sgo = (SCRIPTS / "commit_flow.py").read_text()
     assert "def prepare_branch(intent: GitIntent, gv: gate.GateView" in sgo
     assert "ctx.branch_pr_inactive" not in sgo
 

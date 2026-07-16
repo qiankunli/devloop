@@ -9,12 +9,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import hook_io, rules  # noqa: E402
-from lib.context.loopstate import friction  # noqa: E402
-from lib.core import engine  # noqa: E402
-from lib.core.context import PolicyContext  # noqa: E402
+from hooks import hook_io, rules  # noqa: E402
+from hooks import friction  # noqa: E402
+from hooks.core import engine  # noqa: E402
+from hooks.core.context import PolicyContext  # noqa: E402
 
 def decide(inp: hook_io.HookInput) -> str | None:
     change = engine.project(inp)

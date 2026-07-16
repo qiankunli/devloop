@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "hooks"))
+sys.path.insert(0, str(HERE.parent))
 
 from lib import cli, config, git_state, review_engine  # noqa: E402
 from lib.context import base, record_active_repo, store  # noqa: E402

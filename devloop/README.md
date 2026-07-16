@@ -1,8 +1,10 @@
 # devloop plugin
 
-**面向「聚合工作区 + 多 subproject」开发的 plugin**（native-first 实现）。一个 workspace 挂着项目的全部代码仓，开发者在其中转一个循环——enter 子模块 → 提需求（可能跨多个 subproject）→ 开发 → commit / 建 PR（含 lint/test）→ 人工 merge → 下一轮；排查问题也在同一 workspace（as-ops / infra-ops 等发现问题后切到子模块开发）。devloop 靠**实时状态注入**（每轮 prompt 知道当前 subproject 的 branch / 工作区 / 近期 PR）+ **执行级硬拦截**（保护分支、`git add -A`、过期分支改文件等直接 deny），提高这个循环里 AI 的首次成功率。评审平台 GitHub / GitLab 均支持，按 repo 的 origin 自动识别。
+**面向「聚合工作区 + 多 subproject」开发的 plugin**（native-first 实现）。窄义上，devloop 管理 PR/MR 的创建、开发与验证生命周期：每个 PR/MR 基于一个 repo，repo 内的 lint/test 按受影响的 code unit 执行，review 则审 repo 的分支 diff；branch 是开发主轴，worktree 是 branch 用于并发隔离的一种 checkout 形态。一个 workspace 挂着项目的全部代码仓，开发者在其中转一个循环——enter 子模块 → 提需求（可能跨多个 subproject）→ 开发 → commit / 建 PR → 验证 → 人工 merge → 下一轮。devloop 靠**实时状态注入**（每轮 prompt 知道当前 subproject 的 branch / 工作区 / 近期 PR）+ **执行级硬拦截**（保护分支、`git add -A`、过期分支改文件等直接 deny），提高这个循环里 AI 的首次成功率。评审平台 GitHub / GitLab 均支持，按 repo 的 origin 自动识别。
 
 > 架构 / 扩展看 [`AGENTS.md`](./AGENTS.md)；术语看 [`CONCEPTS.md`](./CONCEPTS.md)。
+
+代码结构与这条主链一致：`lib/` 承载 Workspace / Repo / CodeUnit、branch/PR 状态及其合法变化；`hooks/` 把 LLM/CLI 工具事件投影成领域决策，`scripts/` 编排 enter、git/PR 与验证工作流。两类入口都只向领域层依赖，让 LLM 对 workspace/repo 的作用经过可控路径。
 
 独立 `.devloop/` 命名空间状态，与其它工具互不干扰。当前支持 **Claude Code + Codex**；Claude 使用完整 native event，Codex 使用其 hook 子集并在少数事件上降级。
 
@@ -10,8 +12,8 @@
 
 - **状态总线**：workspace 维护 `<workspace>/.devloop/context.json`（subproject 清单含 symlink→真实路径映射 / AGENTS.md References / 注入节奏）+ `active.json`（最近活跃 repo），每个 git 仓库维护 `<repo>/.devloop/{meta,branch,pr,validation,injection}.json`（branch / 保护标记 / target / ahead-behind / 近期 PR 窗口 / 各 code unit 的 lint-test 时间），每轮 prompt 注入；自动加入 `.git/info/exclude`，不会误提交。
 - **code unit 感知**（多代码目录仓）：一个 git 仓可能有多个自带工具链、可独立 lint/test 的目录——`server/` + `cli/`、`packages/*`、`cmd/*`。devloop 按**本次改动**决定跑哪些：改了 `cli/**` 就只跑 `cli` 的 lint/test，不静默回落仓根或 `server/`；改动跨多个 unit 就都跑；clean tree 从仓根发起时枚举**全部** unit（绝不替你猜一个）。验证戳也按 unit 记——「A 过 B 挂」不会被记成整仓已验。术语见 [`CONCEPTS.md`](./CONCEPTS.md)。
-- **worktree 环境自愈**：`/enter --worktree` 创建/复用 checkout 后按 lockfile 预热依赖，lint/test 启动前再校验一次；每个 checkout 保留独立 `node_modules` / `.venv` 视图，只复用包管理器缓存。frozen 恢复失败会明确报环境错误，不混进 TypeScript/lint/test 代码错误。设计见 [`docs/worktree-env.md`](./docs/worktree-env.md)。
-- **硬拦截**（PreToolUse deny）：保护分支 commit/push、`git add -A`、过期分支（PR 已 merged/closed）改文件、别的 session 占用的 checkout 上切分支或改文件（引导 worktree）、工作区根跑子项目命令、裸 `pytest`、uv 项目 `pip install`、编辑 `requirements.txt`、`lifecycle.pre_commit` 含 lint 时 lint 过期的裸 `git commit` gate。
+- **branch 的 worktree 形态管理**：`/enter <repo> --worktree <tag>` 是统一入口，负责在 `<repo>/.worktrees/` 创建/复用隔离 checkout、选择正确基线、按活跃度安全清理，并按 lockfile 预热依赖；lint/test 启动前再校验一次。直接 `git worktree add` 会被硬拦，避免只完成 checkout 却绕过整套流程。设计见 [`docs/worktree-env.md`](./docs/worktree-env.md)。
+- **硬拦截**（PreToolUse deny）：保护分支 commit/push、`git add -A`、直接 `git worktree add`、过期分支（PR 已 merged/closed）改文件、别的 session 占用的 checkout 上切分支或改文件（引导 worktree）、工作区根跑子项目命令、裸 `pytest`、uv 项目 `pip install`、编辑 `requirements.txt`、`lifecycle.pre_commit` 含 lint 时 lint 过期的裸 `git commit` gate。
 - **PR 感知**：后台 monitor 周期轮询 forge（GitHub/GitLab），把当前分支的 PR + 近期 PR 窗口写进状态，注入里以 `Recent PRs:` / `Recent MRs:` 呈现（按 provider）。
 - **自动进项目**：`cd` 进子项目时（`CwdChanged`）自动刷新上下文、浮现 AGENTS.md References，无需手动 `/enter`。
 - **Codex 降级**：Codex 没有 `CwdChanged / FileChanged / SessionEnd`，`hooks.codex.json` 用 `PostToolUse` 刷新 cwd / command-scoped repo 状态；AGENTS.md 变更重注入与 owner 锁释放走已有 TTL / 下一轮兜底。

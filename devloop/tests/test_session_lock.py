@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 HOOKS = Path(__file__).resolve().parent.parent / "hooks"
-sys.path.insert(0, str(HOOKS))
+sys.path.insert(0, str(HOOKS.parent))
 
 from _testkit import _git, _load_hook  # noqa: E402
 from lib.context import session as session_lock  # noqa: E402

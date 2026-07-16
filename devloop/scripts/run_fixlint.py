@@ -14,9 +14,9 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "hooks"))
+sys.path.insert(0, str(HERE.parent))
 
-from lib import cli, repo_resolve  # noqa: E402
+from lib import cli, repo as repo_model  # noqa: E402
 from lib.context import record_active_repo  # noqa: E402
 from lib.lifecycle import checks  # noqa: E402
 
@@ -27,7 +27,7 @@ def main(argv: list[str]) -> int:
     ns = ap.parse_args(argv)
     resolved, how = cli.resolve_repo_or_exit(ns, "run_fixlint")
     repo = resolved.git_root
-    ws = repo_resolve.select_units(repo, explicit=resolved.target_path)
+    ws = repo_model.select_units(repo, explicit=resolved.target_path)
     if how != "cwd":
         print(f"run_fixlint: repo = {repo} ({how})")
     # 每次执行前自述本轮 unit 与选择原因——目标选错要一眼可见。
