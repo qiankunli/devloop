@@ -2,9 +2,19 @@
 
 # devloop
 
-**给 AI 编码搭一条带护栏的开发循环。** 一个跨 CLI 的 plugin marketplace：`devloop` 是第一个（也是主力）plugin——面向 Claude Code 和 Codex 的开发者工作流，**GitHub（PR）与 GitLab（MR）都支持**（按 repo 的 origin 自动识别）；`example` 是占位 plugin，表明本仓库从一开始就按**多 plugin marketplace** 设计。
+**为 AI 编码管理一条受控的 PR/MR 开发生命周期。** 本仓库是跨 CLI 的 plugin marketplace；主力 plugin `devloop` 引导 Claude Code 和 Codex 完成进入 repo、基于 branch 开发、按受影响 Component 验证、commit/push 与创建 PR/MR，最终 merge 始终留给人。**GitHub（PR）与 GitLab（MR）都支持**，按 repo 的 origin 自动识别；`example` 保留为多 plugin marketplace 的占位示例。
 
 > 当前支持 Claude Code 和 Codex。设计理念 / 架构见 [AGENTS.md](./AGENTS.md)，各 plugin 细节见各自目录的 README。
+
+## 开发生命周期
+
+```
+进入 repo → 基于 branch 开发 → 验证受影响的 Component → commit / push → 创建 PR/MR → 人工 merge
+```
+
+领域主链是 **PR/MR → Repo → Component**：每条 PR/MR 始终属于一个 repo，一个 repo 可以包含多个拥有独立 build/lint/test 工具链的 component。Workspace 是聚合多个 repo 的可选上下文，单仓库形态同样完整支持。
+
+Branch 是开发主轴；面向多 session 并发时，worktree 是 branch 的一种特殊形态，用来提供隔离 checkout。`/enter <repo> --worktree <tag>` 统一管理它的创建、复用、依赖准备和清理。随后，devloop 将本次改动投影到受影响的 component，并以同一粒度记录验证结果。
 
 ## 要解决什么
 
@@ -14,14 +24,14 @@
 2. **软约定拦不住**——「别在 master 上直接 commit」「别 `git add -A`」写在 prompt / skill 里只是软引导。AI 决定不遵守时，你**没有任何执行级的拦截能力**。保护分支直接 commit、误带敏感文件进暂存区、在过期分支上继续改——这些都真实发生过。
 3. **多 session 互相踩**——在同一个 workspace 上并行开多个 CLI session（或多个 agent）很常见，但它们共享 checkout 和状态：第二个 session 把分支切走、搅乱第一个 session 未提交的工作；A session 的无参命令静默解析到 B 刚碰过的仓。原生没有任何「谁占有谁」的仲裁。
 
-## devloop 做什么——两个杠杆
+## devloop 如何让生命周期受控
 
 - **状态总线消除信息滞后**：把当前子项目的 branch / 工作区 / 近期 MR / 验证状态，实时注入**每一轮** prompt，AI 改第一行代码前就掌握现状。
 - **硬拦截把软约定变成执行级边界**：`PreToolUse` hook 直接 `deny`，AI 绕不过去。
 
 两个杠杆共享同一个枢纽：一个 `.devloop/` 结构化状态总线。`git commit` / `cd` / 后台轮询时刷新一次的状态，可被后续 N 轮 prompt 注入、M 次保护分支判定复用，零额外成本。
 
-损耗 3 由骑在同两根杠杆上的 **session 级状态**回答：每个 checkout 一把 owner 锁（guest 的切分支 / 编辑被硬拦、引导去 worktree）+ 每 session 一份 repo 绑定（A 的兜底解析永远不会落到 B 的仓）——详见下文「聚合工作区 + 多 session 是一等公民」。
+损耗 3 由骑在同两根杠杆上的 **session 级状态**回答：每个 checkout 一把 owner 锁（guest 的切分支 / 编辑被硬拦，再引导到 branch 的隔离 worktree 形态）+ 每 session 一份 repo 绑定（A 的兜底解析永远不会落到 B 的仓）。
 
 ## 几个值得一看的设计
 
@@ -37,10 +47,6 @@
 protected 和 inactive 能干净地硬拦——在它们上面编辑没有任何合法理由。in-flight 只能软提示，因为它有一个机器无法可靠区分的合法例外（你可能就是想 amend 自己这条 PR/MR），于是把「这条分支在途」的事实喂给 AI，让它自己选。
 
 **结构性保证，不只靠提示**——新分支的基点**由意图决定，不由 HEAD 当前停在哪决定**：只要是开新工作（`--branch`），就**永远**从 `origin/<target>` 切，且新分支在 push / 建 PR 前会被自检只带本轮提交。所以哪怕 AI 完全没看那行 `IN-FLIGHT` 提示，从在途分支 fork 也不会把它的提交夹带进新 PR。
-
-**聚合工作区 + 多 session 是一等公民**——一个 workspace 根挂着多个独立 git 子项目（常以软链接聚合）。脚本一律**不信 shell 的 cwd**（按「显式 `--repo` → cwd 所在仓 → **本 session** 最近活跃仓」解析；本 session 没有绑定时宁可要求显式 `--repo`，也不猜别的 session 的活动），并用 *owner 锁* 防止两个并发 session 的改动混进同一个工作树。单仓库形态也完全支持——按用户级配置自动判定，无需手工切换。
-
-**PR/MR → Repo → Component 是领域主链**——devloop 窄义上管理 PR/MR 的创建、开发与验证；每条 PR/MR 基于一个 repo，repo 内再按受影响的 component 执行 lint/test。branch 是开发主轴，worktree 只是 branch 用于并发隔离的一种 checkout 形态：统一经 `/enter <repo> --worktree <tag>` 在 `<repo>/.worktrees/` 创建、复用、清理并准备依赖，直接 `git worktree add` 会被拦截，避免绕过生命周期约束。
 
 代码结构也遵循这条边界：`devloop/domain/` 持有 Workspace / Repo / Component、branch/PR 状态及合法变化，`devloop/lib/` 提供 Git/forge/ecosystem/notify/config 等技术能力；`devloop/hooks/` 和 `devloop/scripts/` 分别把工具事件与工作流动作驱动到领域层，让 LLM 对 workspace/repo 的修改经过可控入口。
 
@@ -136,7 +142,7 @@ opencode 仍是占位，等其 plugin / hook 协议接入后再启用。
 
 | Plugin | 简介 | README |
 |--------|------|--------|
-| `devloop` | 开发者工作流：git/PR（GitHub + GitLab）+ cwd-aware enter + 生命周期 hook（按相位挂 lint/test/code-review）+ 实时状态注入 + 执行级硬拦截（Claude + Codex） | [devloop/README.md](./devloop/README.md) |
+| `devloop` | 面向 AI 编码的受控 PR/MR 生命周期：repo/branch 入口、受影响 Component 验证、commit/push/PR、实时状态与执行级护栏（Claude + Codex；GitHub + GitLab） | [devloop/README.md](./devloop/README.md) |
 | `example` | 占位 plugin，演示多 plugin marketplace 结构 | [example/README.md](./example/README.md) |
 
 ## 新增 plugin
