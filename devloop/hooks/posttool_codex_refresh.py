@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PostToolUse (Bash) for Codex: refresh state without Claude's CwdChanged event.
+"""PostToolUse (Bash/Codex exec): refresh state without Claude's CwdChanged event.
 
 Claude Code gives devloop a native CwdChanged event, so the normal Bash post-tool hook
 only has to react to git mutations. Codex currently exposes PostToolUse but not
@@ -17,21 +17,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import posttool_git_refresh  # noqa: E402
 from lib import hook_io, repo_layout, workspace  # noqa: E402
-from lib.cmdtree import cmdparse  # noqa: E402
 from lib.context import RepoContext, WorkspaceContext, record_active_repo, workspace_for_repo  # noqa: E402
+from lib.core import engine  # noqa: E402
+from lib.core.domain import Command, FileChange  # noqa: E402
 
 
-def _cd_target(inv: cmdparse.Invocation, base: str) -> Path | None:
-    if not inv.argv or os.path.basename(inv.argv[0]) != "cd" or len(inv.argv) < 2:
-        return None
-    target = inv.argv[1]
-    if target.startswith("-"):
-        return None
-    p = Path(os.path.expanduser(os.path.expandvars(target)))
-    return p if p.is_absolute() else inv.run_dir(base) / p
-
-
-def _candidate_roots(command: str, cwd: str) -> list[str]:
+def _candidate_roots_for_input(inp: hook_io.HookInput) -> list[str]:
+    """Resolve repos touched by either a native Bash call or a unified exec envelope."""
     roots: list[str] = []
 
     def add(path: str | Path) -> None:
@@ -39,12 +31,17 @@ def _candidate_roots(command: str, cwd: str) -> list[str]:
         if root and root not in roots:
             roots.append(root)
 
-    add(cwd)
-    for inv in cmdparse.command_invocations(command):
-        add(inv.run_dir(cwd))
-        cd_target = _cd_target(inv, cwd)
-        if cd_target is not None:
-            add(cd_target)
+    add(inp.cwd)
+    for target in engine.project(inp).targets:
+        if isinstance(target, Command):
+            add(target.run_dir)
+            if target.base == "cd" and len(target.argv) >= 2 and not target.argv[1].startswith("-"):
+                path = Path(os.path.expanduser(os.path.expandvars(target.argv[1])))
+                add(path if path.is_absolute() else target.run_dir / path)
+        elif isinstance(target, FileChange):
+            path = Path(target.path)
+            file_path = path if path.is_absolute() else Path(inp.cwd) / path
+            add(file_path.parent)
     return roots
 
 
@@ -80,9 +77,9 @@ def _warm_workspace(cwd: str, roots: list[str]) -> None:
 
 
 def handle(inp: hook_io.HookInput) -> None:
-    if not inp.is_tool("Bash"):
+    if not inp.is_tool("Bash", "exec"):
         return
-    roots = _candidate_roots(inp.command, inp.cwd)
+    roots = _candidate_roots_for_input(inp)
     for root in roots:
         _warm_repo(root, inp.session_id)
     _warm_workspace(inp.cwd, roots)

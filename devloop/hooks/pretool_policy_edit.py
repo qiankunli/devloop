@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""PreToolUse (Edit/Write/MultiEdit/NotebookEdit/apply_patch): 编辑侧策略引擎入口。
+"""PreToolUse (Edit/Write/MultiEdit/NotebookEdit/apply_patch/Codex exec): 变更策略引擎入口。
 
-把这次文件改动投影成 `FileChange`，跑 FILE_CHANGE 规则（checkout 占有、分支失活、
-requirements.txt、层级依赖 lint），deny 则在落盘前拦下。
+把文件改动投影成 `FileChange`；Codex 的统一 exec envelope 还会还原内层命令。随后跑匹配
+规则（checkout 占有、分支失活、命令守卫等），deny 则在落盘前拦下。
 """
 from __future__ import annotations
 
