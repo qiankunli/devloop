@@ -55,7 +55,7 @@ class CodeUnit:
             # unit 落在仓外（不该发生）：退回绝对路径而不是抛——身份算不准最多让戳对不上
             # （fail-closed，多跑一次 lint），把关路径上崩掉才是真事故。
             uid = p.as_posix()
-        return cls(str(path), uid, detect_language(path))
+        return cls(str(path), uid, ecosystem.detect_language(path))
 
     def has_target(self, name: str, *, suffix: bool = False) -> bool:
         """本 unit 的 Makefile 是否有名为 `name` 的 target。suffix=True 时 `name-ci` /
@@ -227,11 +227,6 @@ def discover_code_units(git_root: str | Path, *, max_depth: int = 4) -> list[Cod
     return units
 
 
-# 生态的**项目清单**：一个目录是不是 code unit，由「某个生态的工具链认不认它是项目根」定义。
-# 判据数据归各生态自己（`lib/ecosystem/`——语言差异的唯一入口），这里只做聚合消费。
-_PROJECT_MANIFESTS = ecosystem.PROJECT_MANIFESTS
-
-
 def _is_code_unit(path: Path) -> bool:
     """`path` 自身是不是一个 code unit —— 它带没带某个语言的**项目清单**。
 
@@ -242,15 +237,11 @@ def _is_code_unit(path: Path) -> bool:
 
     **也不看 `requirements.txt`**：那是依赖清单不是项目边界（常见形态恰恰是仓根放一份给容器构建、
     真项目在 `server/`——认它就等于把仓根误判成 unit，正是这里要消灭的那类误判）。它仍是
-    `detect_language` 的语言线索：「这是什么语言」和「这是不是一个项目」是两个问题。
+    `ecosystem.detect_language` 的语言线索：「这是什么语言」和「这是不是一个项目」是两个问题。
+
+    判据数据归各生态自己（`lib/ecosystem/`——语言差异的唯一入口），这里只问"有没有生态认领"。
     """
-    return any((path / m).exists() for m in _PROJECT_MANIFESTS)
-
-
-def detect_language(repo_code_dir: str | Path) -> str | None:
-    """Detect primary language of repo_code_dir. Returns 'python' / 'go' / 'typescript' /
-    'javascript' / None. 委托生态注册表（含 ts/js 嗅探、requirements.txt 语言线索）。"""
-    return ecosystem.detect_language(repo_code_dir)
+    return ecosystem.detect(path) is not None
 
 
 def find_agents_md(repo_dir: str | Path, repo_code_dir: str | Path | None = None) -> str | None:

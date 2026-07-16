@@ -11,7 +11,7 @@ from __future__ import annotations
 import functools
 from pathlib import Path
 
-from lib import config, repo_layout
+from lib import config, ecosystem, repo_layout
 from lib.core.domain import FileChange, Target
 
 
@@ -59,7 +59,7 @@ class PolicyContext:
 
     @functools.cached_property
     def language(self) -> str | None:
-        return repo_layout.detect_language(self.repo_code_dir) if self.repo_code_dir else None
+        return ecosystem.detect_language(self.repo_code_dir) if self.repo_code_dir else None
 
     @functools.cached_property
     def arch(self) -> dict:

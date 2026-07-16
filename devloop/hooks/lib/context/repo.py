@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .. import git_state, parsers, repo_layout
+from .. import ecosystem, git_state, parsers, repo_layout
 from ..forge import ForgeError, forge_for_repo
 from . import base, store
 from .base import (
@@ -437,7 +437,7 @@ class RepoContext:
         repo_dir_in = str(Path(repo_dir))
         repo_dir_abs = str(Path(repo_dir).resolve())
         code_dir = repo_layout.find_repo_code_dir(repo_dir_abs)
-        language = repo_layout.detect_language(code_dir)
+        language = ecosystem.detect_language(code_dir)
         agents_md_path = repo_layout.find_agents_md(repo_dir_abs, code_dir)
 
         prev = cls.load(repo_dir_abs) or cls()

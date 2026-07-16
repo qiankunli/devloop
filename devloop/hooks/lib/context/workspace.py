@@ -215,8 +215,8 @@ def _build_subproject(root: Path, s: dict) -> Subproject:
             sub.canonical = str(canon)
         # Auto-detect language when the table didn't pin one (table value wins).
         if not sub.language:
-            from .. import repo_layout
-            sub.language = repo_layout.detect_language(repo_layout.find_repo_code_dir(sp_dir))
+            from .. import ecosystem, repo_layout
+            sub.language = ecosystem.detect_language(repo_layout.find_repo_code_dir(sp_dir))
     return sub
 
 

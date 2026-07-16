@@ -1,8 +1,8 @@
 """工具链生态注册表：devloop 认识哪些生态，这个目录就是答案（加生态 = 加文件 + 注册一行）。
 
-主流程对语言差异的**唯一入口**：身份判据（`PROJECT_MANIFESTS`）、语言探测
-（`detect_language`）、环境就绪（`ensure_ready`）都从这里走——别处不要再散写
-manifest 文件名匹配 / 生态命令。契约与边界（make-first、两不变量）见 `base.py`。
+主流程对语言差异的**唯一入口**：身份判据（`detect`）、语言探测（`detect_language`）、
+环境就绪（`ensure_ready`）都从这里走——别处不要再散写 manifest 文件名匹配 / 生态命令。
+契约与边界（make-first、两不变量）见 `base.py`。
 """
 from __future__ import annotations
 
@@ -15,12 +15,9 @@ from .golang import GoEcosystem
 from .node import NodeEcosystem
 from .python_uv import PythonEcosystem
 
-# 顺序 = detect / detect_language 的探测优先级（与旧 repo_layout.detect_language 一致：
-# python → go → node）。同目录多 manifest 的仓极少见，谁先命中谁答。
+# 顺序 = detect / detect_language 的探测优先级（python → go → node）。
+# 同目录多 manifest 的仓极少见，谁先命中谁答。
 ECOSYSTEMS: tuple[Ecosystem, ...] = (PythonEcosystem(), GoEcosystem(), NodeEcosystem())
-
-#: 全部生态的项目清单聚合——`repo_layout._is_code_unit` 的身份判据数据源。
-PROJECT_MANIFESTS: tuple[str, ...] = tuple(m for eco in ECOSYSTEMS for m in eco.manifests)
 
 _PREPARE_TIMEOUT = 600   # 冷 cache 的首次 install 可达分钟级；到顶仍不结束按环境错误报
 _LOCKS_GUARD = threading.Lock()
