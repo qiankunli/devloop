@@ -45,8 +45,11 @@ class CheckoutOwnerGuardRule(Rule):
                         f"⚠️  This checkout is in use by another devloop session "
                         f"(branch '{owner.get('branch') or '?'}', session {str(owner.get('session_id', ''))[:8]}…). "
                         f"Switching branches here would scramble its working tree.\n"
-                        f"Work in an isolated git worktree instead — e.g. "
-                        f"`/enter {name} --worktree <tag>`."
+                        f"Work in an isolated git worktree instead. In Claude Code, run "
+                        f"`/enter {name} --worktree <tag>`. In Codex, choose a short unique tag and run "
+                        f"`python3 \"${{PLUGIN_ROOT}}/scripts/enter.py\" {name} --worktree <tag>`. "
+                        f"Read the returned `MATCH\\t<path>`, set subsequent tool calls' `workdir` "
+                        f"to that path, and continue the requested work there."
                     ),
                     locator=" ".join(target.argv),
                 )
