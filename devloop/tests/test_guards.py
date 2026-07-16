@@ -79,7 +79,7 @@ def test_enter_does_not_acquire_owner():
     posttool git 变更)。否则只是 /enter 看代码的 session 会把真正要编辑的 session
     拦成 guest——锁保护的是可变面,只读进入不污染它(与 gitignored 豁免同一判据)。"""
     ce = _load_hook("cwdchanged_enter")
-    from lib.context import session as session_lock
+    from domain.context import session as session_lock
     R = "/tmp/dlut_enter_noacq"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
@@ -104,7 +104,7 @@ def test_owner_lock_acquire_atomic():
     session 同时首次 acquire 会都\"成功\"、后写覆盖先写。O_EXCL 化后:输掉 create race
     收敛到 deny;stale/corrupt 锁可被接管;锁文件 I/O 错误保持 fail-open。"""
     import time as _t
-    from lib.context import session as session_lock
+    from domain.context import session as session_lock
     R = "/tmp/dlut_lockrace"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
@@ -136,7 +136,7 @@ def test_workspace_cwd_guard_cd_scope():
     """cmdtree cd-scope 让守卫变 sound:在 workspace 根直接跑子项目命令 → 拦;同 shell `cd <sub>`
     进了真仓 → 放行;而 cd 在子 shell `(cd sub); uv`(对 uv 无效)→ 仍拦——粗判"有没有 cd"放过了它。"""
     guard = _load_hook("pretool_policy_bash")
-    from lib.rules.command import workspace_cwd as wc
+    from hooks.rules.command import workspace_cwd as wc
     root = "/tmp/dlut_wsg"; os.makedirs(root, exist_ok=True)
     wc.workspace = type("W", (), {"load_workspaces": staticmethod(lambda: [root])})
     wc.WorkspaceContext = type("WC", (), {"load": staticmethod(lambda p: None)})
@@ -189,7 +189,7 @@ def test_edit_owner_guard():
     guest 直接改 owner 工作树的文件被硬拦并引导 worktree——此前只有 git switch 被拦,
     第二个 session 直接 Edit 同一 checkout 畅通无阻。"""
     guard = _load_hook("pretool_policy_edit")
-    from lib.context import session as session_lock
+    from domain.context import session as session_lock
     R = "/tmp/dlut_eog"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo/server", exist_ok=True)
     _git(f"{R}/repo", "init", "-q")
@@ -227,7 +227,7 @@ def test_apply_patch_owner_guard_uses_target_path():
     file. Its session cwd commonly remains at the aggregate workspace root, which is not a repo.
     """
     guard = _load_hook("pretool_policy_edit")
-    from lib.context import session as session_lock
+    from domain.context import session as session_lock
     R = "/tmp/dlut_patch_owner"
     repo = f"{R}/repo"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(repo, exist_ok=True)
@@ -256,7 +256,7 @@ def test_codex_exec_envelope_runs_edit_and_command_guards():
     """
     import json
     guard = _load_hook("pretool_policy_edit")
-    from lib.context import session as session_lock
+    from domain.context import session as session_lock
     R = "/tmp/dlut_exec_owner"
     repo = f"{R}/repo"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(repo, exist_ok=True)
@@ -280,8 +280,8 @@ def test_codex_exec_envelope_runs_edit_and_command_guards():
 
     # PostToolUse sees the same envelope and refreshes the repo/session binding after the edit.
     post = _load_hook("posttool_codex_refresh")
-    from lib.context import load_active_repo
-    from lib import workspace
+    from domain.context import load_active_repo
+    from domain import workspace
     previous = workspace.load_workspaces()
     try:
         workspace.register_workspace(R)
@@ -295,7 +295,7 @@ def test_branch_merged_guard_uses_file_path():
     cwd-based 查找为 None,guard 此前静默失效。Also exercises the gate's SHA validation: the
     merged PR's source sha is reachable from the LIVE HEAD, so it's genuinely this branch's PR."""
     from lib import git_state
-    from lib.context import RepoContext, prstate
+    from domain.context import RepoContext, prstate
     guard = _load_hook("pretool_policy_edit")
     R = "/tmp/dlut_bmg"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/repo", exist_ok=True)
@@ -317,7 +317,7 @@ def test_gate_uses_live_branch_after_unobserved_checkout():
     path stays fooled; gate.evaluate reads the LIVE branch so it does NOT falsely block the new
     branch's edits."""
     from lib import git_state
-    from lib.context import RepoContext, gate, prstate
+    from domain.context import RepoContext, gate, prstate
     guard = _load_hook("pretool_policy_edit")
     R = "/tmp/dlut_incident"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
@@ -344,7 +344,7 @@ def test_gate_protect_uses_live_branch():
     """Protect-guard fail-open regression: branch.json cached says a feature branch, but HEAD is
     LIVE on a protected branch (unobserved checkout). The guard must still refuse commit/push —
     a stale cache must never let a push to a protected branch slip through."""
-    from lib.context import RepoContext, base, store
+    from domain.context import RepoContext, base, store
     guard = _load_hook("pretool_policy_bash")
     R = "/tmp/dlut_protect_live"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
@@ -365,7 +365,7 @@ def test_gate_protect_uses_live_branch():
 def test_protect_branch_push_exemptions():
     """保护分支 push 的两类豁免：tag-only push（发版打 tag）与空仓首推（远端零分支，
     无历史可保护）放行；分支 push、证明不了是 tag 的 bare name、远端删除仍拦（fail-closed）。"""
-    from lib.context import RepoContext
+    from domain.context import RepoContext
     guard = _load_hook("pretool_policy_bash")
     R = "/tmp/dlut_tagpush"; B = "/tmp/dlut_tagpush_remote"
     for d in (R, B):
@@ -405,7 +405,7 @@ def test_gate_branch_name_reuse_not_falsely_inactive():
     unreachable sha must NOT be marked inactive — the merged PR is not this HEAD's PR. A
     name-only join (the old load path) would wrongly block here."""
     from lib import git_state
-    from lib.context import RepoContext, gate, prstate
+    from domain.context import RepoContext, gate, prstate
     R = "/tmp/dlut_reuse"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -418,23 +418,45 @@ def test_gate_branch_name_reuse_not_falsely_inactive():
                            "prs": [{"number": 1, "state": "merged", "source_branch": "feat/x", "sha": sha1}]})
     assert gate.evaluate(R).inactive() is False         # sha1 not an ancestor of HEAD → not ours
 
+def test_source_tree_reflects_dependency_direction():
+    """domain 拥有业务规则、lib 提供技术能力；二者都不得反向依赖入口 adapter。"""
+    root = HOOKS.parent
+    domain = root / "domain"
+    shared = root / "lib"
+    assert (domain / "repo.py").is_file() and (domain / "workspace.py").is_file()
+    assert (domain / "forge.py").is_file() and not (shared / "forge" / "base.py").exists()
+    assert (domain / "context").is_dir() and (domain / "lifecycle").is_dir()
+    for misplaced in ("repo.py", "repo_layout.py", "workspace.py", "worktree.py", "context", "lifecycle"):
+        assert not (shared / misplaced).exists(), f"domain owner must not regrow in lib: {misplaced}"
+    assert not list((HOOKS / "lib").glob("*.py")), "hook-only code must not regrow hooks/lib"
+    for layer in (domain, shared):
+        for path in layer.rglob("*.py"):
+            source = path.read_text()
+            assert "from hooks" not in source and "import hooks" not in source, (
+                f"{layer.name} must not depend on hook adapters: {path.relative_to(layer)}"
+            )
+            assert "from scripts" not in source and "import scripts" not in source, (
+                f"{layer.name} must not depend on script adapters: {path.relative_to(layer)}"
+            )
+
+
 def test_gates_use_gate_seam_not_cached_identity():
-    """CI invariant: the hard gates resolve branch facts through lib.context.gate (LIVE), never
+    """CI invariant: the hard gates resolve branch facts through domain.context.gate (LIVE), never
     the cached RepoContext identity. Prevents a future guard from silently regressing to the
     stale-cache fail-open / false-block the gate seam exists to kill."""
-    for rel in ("lib/rules/command/protect_branch.py", "lib/rules/edit/branch_merged.py"):
+    for rel in ("rules/command/protect_branch.py", "rules/edit/branch_merged.py"):
         src = (HOOKS / rel).read_text()
         assert "gate.evaluate" in src, f"{rel} must read gate truth"
         for forbidden in ("branch_pr_inactive", ".branch.current", ".branch.local"):
             assert forbidden not in src, f"{rel} must not read cached branch identity ({forbidden})"
-    sgo = (SCRIPTS / "smart_git_ops.py").read_text()
+    sgo = (SCRIPTS / "commit_flow.py").read_text()
     assert "def prepare_branch(intent: GitIntent, gv: gate.GateView" in sgo
     assert "ctx.branch_pr_inactive" not in sgo
 
 def test_fork_from_sticky_across_refresh():
     """fork_from is git-unrecorded → set at cut, PRESERVED across a refresh while the branch is
     unchanged, DROPPED on a switch (the old branch's fork point doesn't apply to the new one)."""
-    from lib.context import RepoContext
+    from domain.context import RepoContext
     R = "/tmp/dlut_fork"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -453,7 +475,7 @@ def test_remote_branches_segment_is_monitor_owned():
     """remote_branches.json is the monitor's: load merges it into the topology (with its
     fetched_at provenance), and a refresh (refresh-owned branch.json) does NOT clobber it —
     the owner-disjoint segment property that makes lost updates structurally impossible."""
-    from lib.context import RepoContext, prstate
+    from domain.context import RepoContext, prstate
     R = "/tmp/dlut_remotes"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -469,7 +491,7 @@ def test_remote_branches_segment_is_monitor_owned():
 def test_remote_baseline_includes_target_and_fork_from():
     """Remote-tip polling tracks the repo's actual baseline (target + fork_from), not just the
     conventional trunks — so a develop/staging baseline gets a 'trunk moved' signal (Codex P2)."""
-    from lib.context import base, store, prstate
+    from domain.context import base, store, prstate
     R = "/tmp/dlut_baseline"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(f"{R}/.devloop")
     store.save_segment(R, "meta", {"repo": {"default_branch": "staging"}})   # target is now meta.default_branch

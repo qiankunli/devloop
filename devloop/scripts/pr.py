@@ -24,16 +24,12 @@ import sys
 from pathlib import Path
 
 _SCRIPTS = Path(__file__).resolve().parent
-sys.path.insert(0, str(_SCRIPTS.parent / "hooks"))
+sys.path.insert(0, str(_SCRIPTS.parent))
 
-from lib import cli, review_feedback  # noqa: E402
-from lib.forge import (  # noqa: E402
-    ForgeError,
-    MergeReadiness,
-    forge_for_repo,
-    parse_pr_number,
-    pr_label,
-)
+from domain import review_feedback  # noqa: E402
+from domain.forge import ForgeError, MergeReadiness, parse_pr_number, pr_label  # noqa: E402
+from lib import cli  # noqa: E402
+from lib.forge import forge_for_repo  # noqa: E402
 
 _READINESS_LABEL = {
     MergeReadiness.READY: "✓ ready",

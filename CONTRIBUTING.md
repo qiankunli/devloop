@@ -10,8 +10,9 @@
 ├── .codex-plugin/plugin.json      # Codex 占位 (内容写最小可解析 JSON + _status 字段)
 ├── skills/                        # 可选：SKILL.md 子目录
 ├── commands/                      # 可选：slash 命令
+├── domain/                        # 可选：领域模型、状态变化与生命周期规则
+├── lib/                           # 可选：CLI-agnostic 技术能力与外部适配
 ├── hooks/                         # 可选：hook 脚本 + hooks.json
-│   └── lib/                       # CLI-agnostic 纯逻辑模块（推荐）
 ├── scripts/                       # 可选：shell/python 工具脚本
 ├── config/                        # 可选：plugin 默认配置
 ├── README.md                      # 必需：用户文档
@@ -28,7 +29,8 @@
 
 ## 跨 CLI 友好
 
-- **共享纯逻辑放 `hooks/lib/`**：CLI-agnostic，将来给 Codex 写 hook 时直接 import
+- **领域模型与状态变化放 `domain/`**：归属看事实/生命周期的 owner；被 hooks/scripts 复用是结果，不是唯一判据
+- **技术能力放 `lib/`**：Git、外部 API、配置、解析等实现 seam 不与领域对象混放；不要另建语义模糊的 `common/`
 - **manifest 各自一份**：`.claude-plugin/plugin.json` / `.codex-plugin/plugin.json` 等
 - **skills / commands 两个 CLI 兼容**：SKILL.md 格式两边都用；commands frontmatter 各 CLI 略有差异，按需调整
 
@@ -43,5 +45,5 @@
 
 - Hook 脚本放 `<plugin>/hooks/`，命名按事件类型前缀：`pretool_*` / `posttool_*` / `stop_*` / `userprompt_*`
 - Hook 注册在 `<plugin>/hooks/hooks.json`
-- 业务逻辑下沉到 `hooks/lib/` 模块，hook 脚本只做"输入解析 + 调 lib + 输出序列化"三步
+- hooks/scripts 作为驱动 adapter 调用 `domain/` 与 `lib/`；两层都不反向依赖入口，hook 专属协议/policy 留 `hooks/`，工作流编排留 `scripts/`
 - 失败兜底：hook 报错时 `sys.exit(0)` 输出空 JSON，**不要阻塞用户**

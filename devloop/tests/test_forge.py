@@ -11,9 +11,9 @@ import subprocess
 import sys
 
 from _testkit import _FakeForge, _git, _load_script, run_main  # noqa: E402  (bootstrap first)
-from lib.context import Cadence, PullRequest  # noqa: E402
+from domain.context import Cadence, PullRequest  # noqa: E402
 from lib.forge import detect_provider, parse_origin  # noqa: E402
-from lib.forge.base import build_window, parse_pr_number, pr_label  # noqa: E402
+from domain.forge import build_window, parse_pr_number, pr_label  # noqa: E402
 from lib.forge.github import GitHubForge  # noqa: E402
 from lib.forge.gitlab import GitLabForge  # noqa: E402
 from lib.forge._rest import RestClient  # noqa: E402
@@ -108,7 +108,7 @@ def test_forge_merge_readiness_mapping():
     """GitLab detailed_merge_status → neutral MergeReadiness, with a has_conflicts fallback and
     UNKNOWN for the async 'checking' window (UNKNOWN must never collapse to READY/CONFLICT).
     GitHub inherits the safe UNKNOWN default since it's not implemented yet."""
-    from lib.forge.base import MergeReadiness
+    from domain.forge import MergeReadiness
     r = GitLabForge._readiness
     assert r({"detailed_merge_status": "mergeable"}) is MergeReadiness.READY
     assert r({"detailed_merge_status": "conflict"}) is MergeReadiness.CONFLICT
@@ -162,7 +162,7 @@ def test_pr_cli_findings_and_reply():
     """`pr findings` / `pr reply` 是打标闭环的读写两半:一条 provider-neutral 命令,让 skill
     不必分 GitHub/GitLab 各写一套 API 姿势。reply 用 findings 打印的 comment id 定位,线程
     在这里解析——调用方不碰 provider 的 threading 模型。"""
-    from lib.forge.base import Comment
+    from domain.forge import Comment
     prcli = _load_script("pr")
 
     class _F(_FakeForge):
@@ -200,7 +200,7 @@ def test_forge_release_endpoints():
     """create_release / latest_release hit the right endpoint with the provider's field names
     and map back to the neutral Release: github POST/GET releases (`target_commitish`/`body`,
     `/releases/latest` with 404→None), gitlab POST/GET releases (`ref`/`description`, list→first)."""
-    from lib.forge.base import ForgeNotFound
+    from domain.forge import ForgeNotFound
     from lib.forge.github import GitHubForge
     from lib.forge.gitlab import GitLabForge
 
@@ -287,7 +287,7 @@ def test_release_cli_dispatch():
 def test_reuse_or_create_pr_over_narrowed_port():
     """reuse_or_create_pr: reuse the branch's OPEN pr if present (via prs_for_branch),
     else create. Over the narrowed port + a fake forge — no HTTP; label is repo-level."""
-    sgo = _load_script("smart_git_ops")
+    sgo = _load_script("commit_flow")
     orig = sgo.forge_for_repo
     try:
         # reuse: an open PR exists for the branch
@@ -312,18 +312,18 @@ def test_refresh_pr_failopen():
     """prstate.refresh_pr (gcampr's authoritative live-PR preflight, via gate.evaluate
     live_refresh) is best-effort: a repo with no forge remote/token returns False rather than
     raising — and crucially it now PERSISTS its poll (the old refresh_pr_state discarded it)."""
-    from lib.context import prstate
+    from domain.context import prstate
     R = "/tmp/dlut_refresh"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q")
     assert prstate.refresh_pr(R) is False   # no forge → no-op, no exception, nothing written
 
 def test_pick_branch_pr():
-    """Relocated to lib.context.prstate (so the gate and the monitor share one picker). Open PR
+    """Relocated to domain.context.prstate (so the gate and the monitor share one picker). Open PR
     wins; else the most-recent finished PR whose source sha is an ancestor of HEAD — the
     SHA-ancestry check is git_state.is_ancestor (patched here)."""
     from lib import git_state
-    from lib.context import prstate
+    from domain.context import prstate
     P = lambda **kw: PullRequest(**kw)  # noqa: E731
     orig = git_state.is_ancestor
     try:
@@ -372,7 +372,7 @@ def test_forge_diff_comment_endpoint():
     """diff_comment() 发行锚点评论（原生 outdated 生命周期）：gitlab → positioned discussion
     （diff_refs memo，一轮 N 条只 GET 一次）；github → pulls/{n}/comments 带 head-sha commit_id
     （同样 memo）。端口默认实现 raise ForgeError——不支持的 adapter 让调用方回落汇总 note。"""
-    from lib.forge.base import Forge, ForgeError
+    from domain.forge import Forge, ForgeError
     from lib.forge.github import GitHubForge
     from lib.forge.gitlab import GitLabForge
 
@@ -484,7 +484,7 @@ def test_forge_reply_endpoint():
     """reply() 回到 target 所在线程：gitlab → discussions/{id}/notes；github → 根 review
     comment 的 /replies。不可成线程的 target（thread_id 为空）→ raise，由调用方决定是否回落，
     而不是静默发成一条游离评论。端口默认实现同样 raise。"""
-    from lib.forge.base import Comment, Forge, ForgeError
+    from domain.forge import Comment, Forge, ForgeError
     from lib.forge.github import GitHubForge
     from lib.forge.gitlab import GitLabForge
 
@@ -535,15 +535,15 @@ def test_repo_meta_default_branch_roundtrip():
     """default_branch + default_branch_at 经 asdict/from_dict 往返不丢(meta 段持久化路径)。"""
     from dataclasses import asdict
 
-    from lib.context.repo import RepoMeta
+    from domain.context.repo import RepoMeta
     m = RepoMeta(repo_dir="/r", default_branch="release", default_branch_at=123.0)
     m2 = RepoMeta.from_dict(asdict(m))
     assert m2.default_branch == "release" and m2.default_branch_at == 123.0
 
 def test_resolve_default_branch_ttl():
     """TTL 门控:新鲜缓存零网络(不碰 forge);过期才取 forge 的权威值并打新时间戳。"""
-    from lib.context import base as B
-    from lib.context import repo as R
+    from domain.context import base as B
+    from domain.context import repo as R
 
     calls = {"forge": 0}
 

@@ -40,6 +40,10 @@ protected 和 inactive 能干净地硬拦——在它们上面编辑没有任何
 
 **聚合工作区 + 多 session 是一等公民**——一个 workspace 根挂着多个独立 git 子项目（常以软链接聚合）。脚本一律**不信 shell 的 cwd**（按「显式 `--repo` → cwd 所在仓 → **本 session** 最近活跃仓」解析；本 session 没有绑定时宁可要求显式 `--repo`，也不猜别的 session 的活动），并用 *owner 锁* 防止两个并发 session 的改动混进同一个工作树。单仓库形态也完全支持——按用户级配置自动判定，无需手工切换。
 
+**PR/MR → Repo → CodeUnit 是领域主链**——devloop 窄义上管理 PR/MR 的创建、开发与验证；每条 PR/MR 基于一个 repo，repo 内再按受影响的 code unit 执行 lint/test。branch 是开发主轴，worktree 只是 branch 用于并发隔离的一种 checkout 形态：统一经 `/enter <repo> --worktree <tag>` 在 `<repo>/.worktrees/` 创建、复用、清理并准备依赖，直接 `git worktree add` 会被拦截，避免绕过生命周期约束。
+
+代码结构也遵循这条边界：`devloop/domain/` 持有 Workspace / Repo / CodeUnit、branch/PR 状态及合法变化，`devloop/lib/` 提供 Git/forge/ecosystem/notify/config 等技术能力；`devloop/hooks/` 和 `devloop/scripts/` 分别把工具事件与工作流动作驱动到领域层，让 LLM 对 workspace/repo 的修改经过可控入口。
+
 **native-first**——每个能力都坐在最原生的事件原语上，而不是绕路：
 
 | 能力 | 旧机制（绕路） | devloop 原生 |

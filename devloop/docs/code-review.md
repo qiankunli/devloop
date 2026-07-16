@@ -1,7 +1,7 @@
 # 提交期 code-review（异步、不阻塞、全自动）
 
 code-review 是 lifecycle 的 **signal hook**：触发但**不挡 commit**、**不阻塞主线程**——
-smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https://github.com/qiankunli/case-code-review)，
+commit_flow 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https://github.com/qiankunli/case-code-review)，
 可切 `ocr`，见 `review.tool` 配置），审 `origin/<target>..HEAD`（整条分支 vs target 的全量改动），结果写
 `.devloop/review.json`（→ 下一轮注入浮现，**通用交付**）。**机会性地**:relay 跑时若分支已有
 开放 MR,就**额外**把结果发一条评论到 MR 上（→ MR 攒出 review 历史，可跟踪对比）。承接
@@ -35,7 +35,7 @@ smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https:/
   两级都锚不上才进汇总。多这一级的理由是**可打标性**:只有锚点评论有线程、能被回复
   `ccr:label=`,汇总里的 finding 只是一行文本、没有可回复的对象,等于退出 ground truth 回收。
 - **打标闭环锚在 forge 上,不落本地**:finding comment 带 `ccr:fp=` 指纹,verdict 以
-  `ccr:label=` 回复落在同一线程,两者由 `lib/review_feedback.py` 从 `forge.comments()` join
+  `ccr:label=` 回复落在同一线程,两者由 `domain/review_feedback.py` 从 `forge.comments()` join
   回来。join 键跟着持久对象（comment body）走,所以换机器 / 换 worktree / 换 session 都接得上;
   本地存一份 fp→comment-id 表只会是这份数据的陈旧副本,丢了还会把 join 悄悄弄断。
   待打标数（`Review findings: N 条待打标`）由此派生,刻意不用 review.json 的 finding 数——
@@ -44,7 +44,7 @@ smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https:/
 - **signal hook,不挡 commit**:review 跑得久,且写码 AI 与 review AI 同源——结论仅供参考、
   **merge 必须人拍**。故不像 lint/test 那样 inline 挡。
 - **detach、不靠 agent 起后台**:dispatch(subprocess)不能起「跑完唤醒 session」的 harness 后台
-  任务（早期让 agent 读 `ARMED:` 行自己起,实测不可靠）。改由 smart_git_ops
+  任务（早期让 agent 读 `ARMED:` 行自己起,实测不可靠）。改由 commit_flow
   `Popen(start_new_session=True)` fire-and-forget 起;每相位的 relay 在它所裹的 git 动作后起
   （pre/post_commit 在 commit 后、pre/post_mr 在 publish 后）。
 
@@ -52,7 +52,7 @@ smart_git_ops 自动 detach 起后台 **review 引擎**（默认 [`ccr`](https:/
 
 ```
 gcampr → … → commit → publish（建/复用 MR）→ post_mr relay
-   → smart_git_ops detach 起 run_review（PLAN 出 `review: launched in background`）
+   → commit_flow detach 起 run_review（PLAN 出 `review: launched in background`）
 run_review（后台、独立进程）：**启动即冻结 (branch, sha)**（见下）→ 先写 status=running
    → 自动拼 --background（业务上下文）：本次提交说明（git log）+ MR 标题/描述（forge）
    → <engine> review --from origin/<target> --to <冻结的 sha> --background <ctx> --format json   # engine=ccr(默认)/ocr
@@ -74,10 +74,10 @@ agent：pr findings <n> --pending → 逐条对照真实 diff 求证 → pr repl
 （`_BG_CAP`），因为它每文件都注、要控 token。AGENTS.md / 受影响 spec 等更多上下文是后续增量
 （往同一个 background 里加）。
 
-关键对象（锚点）：`lib/lifecycle/review.py`（`review` handler，返回 relay）、`smart_git_ops`
+关键对象（锚点）：`domain/lifecycle/review.py`（`review` handler，返回 relay）、`commit_flow`
 （`launch_background_relays`，各相位 git 动作后 detach 起）、`scripts/run_review.py`（后台执行体：
 审全量 diff + 机会性发评论，经 `lib/review_engine.py` 协议调引擎）、`lib/review_engine.py`（**review
-tool 协议** `ReviewEngine` + `ReviewResult` + ocr/ccr adapter）、`lib/review_feedback.py`（fp↔label
+tool 协议** `ReviewEngine` + `ReviewResult` + ocr/ccr adapter）、`domain/review_feedback.py`（fp↔label
 join，纯函数、无 HTTP）、`scripts/pr.py`（`pr findings` / `pr reply`：打标闭环的读写两半）、
 `forge.comment`（写评论原语，gitlab notes / github issue comment）、
 `.devloop/review.json`（结果段）、`context/repo.py` 的 `Review:` 注入行（pull）。

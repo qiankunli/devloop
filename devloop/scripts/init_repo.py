@@ -9,10 +9,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import repo_layout  # noqa: E402
-from lib.context import RepoContext  # noqa: E402
+from domain import repo_layout  # noqa: E402
+from domain.context import RepoContext  # noqa: E402
 
 
 def main() -> int:

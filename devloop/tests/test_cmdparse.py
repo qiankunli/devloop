@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from _testkit import _git, _load_hook, run_main  # noqa: E402  (bootstrap first)
-from lib.cmdtree import cmdparse  # noqa: E402
+from hooks.cmdtree import cmdparse  # noqa: E402
 
 
 def test_cmdparse_git_invocations():
@@ -39,8 +39,8 @@ def test_cmdparse_git_invocations():
 def test_protect_branch_checks_dash_c_target():
     """Codex #4: protect guard must judge the `-C` target repo, not the caller's cwd."""
     pb = _load_hook("pretool_policy_bash")
-    from lib import hook_io
-    from lib.context import RepoContext
+    from hooks import hook_io
+    from domain.context import RepoContext
     R = "/tmp/dlut_prot"
     shutil.rmtree(R, ignore_errors=True); os.makedirs(R)
     _git(R, "init", "-q"); _git(R, "config", "user.email", "t@t.t"); _git(R, "config", "user.name", "t")
@@ -156,7 +156,7 @@ def test_cmdparse_glued_operators():
     """运算符紧贴词尾时也要断句:shlex.split 会把 `jsonpath='...';` 的 `;` 吞进
     token,于是断不开句——cd 落到段中而非段头,workspace guard 的 cd 豁免
     失效,kubectl+cd+uv 串被误拦。punctuation_chars 化后修复。"""
-    from lib.cmdtree import cmdparse
+    from hooks.cmdtree import cmdparse
     cmd = ("kubectl -o jsonpath='{range .items[*]}{\"\\n\"}{end}'; "
            "cd /tmp/sub && uv run x.py")
     assert [s[0] for s in cmdparse.commands(cmd)] == ["kubectl", "cd", "uv"]
@@ -167,7 +167,7 @@ def test_cmdparse_glued_operators():
 def test_cmdparse_subshell_scope():
     """AST 解析(Parable)拿到扁平模型拿不到的结构:子 shell 的 `(` 不再掩盖命令词,
     子 shell 的 cd 不外泄,命令替换里的 git 也被看见。"""
-    from lib.cmdtree import cmdparse
+    from hooks.cmdtree import cmdparse
     # `(` 不再掩码命令词:workspace guard 能同时看到 cd 与 uv(原误拦的 case)
     assert [s[0] for s in cmdparse.commands("(cd repo && uv run pytest)")] == ["cd", "uv"]
     # cd 在子 shell 内对同 shell 的命令生效……
@@ -184,8 +184,8 @@ def test_cmdparse_subshell_scope():
 def test_cmdtree_parser_protocol():
     """解析后端符合 cmdtree.base.Parser 接口(具名 Protocol)——这正是"可随时替换"的契约:
     换 parser 只要再写一个暴露 `parser`(带 `parse(str)->Node`)的后端模块。"""
-    from lib.cmdtree import base
-    from lib.cmdtree import parable as parable_backend
+    from hooks.cmdtree import base
+    from hooks.cmdtree import parable as parable_backend
     assert isinstance(parable_backend.parser, base.Parser)        # runtime_checkable
     assert isinstance(parable_backend.parser.parse("git push"), base.Seq)
 

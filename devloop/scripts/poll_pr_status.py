@@ -4,7 +4,7 @@
 
 Declared in monitors/monitors.json; Claude Code runs it as a per-session background process.
 Each tick it sweeps every repo in scope (all workspace subprojects in Mode A) and writes the
-two monitor-owned segments via `lib.context.prstate` (the single writer of both):
+two monitor-owned segments via `domain.context.prstate` (the single writer of both):
 - `pr.json` — the recent PR/MR window + the current branch's number (SHA-ancestry validated).
 - `remote_branches.json` — the server's trunk tips, the read-freshness baseline. We poll these
   because a colleague's push moves trunk under you — an unobservable channel the local refresh
@@ -16,7 +16,7 @@ Persist-only by design: it does NOT notify / wake the session. Waking on a PR ch
 notify port's job — the forge `Source` (`lib/notify/sources/forge.py`, watches pr.json) driven by
 either transport via `scripts/notify.py` — see docs/event-driven-resume.md.
 
-The poll/selection logic lives in `lib.context.prstate` so gcampr and the gate can trigger the
+The poll/selection logic lives in `domain.context.prstate` so gcampr and the gate can trigger the
 same authoritative refresh without importing this script.
 
 Usage:
@@ -30,12 +30,12 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "hooks"))
+sys.path.insert(0, str(HERE.parent))
 
-from lib import repo_layout, workspace  # noqa: E402
-from lib.context import WorkspaceContext, prstate  # noqa: E402
-from lib.context.loopstate import requirement  # noqa: E402
-from lib.context.base import PR_POLL_INTERVAL_SEC  # noqa: E402
+from domain import repo_layout, workspace  # noqa: E402
+from domain.context import WorkspaceContext, prstate  # noqa: E402
+from domain.context.loopstate import requirement  # noqa: E402
+from domain.context.base import PR_POLL_INTERVAL_SEC  # noqa: E402
 
 
 def sweep_repo(repo: str) -> None:

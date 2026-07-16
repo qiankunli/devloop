@@ -28,10 +28,11 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "hooks"))
+sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))  # reuse the monitor's repo resolution
 
-from lib import config, repo_layout  # noqa: E402
+from domain import repo_layout  # noqa: E402
+from lib import config  # noqa: E402
 from lib.notify.sources import SOURCES  # noqa: E402
 from poll_pr_status import repos_to_poll  # noqa: E402  (reuse, no second poll)
 

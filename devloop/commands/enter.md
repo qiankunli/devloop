@@ -12,7 +12,7 @@ context and surfaces AGENTS.md References right after the cd — so this command
 1. Run the resolver:
 
    ```
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/resolve_subproject.py" $ARGUMENTS
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/enter.py" $ARGUMENTS
    ```
 
    First line of stdout:
