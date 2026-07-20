@@ -2,7 +2,7 @@
 
 # devloop
 
-**A controlled PR/MR development lifecycle for AI coding agents.** This repository is a cross-CLI plugin marketplace. Its flagship plugin, `devloop`, guides Claude Code and Codex through repo entry, branch development, affected-component validation, commit/push, and PR/MR creation while keeping merge in human hands. It supports both **GitHub (PR)** and **GitLab (MR)**, selected from each repo's origin; `example` remains a placeholder for the marketplace's multi-plugin structure.
+**A controlled PR/MR development lifecycle for AI coding agents.** This repository is a cross-CLI plugin marketplace. Its flagship plugin, `devloop`, guides Claude Code and Codex through repo entry, branch development, affected-component validation, commit/push, PR/MR creation, and resumable conflict rebases with an exact-SHA `force-with-lease`, while keeping merge in human hands. It supports both **GitHub (PR)** and **GitLab (MR)**, selected from each repo's origin; `example` remains a placeholder for the marketplace's multi-plugin structure.
 
 > Claude Code and Codex are supported. Design / architecture: [AGENTS.md](./AGENTS.md). Each plugin's own docs live in its directory.
 
@@ -142,7 +142,7 @@ opencode remains placeholder-only until its plugin/hook protocol is wired.
 
 | Plugin | What it is | README |
 |--------|-----------|--------|
-| `devloop` | Controlled PR/MR lifecycle for AI coding: repo/branch entry, affected-component validation, commit/push/PR, live state, and execution-level guardrails (Claude + Codex; GitHub + GitLab) | [devloop/README.md](./devloop/README.md) |
+| `devloop` | Controlled PR/MR lifecycle for AI coding: repo/branch entry, affected-component validation, commit/push/PR, safe conflict rebase, live state, and execution-level guardrails (Claude + Codex; GitHub + GitLab) | [devloop/README.md](./devloop/README.md) |
 | `example` | Placeholder demonstrating the multi-plugin marketplace structure | [example/README.md](./example/README.md) |
 
 ## Adding a plugin
