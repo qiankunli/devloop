@@ -23,10 +23,11 @@ Paths use `<PLUGIN_ROOT>` → `${CLAUDE_PLUGIN_ROOT}` on Claude Code; `${PLUGIN_
 | commit + push + PR/MR | `bash <PLUGIN_ROOT>/scripts/smart_gcampr.sh --message "<msg>" [...]` |
 
 **Message**: one-line / simple → inline single-quoted (`--message 'fix: …'`). Multi-line, or
-containing quotes / `$` / backticks → write it with the **Write tool** to
-`<repo>/.devloop/tmp/commit_msg` (gitignored scratch) and pass `--message-file <path>` (alias `-F`;
-`-F -` reads stdin) — no shell escaping, mirroring `git commit -F` / `gh --body-file`. `--title`
-defaults to the message's first line.
+containing quotes / `$` / backticks → use the **Write tool** to fully overwrite canonical
+`<repo>/.devloop/commit_msg` (gitignored one-shot scratch), without reading/editing/patching its
+previous contents, and pass `--message-file <path>` (alias `-F`; `-F -` reads stdin). The script
+removes this canonical file on success and retains it on failure for retry. This avoids shell
+escaping, mirroring `git commit -F` / `gh --body-file`; `--title` defaults to the first line.
 
 Shared flags: `--repo <name|path>` (target repo; no `cd` prefix needed — default is
 cwd's repo, falling back to the workspace's last-active repo), `--branch <name>`
