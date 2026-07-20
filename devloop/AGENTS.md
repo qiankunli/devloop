@@ -47,7 +47,8 @@ devloop/
 │   ├── lifecycle/                 #   ★pre/post commit/MR dispatch + lint/test/review handlers
 │   ├── forge.py                   #   ★PullRequest/Comment/Release 中立模型 + Forge port
 │   ├── review_feedback.py         #   review finding/label 的领域 join
-│   └── worktree.py                #   branch 隔离 checkout 的创建/复用、依赖准备与清理
+│   ├── worktree.py                #   branch 隔离 checkout 的创建/复用、依赖准备与清理
+│   └── rebase.py                  #   已有 MR 分支的可恢复 rebase + 精确 SHA lease 发布
 ├── lib/                            # 技术能力：被 domain/hooks/scripts 消费
 │   ├── gitcmd.py  git_state.py    #   ★统一 git runner 与 git/branch/worktree 事实
 │   ├── forge/                     #   ★GitHub/GitLab 平级 adapter + HTTP/按 repo 分发

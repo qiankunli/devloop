@@ -1,6 +1,6 @@
 ---
 name: git-ops
-description: Commit, push, create/read/update/close a pull/merge request (GitHub PR or GitLab MR), cut a feature branch, or view recent PRs in the current repo. Triggers — gcam / gcamp / gcampr / 提 PR / 提 MR / pull request / merge request / 看 PR / 看 MR / 关 PR / 关 MR / 切新分支 / 起新分支 / 发版.
+description: Commit, push, safely rebase an existing branch, create/read/update/close a pull/merge request (GitHub PR or GitLab MR), cut a feature branch, or view recent PRs in the current repo. Triggers — gcam / gcamp / gcampr / rebase / 解决冲突 / 提 PR / 提 MR / pull request / merge request / 看 PR / 看 MR / 关 PR / 关 MR / 切新分支 / 起新分支 / 发版.
 ---
 
 The umbrella for devloop's git + code-review workflow. All git goes through one runner
@@ -38,6 +38,30 @@ staging, auto-rebased onto the repo root; else tracked modifications — never
 **INACTIVE / merged-or-closed** branch is computed from a live, authoritative forge poll and
 quotes the MR's number / state / sha — so it's ground truth even right after you created the MR
 (a colleague can merge it in seconds); add `--branch` and re-run.
+
+## Rebase an existing PR/MR branch
+
+Rebase is its own resumable transaction — do **not** route it through gcamp/gcampr and do not
+issue a raw force push. `start` captures the exact current remote source SHA *before* rewriting
+history; `finish` uses that saved SHA in an explicit `--force-with-lease`, so a colleague's
+intervening push fails closed instead of being overwritten.
+
+```
+bash <PLUGIN_ROOT>/scripts/smart_rebase.sh start    --repo <name|path> [--target <branch>]
+# resolve conflicts and git add the resolved files
+bash <PLUGIN_ROOT>/scripts/smart_rebase.sh continue --repo <name|path>  # repeat if needed
+# run the relevant tests before publishing
+bash <PLUGIN_ROOT>/scripts/smart_rebase.sh finish   --repo <name|path>
+```
+
+`--target` defaults to the open PR/MR's target, then the repo trunk. `start` and `continue`
+treat conflicts as an expected paused state and print the next action. `finish` publishes the
+already-rewritten commits, so it intentionally takes **no `--message`**. Its atomic push uses
+`--force-with-lease=refs/heads/<branch>:<saved-old-sha>`.
+
+Recovery/inspection: `smart_rebase.sh status --repo …`; while Git is still rebasing,
+`smart_rebase.sh abort --repo …` runs `git rebase --abort` and clears the saved lease. After a
+rebase has completed, abort refuses rather than guessing at a destructive reset target.
 
 ### `--requirement` — 需求 scope（loop-state）
 
