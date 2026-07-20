@@ -86,14 +86,19 @@ def state_dir(root: str | Path) -> Path:
 
 def worktree_state_dir(root: str | Path) -> Path:
     """Working-tree-domain state dir: THIS working tree's own `.devloop` (no resolution).
-    For state scoped to one working tree — today the owner lock."""
+    For state scoped to one working tree — the owner lock and one-shot commit input."""
     return Path(root) / STATE_DIRNAME
+
+
+def commit_message_file(root: str | Path) -> Path:
+    """One-shot commit input owned by THIS working tree, never the main checkout."""
+    return worktree_state_dir(root) / "commit_msg"
 
 
 def tmp_dir(root: str | Path) -> Path:
     """Ephemera under the repo-domain dir (`.devloop/tmp/`): inter-process hand-offs and logs
-    (commit_msg scratch, review.log, the ccr history feed). The line vs ledgers: mining /
-    audit reads ledgers long-term; tmp is consumed once and safe to delete any time."""
+    (review.log and the ccr history feed). The line vs ledgers: mining / audit reads ledgers
+    long-term; tmp is consumed once and safe to delete any time."""
     return state_dir(root) / "tmp"
 
 

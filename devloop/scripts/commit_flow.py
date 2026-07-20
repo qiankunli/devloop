@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from domain import lifecycle, repo as repo_model  # noqa: E402
-from domain.context import RepoContext, gate, prstate, record_active_repo
+from domain.context import RepoContext, gate, prstate, record_active_repo, store
 from domain.context.loopstate import requirement  # noqa: E402
 from domain.forge import Forge, ForgeError, PullRequest, pr_label  # noqa: E402
 from lib import cli, git_state, gitcmd  # noqa: E402
@@ -539,6 +539,37 @@ def _resolve_message(ns: argparse.Namespace, ap: argparse.ArgumentParser) -> str
     ap.error("a commit message is required: pass --message '<msg>' or --message-file <path>")
 
 
+def _cleanup_commit_message_file(message_file: str | None, intent: GitIntent, plan: list[str]) -> None:
+    """Remove only devloop's canonical one-shot message file after a successful flow.
+
+    Other ``--message-file`` inputs belong to the caller and must never be consumed. The
+    canonical scratch is kept on every failure path so the same message remains available
+    for a retry; cleanup itself is best-effort and cannot turn a successful Git operation
+    into a failure.
+    """
+    if not message_file or message_file == "-":
+        return
+    supplied = Path(message_file).expanduser()
+    if not supplied.is_absolute():
+        supplied = Path(intent.invoke_cwd) / supplied
+    canonical = store.commit_message_file(intent.repo)
+    try:
+        same_file = supplied.resolve() == canonical.resolve()
+    except (OSError, RuntimeError) as e:
+        plan.append(f"commit message scratch retained (path check failed, non-fatal): {e}")
+        return
+    if not same_file:
+        return
+    try:
+        canonical.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        plan.append(f"commit message scratch retained (cleanup failed, non-fatal): {e}")
+    else:
+        plan.append("removed one-shot .devloop/commit_msg")
+
+
 def _build_parser() -> cli.ArgParser:
     """The arg schema — extracted so tests exercise the SAME parser main() runs (no drift).
     `--message` (inline) and `--message-file` are alternatives; exactly one is required, enforced
@@ -638,7 +669,6 @@ def launch_background_relays(specs: list[lifecycle.BackgroundSpec], repo: str, p
     """
     if not specs:
         return
-    from domain.context import store
     logp = store.tmp_dir(repo) / "review.log"
     logp.parent.mkdir(parents=True, exist_ok=True)
     for spec in specs:
@@ -698,6 +728,7 @@ def main(argv: list[str]) -> int:
         print(f"\n✗ {e}", file=sys.stderr)
         return 1
 
+    _cleanup_commit_message_file(ns.message_file, intent, plan)
     _banner(plan)
     return 0
 

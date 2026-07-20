@@ -203,6 +203,72 @@ def test_message_file_and_stdin_input():
     finally:
         sys.stdin = old
 
+def test_only_canonical_commit_message_is_cleaned_after_success():
+    """Only the selected worktree's canonical scratch is consumed; other files are not."""
+    sgo = _load_script("commit_flow")
+    root = Path("/tmp/dlut_commit_msg_cleanup")
+    shutil.rmtree(root, ignore_errors=True)
+    worktree = root / "worktree"
+    main_checkout = root / "main"
+    os.makedirs(worktree / ".devloop")
+    os.makedirs(main_checkout / ".devloop")
+    canonical = worktree / ".devloop/commit_msg"
+    main_scratch = main_checkout / ".devloop/commit_msg"
+    caller_owned = worktree / "message.txt"
+    canonical.write_text("fix: canonical\n", encoding="utf-8")
+    main_scratch.write_text("fix: main checkout\n", encoding="utf-8")
+    caller_owned.write_text("fix: caller-owned\n", encoding="utf-8")
+    intent = sgo.GitIntent(
+        mode="commit", message="fix: canonical", title="fix: canonical",
+        requested_branch=None, target="main", base="origin/main", explicit_base=False,
+        files=[], repo=str(worktree), source="test", invoke_cwd=str(worktree),
+    )
+
+    plan: list[str] = []
+    sgo._cleanup_commit_message_file(str(caller_owned), intent, plan)
+    sgo._cleanup_commit_message_file("-", intent, plan)
+    assert caller_owned.exists() and canonical.exists() and main_scratch.exists() and plan == []
+
+    sgo._cleanup_commit_message_file(".devloop/commit_msg", intent, plan)
+    assert not canonical.exists() and caller_owned.exists() and main_scratch.exists()
+    assert plan == ["removed one-shot .devloop/commit_msg"]
+
+def test_commit_flow_retains_scratch_on_failure_and_cleans_on_success():
+    """The lifecycle contract is wired around the whole flow, not just the cleanup helper."""
+    import contextlib
+    import io
+    sgo = _load_script("commit_flow")
+    R = "/tmp/dlut_commit_msg_lifecycle"
+    shutil.rmtree(R, ignore_errors=True)
+    os.makedirs(R)
+    _git(R, "init", "-q", "-b", "main")
+    _git(R, "config", "user.email", "t@t.t")
+    _git(R, "config", "user.name", "t")
+    Path(f"{R}/f").write_text("one\n")
+    _git(R, "add", "f")
+    _git(R, "commit", "-qm", "init")
+    _git(R, "checkout", "-q", "-b", "feat/a")
+    Path(f"{R}/f").write_text("two\n")
+    scratch = Path(f"{R}/.devloop/commit_msg")
+    scratch.parent.mkdir()
+    scratch.write_text("fix: preserve retry input\n\nExplain why.\n", encoding="utf-8")
+
+    original_prepare = sgo.prepare_branch
+    try:
+        def fail_prepare(*_args, **_kwargs):
+            raise sgo.SmartError("forced failure")
+        sgo.prepare_branch = fail_prepare
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            assert sgo.main(["commit", "--message-file", str(scratch), "--repo", R]) == 1
+        assert scratch.exists()
+    finally:
+        sgo.prepare_branch = original_prepare
+
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        assert sgo.main(["commit", "--message-file", str(scratch), "--repo", R]) == 0
+    assert not scratch.exists()
+    assert _git_out(R, "log", "-1", "--format=%B") == "fix: preserve retry input\n\nExplain why."
+
 def test_inline_message_still_supported():
     """Back-compat: inline --message / -m is unchanged (just no longer the only option)."""
     sgo = _load_script("commit_flow")
