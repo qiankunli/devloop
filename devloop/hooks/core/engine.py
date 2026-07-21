@@ -15,7 +15,7 @@ from hooks.cmdtree import cmdparse
 from hooks.codemodel.analyze import enrich
 
 from .context import PolicyContext
-from .domain import Change, Command, Decision, FileChange, Finding, Severity, Target, TargetKind
+from .domain import Change, Command, Decision, FileChange, Finding, Severity, Target, TargetKind, WorkingDir
 from .protocol import FailurePolicy, Rule
 
 _FILE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch")
@@ -24,13 +24,14 @@ _EXEC_COMMAND_CALL = re.compile(
     r'tools\.exec_command\(\s*(\{(?:[^{}"]|"(?:\\.|[^"\\])*")*\})\s*\)',
     re.DOTALL,
 )
+_JS_OBJECT_KEY = re.compile(r'([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)')
 
 
 def project(inp) -> Change:
     """HookInput → Change。投影在工具层：Bash 的内部语义留给 Command-rule 下钻。"""
     if inp.is_tool("Bash"):
         return Change(
-            targets=_command_targets(inp.command, inp.cwd),
+            targets=_command_targets(inp.command, _bash_working_dir(inp)),
             cwd=inp.cwd,
             tool="Bash",
             command=inp.command,
@@ -57,19 +58,36 @@ def project(inp) -> Change:
     return Change(targets=[], cwd=inp.cwd, tool=inp.tool_name)
 
 
-def _command_targets(command: str, cwd: str) -> list[Target]:
-    base = Path(cwd or ".")
-    return [
-        Command(
+def _command_targets(command: str, base: WorkingDir) -> list[Target]:
+    def project(v) -> Command:
+        path = v.run_dir(base.path)
+        source = base.source if base.path is not None or path is None else "command cd/-C"
+        return Command(
             argv=list(v.argv),
-            run_dir=v.run_dir(base),
+            working_dir=WorkingDir(path=path, source=source),
+            env=list(v.env),
             cd=v.cd,
             subcommand=getattr(v, "subcommand", None),
             args=list(getattr(v, "args", []) or []),
             dash_c=getattr(v, "dash_c", None),
         )
+
+    return [
+        project(v)
         for v in cmdparse.command_invocations(command)
     ]
+
+
+def _bash_working_dir(inp) -> WorkingDir:
+    workdir = inp.tool_input.get("workdir")
+    if isinstance(workdir, str) and workdir.strip():
+        path = Path(workdir).expanduser()
+        if not path.is_absolute():
+            path = Path(inp.cwd or ".") / path
+        return WorkingDir(path=path, source="tool_input.workdir")
+    if inp.is_codex:
+        return WorkingDir(path=None, source="codex Bash without workdir")
+    return WorkingDir(path=Path(inp.cwd or "."), source="hook cwd")
 
 
 def _exec_targets(tool_input: dict, cwd: str) -> list[Target]:
@@ -77,8 +95,9 @@ def _exec_targets(tool_input: dict, cwd: str) -> list[Target]:
 
     Codex currently exposes the JavaScript cell as the hook's top-level tool call, so nested
     ``apply_patch`` / ``exec_command`` calls do not fire their own hooks. Generated
-    ``exec_command`` arguments are JSON object literals and generated patches are JSON string
-    literals; unrecognised JavaScript stays fail-open.
+    ``exec_command`` arguments use JSON-compatible JavaScript object literals (sometimes with
+    bare keys), and generated patches are JSON string literals; unrecognised JavaScript stays
+    fail-open.
     """
     source = tool_input.get("input") or tool_input.get("code") or ""
     if not isinstance(source, str):
@@ -87,13 +106,17 @@ def _exec_targets(tool_input: dict, cwd: str) -> list[Target]:
     targets: list[Target] = []
     for raw in _EXEC_COMMAND_CALL.findall(source):
         try:
-            payload = json.loads(raw)
+            payload = json.loads(_JS_OBJECT_KEY.sub(r'\1"\2"\3', raw))
         except (TypeError, ValueError):
             continue
         command = payload.get("cmd")
         if isinstance(command, str):
-            run_dir = payload.get("workdir") if isinstance(payload.get("workdir"), str) else cwd
-            targets.extend(_command_targets(command, run_dir))
+            workdir = payload.get("workdir")
+            path = Path(workdir).expanduser() if isinstance(workdir, str) and workdir.strip() else Path(cwd or ".")
+            if not path.is_absolute():
+                path = Path(cwd or ".") / path
+            source_name = "exec_command.workdir" if isinstance(workdir, str) and workdir.strip() else "exec cwd"
+            targets.extend(_command_targets(command, WorkingDir(path=path, source=source_name)))
 
     if "tools.apply_patch" in source:
         seen: set[str] = set()

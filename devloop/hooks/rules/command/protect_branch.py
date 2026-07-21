@@ -36,7 +36,10 @@ class ProtectBranchRule(Rule):
         return target.subcommand in ("commit", "push")
 
     def check(self, target: Command, ctx) -> list[Finding]:
-        git_root = repo_layout.find_git_root(target.run_dir)
+        run_dir = target.working_dir.path
+        if run_dir is None:
+            return []
+        git_root = repo_layout.find_git_root(run_dir)
         if not git_root:
             return []
         gv = gate.evaluate(git_root)

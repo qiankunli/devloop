@@ -13,7 +13,7 @@ from pathlib import Path
 
 from domain import repo_layout
 from lib import config
-from hooks.core.domain import FileChange, Target
+from hooks.core.domain import Command, FileChange, Target
 
 
 class PolicyContext:
@@ -43,6 +43,8 @@ class PolicyContext:
         """
         if isinstance(target, FileChange):
             return PolicyContext(self._cwd, anchor_path=target.path, session_id=self.session_id)
+        if isinstance(target, Command) and target.working_dir.path is not None:
+            return PolicyContext(str(target.working_dir.path), session_id=self.session_id)
         return self
 
     @property

@@ -394,6 +394,23 @@ def test_resolve_repo_dir_deduplicates_canonical_matches():
     finally:
         registry.load_workspaces = orig
 
+
+def test_is_workspace_root():
+    from domain import workspace as registry
+
+    root = "/tmp/dlut_workspace_root"
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(f"{root}/ws/sub")
+
+    original = registry.load_workspaces
+    registry.load_workspaces = lambda: [f"{root}/ws"]
+    try:
+        assert registry.is_workspace_root(f"{root}/ws")
+        assert not registry.is_workspace_root(f"{root}/ws/sub")
+        assert not registry.is_workspace_root(f"{root}/elsewhere")
+    finally:
+        registry.load_workspaces = original
+
 def test_component_multi_dir():
     """多代码目录仓（server/ + cli/）：component 由**操作目标路径**决定，不是 repo 单值属性。
     显式点名 cli 命中 cli；指向仓根 / 深层子目录归属到对应 component；仓根回落默认 component。"""

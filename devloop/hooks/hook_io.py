@@ -55,6 +55,11 @@ class HookInput:
         return self.raw.get("session_id", "") or ""
 
     @property
+    def is_codex(self) -> bool:
+        """Codex hook payloads expose `model`; Claude's shared payload subset does not."""
+        return "model" in self.raw
+
+    @property
     def file_path(self) -> str:
         """Edited file's path for Edit/Write/NotebookEdit ('' otherwise).
 

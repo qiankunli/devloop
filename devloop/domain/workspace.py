@@ -102,3 +102,9 @@ def find_containing_workspace(cwd: str | Path) -> str | None:
         except ValueError:
             continue
     return None
+
+
+def is_workspace_root(path: str | Path) -> bool:
+    """Whether `path` is exactly a registered aggregate-workspace root."""
+    resolved = Path(path).resolve()
+    return any(resolved == Path(_expand(w)).resolve() for w in load_workspaces())

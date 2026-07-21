@@ -34,10 +34,13 @@ def _candidate_roots_for_input(inp: hook_io.HookInput) -> list[str]:
     add(inp.cwd)
     for target in engine.project(inp).targets:
         if isinstance(target, Command):
-            add(target.run_dir)
+            run_dir = target.working_dir.path
+            if run_dir is None:
+                continue
+            add(run_dir)
             if target.base == "cd" and len(target.argv) >= 2 and not target.argv[1].startswith("-"):
                 path = Path(os.path.expanduser(os.path.expandvars(target.argv[1])))
-                add(path if path.is_absolute() else target.run_dir / path)
+                add(path if path.is_absolute() else run_dir / path)
         elif isinstance(target, FileChange):
             path = Path(target.path)
             file_path = path if path.is_absolute() else Path(inp.cwd) / path

@@ -89,14 +89,31 @@ class Target:
     """
 
 
+@dataclass(frozen=True)
+class WorkingDir:
+    """命令实际执行目录；路径缺失表示 runtime 未提供足够信息，位置不可判定。
+
+    `source` 只记录该事实来自哪个 adapter 字段或契约，供日志与兼容性排查；规则只应根据
+    `path` 是否存在决定能否做位置相关的硬判断。
+    """
+
+    path: Path | None
+    source: str = ""
+
+    @property
+    def is_exact(self) -> bool:
+        return self.path is not None
+
+
 @dataclass
 class Command(Target):
-    """从 cmdtree 投影出的一条 shell 命令（run 的对象）；`run_dir` 已对 cwd 解析完成。
+    """从 cmdtree 投影出的一条 shell 命令；`working_dir` 是解析 cd/-C 后的执行位置。
     它内部又裹着一层动作（subcommand=rm/push…），按需在 Command-rule 里下钻，不在顶层展开。"""
 
     kind = TargetKind.COMMAND
     argv: list[str]
-    run_dir: Path
+    working_dir: WorkingDir
+    env: list[str] = field(default_factory=list)
     cd: str | None = None
     # git 专属（非 git 命令为 None）
     subcommand: str | None = None

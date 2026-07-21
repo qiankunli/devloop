@@ -57,10 +57,12 @@ class Invocation:
     cd: str | None = None
     dash_c: str | None = None  # `-C <dir>` target (git/go/make)
 
-    def run_dir(self, base: str | Path) -> Path:
-        """Effective directory this invocation runs in (a normalized `Path`): the cd prefix
-        then any `-C` layered over `base` (relative composes, absolute resets). Guards judge
-        each call against THIS dir, not the session cwd."""
+    def run_dir(self, base: str | Path | None) -> Path | None:
+        """Effective directory for this invocation, or None when no absolute base is known.
+
+        An absolute cd/-C can recover an exact directory even when the tool-level base is
+        unknown; relative fragments stay unknown instead of being anchored to session cwd.
+        """
         return _layer(base, self.cd, self.dash_c)  # `-C` over (cd over base)
 
 
@@ -73,15 +75,18 @@ class GitInvocation(Invocation):
     args: list[str] = field(default_factory=list)
 
 
-def _layer(base: str | Path, *parts: str | None) -> Path:
+def _layer(base: str | Path | None, *parts: str | None) -> Path | None:
     """Layer path fragments over `base` (each relative part composes, each absolute resets),
     returning a normalized `Path` so callers needn't `..`-collapse it themselves."""
-    d = Path(base)
+    d = Path(base) if base is not None else None
     for part in parts:
         if part:
             p = Path(os.path.expanduser(os.path.expandvars(part)))
-            d = p if p.is_absolute() else d / p
-    return Path(os.path.normpath(d))
+            if p.is_absolute():
+                d = p
+            elif d is not None:
+                d = d / p
+    return Path(os.path.normpath(d)) if d is not None else None
 
 
 def _split_env(tokens: list[str]) -> tuple[list[str], list[str]]:
