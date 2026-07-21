@@ -17,7 +17,8 @@ class WorktreeAddRule(Rule):
         return target.subcommand == "worktree" and bool(target.args) and target.args[0] == "add"
 
     def check(self, target: Command, ctx) -> list[Finding]:
-        git_root = repo_layout.find_git_root(target.run_dir)
+        run_dir = target.working_dir.path
+        git_root = repo_layout.find_git_root(run_dir) if run_dir is not None else None
         worktrees = git_state.list_worktrees(git_root) if git_root else []
         primary = worktrees[0][0] if worktrees else git_root
         repo = Path(primary).name if primary else "<repo>"

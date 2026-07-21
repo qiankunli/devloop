@@ -31,7 +31,10 @@ class CheckoutOwnerGuardRule(Rule):
         sid = ctx.session_id
         if not sid:
             return []
-        git_root = repo_layout.find_git_root(target.run_dir)
+        run_dir = target.working_dir.path
+        if run_dir is None:
+            return []
+        git_root = repo_layout.find_git_root(run_dir)
         if not git_root:
             return []
         owner = session.foreign_owner(git_root, sid)

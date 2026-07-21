@@ -1,17 +1,12 @@
 """仓里有 `make test` 目标时拦裸 `pytest`（裸 pytest 常因缺 PYTHONPATH=. 收集 0 项）。
 
-CHANGE 级：判定要 **env-aware**（`PYTHONPATH=. pytest` 带 env 前缀 → 放行），而这个事实与
-「这条调用在哪跑」（cd scope）必须出自**同一次**解析——分开取就会拿得到 env 就拿不到 run_dir。
-`command_invocations` 两者都给（`inv.env` / `inv.run_dir(base)`），故直接用它。
+`Command` 同时携带 env 与 working_dir，避免为拿其中一个事实重新解析原始命令并丢掉另一个。
 """
 from __future__ import annotations
 
 import os
-from pathlib import Path
-
 from domain import repo_layout
-from hooks.cmdtree import cmdparse
-from hooks.core.domain import Change, Finding, Severity, TargetKind
+from hooks.core.domain import Command, Finding, Severity, TargetKind
 from hooks.core.protocol import Rule
 
 
@@ -31,37 +26,31 @@ def _is_pytest(argv: list[str]) -> bool:
 
 class PytestNakedRule(Rule):
     name = "pytest-naked"
-    target_kind = TargetKind.CHANGE
+    target_kind = TargetKind.COMMAND
 
-    def applies(self, change: Change, ctx) -> bool:
-        return bool(change.command)
+    def applies(self, target: Command, ctx) -> bool:
+        return not target.env and _is_pytest(target.argv)
 
-    def check(self, change: Change, ctx) -> list[Finding]:
-        git_root = repo_layout.find_git_root(change.cwd)
+    def check(self, target: Command, ctx) -> list[Finding]:
+        run_dir = target.working_dir.path
+        if run_dir is None:
+            return []
+        git_root = repo_layout.find_git_root(run_dir)
         if not git_root:
             return []
-        base = Path(change.cwd or ".")
-        for inv in cmdparse.command_invocations(change.command):
-            if inv.env or not _is_pytest(inv.argv):
-                continue      # 带 env 前缀（如 PYTHONPATH=.）→ 不算裸，放行
-            # 按这条调用**实际运行的目录**归属 component：`cd cli && pytest` 要查 cli/ 的 Makefile。
-            # 此前这里读的是 `change.cwd`——session 的原始 cwd、cd **之前**的位置，于是多代码目录仓里
-            # 不管 cd 到哪都去问默认 component（server/）：cli 有 make test 拦不住，server 有而 cli 没有则误拦。
-            # cd 早已被 parser 解析好，guard 不该回头用未解析的 cwd 重猜。
-            component = repo_layout.enclosing_component(inv.run_dir(base), git_root)
-            if not component.has_target("test", suffix=True):
-                continue
-            code_dir = component.path
-            return [
-                Finding(
-                    rule=self.name,
-                    severity=Severity.DENY,
-                    message=(
-                        "⚠️  Bare pytest often fails (PYTHONPATH=. missing → collected 0 items).\n"
-                        f"Use the Makefile target:  cd {code_dir} && make test\n"
-                        f"Single-case debug:  cd {code_dir} && PYTHONPATH=. .venv/bin/python -m pytest <path> -k <case>"
-                    ),
-                    locator=change.command,
-                )
-            ]
-        return []
+        component = repo_layout.enclosing_component(run_dir, git_root)
+        if not component.has_target("test", suffix=True):
+            return []
+        code_dir = component.path
+        return [
+            Finding(
+                rule=self.name,
+                severity=Severity.DENY,
+                message=(
+                    "⚠️  Bare pytest often fails (PYTHONPATH=. missing → collected 0 items).\n"
+                    f"Use the Makefile target:  cd {code_dir} && make test\n"
+                    f"Single-case debug:  cd {code_dir} && PYTHONPATH=. .venv/bin/python -m pytest <path> -k <case>"
+                ),
+                locator=" ".join(target.argv),
+            )
+        ]

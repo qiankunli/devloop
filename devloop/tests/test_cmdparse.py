@@ -217,6 +217,8 @@ def test_cmdparse_command_invocations():
     # go/make 自带的 `-C <dir>` 同 git -C：chdir 后再跑,run_dir 要据此落到真目录(否则在根上误拦)
     assert ci("go -C /repo build ./...")[0].dash_c == "/repo"
     assert ci("go -C /repo build ./...")[0].run_dir("/ws") == Path("/repo")
+    assert ci("go -C /repo build ./...")[0].run_dir(None) == Path("/repo")
+    assert ci("go -C repo build ./...")[0].run_dir(None) is None
     assert ci("make -C sub test")[0].run_dir("/ws") == Path("/ws/sub")
     assert ci("make -Csub test")[0].run_dir("/ws") == Path("/ws/sub")   # make 粘连写法
     assert ci("go build ./...")[0].dash_c is None

@@ -1,15 +1,13 @@
 """在聚合 workspace 根直接跑明确的子项目级命令时拦——会失败或跑错对象。
 
-CHANGE 级：跨命令 + 看 cwd 是否 workspace 根。用 cd-scope 区分——同 shell `cd <sub>` 进了真仓
-（放行），子 shell `(cd <sub>); cmd` 对命令无效（仍拦）；靠每个 Command 已解析的 run_dir 判断。
+每条 Command 按自己的 working_dir 判定。用 cd-scope 区分——同 shell `cd <sub>` 进了真仓
+（放行），子 shell `(cd <sub>); cmd` 对命令无效（仍拦）。位置未知时不做硬判断。
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from domain import workspace
 from domain.context import WorkspaceContext, load_active_repo
-from hooks.core.domain import Change, Command, Finding, Severity, TargetKind
+from hooks.core.domain import Command, Finding, Severity, TargetKind
 from hooks.core.protocol import Rule
 
 _GLOBAL_FLAGS = {"-g", "--global"}
@@ -39,42 +37,33 @@ _CARGO_PROJECT_SUBCOMMANDS = {
 
 class WorkspaceCwdRule(Rule):
     name = "workspace-cwd"
-    target_kind = TargetKind.CHANGE
+    target_kind = TargetKind.COMMAND
 
-    def applies(self, change: Change, ctx) -> bool:
-        return change.tool == "Bash"
+    def applies(self, target: Command, ctx) -> bool:
+        return _is_project_local_command(target)
 
-    def check(self, change: Change, ctx) -> list[Finding]:
-        subproj = [
-            t for t in change.targets
-            if isinstance(t, Command) and _is_project_local_command(t)
-        ]
-        if not subproj:
+    def check(self, target: Command, ctx) -> list[Finding]:
+        run_dir = target.working_dir.path
+        if run_dir is None or not workspace.is_workspace_root(run_dir):
             return []
-        cwd_resolved = Path(change.cwd).resolve()
-        if cwd_resolved not in {Path(w).resolve() for w in workspace.load_workspaces()}:
-            return []
-        # 仅当子项目命令真的在 workspace 根执行才拦（run_dir 已含 cd-scope）
-        if not any(t.run_dir.resolve() == cwd_resolved for t in subproj):
-            return []
-        ws = WorkspaceContext.load(cwd_resolved)
+        ws = WorkspaceContext.load(run_dir)
         subs = [s.name.strip("`") for s in (ws.subprojects if ws else [])[:10] if s.name]
         hint = ("\nRegistered subprojects: " + ", ".join(subs)) if subs else ""
-        active = load_active_repo(cwd_resolved, ctx.session_id)
+        active = load_active_repo(run_dir, ctx.session_id)
         active_hint = f"\nLast-active subproject: {active}" if active else ""
         return [
             Finding(
                 rule=self.name,
                 severity=Severity.DENY,
                 message=(
-                    f"⚠️  You're at the workspace root '{cwd_resolved}', not inside a subproject.\n"
+                    f"⚠️  You're at the workspace root '{run_dir.resolve()}', not inside a subproject.\n"
                     "Running a subproject-level command here will fail or misbehave.\n"
                     "Either `cd <subproject>` (or /enter <subproject>) first, or use the devloop scripts, "
                     "which resolve the repo themselves (smart_gcam* accept --repo <name|path>; "
                     "run_fixlint/run_tests take it as the first argument)."
                     f"{hint}{active_hint}"
                 ),
-                locator=change.command,
+                locator=" ".join(target.argv),
             )
         ]
 

@@ -53,7 +53,8 @@ def _affected_input_roots(inp: hook_io.HookInput, subcommands: set[str]) -> set[
     for target in engine.project(inp).targets:
         if not isinstance(target, Command) or target.subcommand not in subcommands:
             continue
-        root = repo_layout.find_git_root(target.run_dir)
+        run_dir = target.working_dir.path
+        root = repo_layout.find_git_root(run_dir) if run_dir is not None else None
         if root:
             roots.add(root)
     return roots

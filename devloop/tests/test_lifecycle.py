@@ -44,9 +44,11 @@ def test_code_policy_engine():
     source = f"const patch = {json.dumps(patch)};\ntext(await tools.apply_patch(patch));\n"
     unified = engine.project(_hook_input("exec", {"cwd": "/r", "tool_input": {"input": source}}))
     assert isinstance(unified.targets[0], FileChange) and unified.targets[0].path == "/r/b.py"
-    source = 'const r = await tools.exec_command({"cmd":"git add -A","workdir":"/r"});\ntext(r.output);'
+    source = 'const r = await tools.exec_command({cmd:"git add -A",workdir:"/r"});\ntext(r.output);'
     unified = engine.project(_hook_input("exec", {"cwd": "/", "tool_input": {"input": source}}))
-    assert isinstance(unified.targets[0], Command) and unified.targets[0].run_dir == Path("/r")
+    assert isinstance(unified.targets[0], Command)
+    assert unified.targets[0].working_dir.path == Path("/r")
+    assert unified.targets[0].working_dir.source == "exec_command.workdir"
     bash = engine.project(_hook_input("Bash", {"cwd": "/r", "tool_input": {"command": "cd x && go build ./..."}}))
     assert len(bash.targets) == 2 and all(isinstance(t, Command) for t in bash.targets)
 

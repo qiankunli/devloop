@@ -138,7 +138,9 @@ def test_workspace_cwd_guard_cd_scope():
     guard = _load_hook("pretool_policy_bash")
     from hooks.rules.command import workspace_cwd as wc
     root = "/tmp/dlut_wsg"; os.makedirs(root, exist_ok=True)
-    wc.workspace = type("W", (), {"load_workspaces": staticmethod(lambda: [root])})
+    wc.workspace = type("W", (), {
+        "is_workspace_root": staticmethod(lambda p: Path(p).resolve() == Path(root).resolve()),
+    })
     wc.WorkspaceContext = type("WC", (), {"load": staticmethod(lambda p: None)})
     wc.load_active_repo = lambda p, sid=None: None
 
@@ -181,6 +183,27 @@ def test_workspace_cwd_guard_cd_scope():
         "cwd": root,
         "tool_input": {"command": "uv run pytest", "workdir": "/tmp"},
     })) is None
+    # Codex unified exec 的顶层 envelope 保留每个子调用的 workdir；JS 裸 key 也必须能投影。
+    exec_guard = _load_hook("pretool_policy_edit")
+    source = 'const r = await tools.exec_command({cmd:"go test ./...",workdir:"/tmp"});'
+    assert exec_guard.decide(_hook_input("exec", {
+        "cwd": root,
+        "model": "gpt-test",
+        "tool_input": {"input": source},
+    })) is None
+    source = 'const r = await tools.exec_command({cmd:"go test ./..."});'
+    assert exec_guard.decide(_hook_input("exec", {
+        "cwd": root,
+        "model": "gpt-test",
+        "tool_input": {"input": source},
+    }))
+    # 同一子调用后续若又以 Bash 事件出现却不带 workdir，不能退回 session cwd 再误拦一次。
+    codex_bash = _hook_input("Bash", {
+        "cwd": root,
+        "model": "gpt-test",
+        "tool_input": {"command": "go test ./..."},
+    })
+    assert guard.decide(codex_bash) is None
     # 不在 workspace 根 → 与本守卫无关
     assert guard.decide(_hook_input("Bash", {"cwd": "/tmp", "tool_input": {"command": "uv run x"}})) is None
 

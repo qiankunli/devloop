@@ -107,12 +107,13 @@ class WorkingDir:
 
 @dataclass
 class Command(Target):
-    """从 cmdtree 投影出的一条 shell 命令（run 的对象）；`run_dir` 已对 cwd 解析完成。
+    """从 cmdtree 投影出的一条 shell 命令；`working_dir` 是解析 cd/-C 后的执行位置。
     它内部又裹着一层动作（subcommand=rm/push…），按需在 Command-rule 里下钻，不在顶层展开。"""
 
     kind = TargetKind.COMMAND
     argv: list[str]
-    run_dir: Path
+    working_dir: WorkingDir
+    env: list[str] = field(default_factory=list)
     cd: str | None = None
     # git 专属（非 git 命令为 None）
     subcommand: str | None = None
