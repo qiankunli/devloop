@@ -21,15 +21,15 @@ devloop 内多个 skill / 脚本共用的术语。架构理念见 [`AGENTS.md`](
 
 ## PR 模型（PR/MR 统一概念）
 
-评审提案在 devloop 里是 `domain/forge.py` 定义的**中立领域对象 `PullRequest`**（GitHub PR / GitLab MR 同一概念），由 `lib/forge/` 按 repo 的 origin 解析出对应 adapter 产出；状态总线只持久化与 join，不重定义。`PullRequest` **不带 provider**——provider 是 **repo 级事实**（一个仓要么 GitHub 要么 GitLab），存在 `pr.json` 段头；展示时用 `pr_label(provider, number)` / `vocab(provider)` 贴回词汇（GitHub `PR #`、GitLab `MR !`）。
+评审提案在 devloop 里是 `domain/forge.py` 定义的**中立领域对象 `PullRequest`**（GitHub PR / GitLab MR 同一概念），由 `lib/forge/` 按 repo 的 origin 解析出对应 adapter 产出；context 状态源只持久化与 join，不重定义，Board 再选择与当前工作相关的投影视图。`PullRequest` **不带 provider**——provider 是 **repo 级事实**（一个仓要么 GitHub 要么 GitLab），存在 `pr.json` 段头；展示时用 `pr_label(provider, number)` / `vocab(provider)` 贴回词汇（GitHub `PR #`、GitLab `MR !`）。
 
 - **`number`**：PR/MR 在 repo 内的编号（URL 里那个号；GitLab 的 `iid`、GitHub 的 PR number 统一为 `number`）。
 - **`state`**：归一为 `open` / `merged` / `closed`（GitHub 的 open/closed + `merged` 布尔在 adapter 里收敛为这三态）。
 - **`branch.pr_number`**：当前分支那条 PR 的编号（只存编号，整对象 join `prs`）。
 - **`prs`**：近期 PR 窗口，monitor 周期 sweep 写入，定长 cap（数值在 `domain/context/base.py`）。窗口策略是**领域层** `build_window`（最新 cap + 确保当前分支 anchor 在内），组合在 port 的 `recent()` + `get()` 原语之上——**对两家一致**，adapter 不各写一份；adapter 只管协议差异。
-- **branch 归属**：`pr.json` 记录其写入时的 branch + provider；`RepoContext.load` 的名字相等 join（`pr.json.branch == branch.local.name`）是**展示级**——切分支时自失效，喂注入/提示够用。
+- **branch 归属**：`pr.json` 记录其写入时的 branch + provider；`RepoContext.load` 的名字相等 join（`pr.json.branch == branch.local.name`）是**展示级**——切分支时自失效，供 Board 提示够用。
 - **分支失活（inactive）**：派生，不单独存。但**硬 gate 不读展示级 join**：`branch_merged_guard` / gcampr 走 `domain.context.gate.evaluate()`，按 **live 分支 + live HEAD** 在缓存窗口上做 SHA 祖先校验（`pick_branch_pr`），归属键是 `(branch, head_sha)` 而非分支名——观测不到的 checkout 后缓存陈旧也不会误判。详见 [`docs/branch-state.md`](./docs/branch-state.md)〈三态 freshness 模型〉。
-- **远端 tip**：`remote_branches.json` 由 monitor `ls-remote` 拉服务端 trunk tips（同事 push 后本地 fetch 前就可见），带 `fetched_at`；注入据此给 ahead/behind 加"as of"限定，避免把落后的本地 checkout 读成"最新"。
+- **远端 tip**：`remote_branches.json` 由 monitor `ls-remote` 拉服务端 trunk tips（同事 push 后本地 fetch 前就可见），带 `fetched_at`；Board 据此给 ahead/behind 加"as of"限定，避免把落后的本地 checkout 读成"最新"。
 - **在途（in-flight）**：同样按 join 派生（`state = open`，`branch_pr_in_flight`）——PR 已建、等人工 merge。与 inactive 互斥，二者加 protected / healthy 构成下面的四态。
 - **title / description**：commit message 首行是 PR/MR title，body（首行之后）是 description——给细节一个出口，title 才不会被挤成超长单行。创建时直填；往在途 PR 续传 commit（gcamp / gcampr 复用路径）时 **append-only + 包含性去重**：人工编辑过的 description 不被覆盖，重试不重复；同步失败仅记 PLAN 注记（commit/push 已落地，description 是装饰性的，不因它失败）。
 
@@ -41,10 +41,10 @@ devloop 循环（`enter → 提需求 → 开发 → commit/PR → 人工 merge 
 |----|------|--------|------|
 | **protected** | main / master / release* | `is_protected_branch` | **硬拦** commit/push（`protect_branch`） |
 | **healthy** | 普通 feature 分支，仍在开发（非以下三态） | 默认 | 正常开发 |
-| **in-flight** | 已建 PR、等人工 merge | `branch_pr_in_flight`（state=open） | **软提示**（turn 注入 IN-FLIGHT 行）：新工作切新分支、改本 PR 才在此编辑 |
+| **in-flight** | 已建 PR、等人工 merge | `branch_pr_in_flight`（state=open） | **软提示**（Board turn item）：新工作切新分支、改本 PR 才在此编辑 |
 | **inactive** | PR 已 merged / closed | `branch_pr_inactive`（state∈{merged,closed}） | **硬拦** Edit/Write（`branch_merged_guard`） |
 
-**为什么 in-flight 是软提示而非硬拦**：protected / inactive 在其上编辑**没有任何合法场景**，硬拦干净。in-flight 有一个合法例外——应评审改自己这条 MR（amend）——且"新工作 vs amend"无法可靠自动区分。硬拦就必然要逃逸口，逃逸口要么低命中（如 slash command）、要么把简单事弄复杂。所以把 in-flight 这个事实喂给 AI（turn 注入），由它自行选"切新分支"还是"在此 amend"，比硬拦更合适——这正是状态总线该干的（杠杆①），不是硬拦（杠杆②）。
+**为什么 in-flight 是软提示而非硬拦**：protected / inactive 在其上编辑**没有任何合法场景**，硬拦干净。in-flight 有一个合法例外——应评审改自己这条 MR（amend）——且"新工作 vs amend"无法可靠自动区分。硬拦就必然要逃逸口，逃逸口要么低命中（如 slash command）、要么把简单事弄复杂。所以由状态源提供 in-flight 事实，再让 Board 以 turn item 喂给 AI，由它自行选"切新分支"还是"在此 amend"，比硬拦更合适——这是软提示杠杆，不是硬拦杠杆。
 
 一轮生命线全图与各拍的 hook/script 时序见 `docs/loop.md`。
 
@@ -64,10 +64,10 @@ devloop 循环（`enter → 提需求 → 开发 → commit/PR → 人工 merge 
 
 ## Session 运行态
 
-session-scoped 运行状态的统一生命周期约定：**activity 时创建 → SessionEnd 释放（`sessionend_release` hook）→ pid / TTL 兜底过期**；落盘一文件一 owner（owner = session）。实现统一在 `domain/context/session.py`——状态总线按 owner 粒度分模块（session / workspace / repo），模块归属看事实的 owner，不看文件落在哪个目录。当前两个实例：
+session-scoped 运行状态的统一生命周期约定：**activity 时创建 → SessionEnd 释放（`sessionend_release` hook）→ pid / TTL 兜底过期**；落盘一文件一 owner（owner = session）。实现统一在 `domain/context/session.py`——context 按 owner 粒度分模块（session / workspace / repo），模块归属看事实的 owner，不看文件落在哪个目录。当前两个实例：
 
 - **checkout 占有**：`<git_root>/.devloop/owner.lock`（上节）。
-- **repo 绑定**：`<workspace_root>/.devloop/active/<session_id>.json`——"该 session 最近在干哪个仓"，喂脚本兜底解析与 workspace 根的 turn 注入。hook 写入带 payload 的 session_id，脚本经 `CLAUDE_CODE_SESSION_ID` 自识别。**绝不读别的 session 的绑定当答案**：无绑定即拒绝兜底、要求显式 `--repo`，他人绑定仅在报错里作候选提示——拿不准时最多麻烦一次，绝不静默走错仓。
+- **repo 绑定**：`<workspace_root>/.devloop/active/<session_id>.json`——"该 session 最近在干哪个仓"，喂脚本兜底解析与 workspace 根的 Board turn view。hook 写入带 payload 的 session_id，脚本经 `CLAUDE_CODE_SESSION_ID` 自识别。**绝不读别的 session 的绑定当答案**：无绑定即拒绝兜底、要求显式 `--repo`，他人绑定仅在报错里作候选提示——拿不准时最多麻烦一次，绝不静默走错仓。
 
 ## 验证状态
 
@@ -81,7 +81,7 @@ branch 域 `branches/<b>/lint.json` + `test.json`：验证戳**按 component 键
 
 **为什么不是编辑计数**：旧的 `edits_since_lint` 由 PostToolUse 计数，而那个 hook 只认 `Edit`/`Write`/`NotebookEdit`——**Codex 用 `apply_patch` 改文件一次都不会计**（`MultiEdit` 同理，Bash 里的 `sed -i` / 脚本更不会）。它读出的 0 是「没人报告」而不是「没改过」：一个只在部分 CLI、部分工具上生效的计数器守不住硬 gate。改问内容之后，谁改的、用什么工具改的都不重要，那个 hook 也随之删掉（少一个会漂的活动部件）。
 
-**turn 注入只报「什么时候验过」，不报「还算不算数」**：后者要现算指纹（读改动文件的 bytes），而注入每轮都跑——按〈成本原则〉不值当，且陈旧与否本就该由 gate 在 commit 时判（那里算一次是合算的），gcam 路径更是直接把 lint 跑掉。
+**Board turn item 只报「什么时候验过」，不报「还算不算数」**：后者要现算指纹（读改动文件的 bytes），而 Board 每轮都解析——按〈成本原则〉不值当，且陈旧与否本就该由 gate 在 commit 时判（那里算一次是合算的），gcam 路径更是直接把 lint 跑掉。
 
 **为什么不是 repo 级单值**：lint / test 本就按 component 执行（一个仓可有 `server/` + `cli/` 两套工具链），repo 级单戳表达不了「A 过 B 挂」——A 通过盖下的戳会让 `precommit_gate` 读到「已验、无待验编辑」而放行整个仓，于是一次 partial-fail 的 fan-out 恰好把防绕过守卫的锁打开（gate 挡住了 gcampr，却给裸 `git commit` 发通行证）。key 与执行范围（`WorkSet`）同粒度，这类偏差才**不可表达**，而不是靠各消费方记得多问一句。
 
@@ -93,8 +93,20 @@ branch 域 `branches/<b>/lint.json` + `test.json`：验证戳**按 component 键
 
 AGENTS.md 是文字知识源；`.devloop/*.json` 是由 hooks / scripts / monitors 维护的结构化运行态，不保存 AGENTS.md 正文。
 
-- Workspace 级：`<workspace_root>/.devloop/context.json`，保存 workspace AGENTS.md 的 References + 文件系统自发现的 subproject 清单（叠加 AGENTS.md 表润色，symlink 子项目附 canonical 路径映射）以及 session 注入节奏；`active/<session_id>.json` **一 session 一文件**保存该 session 绑定的最近活跃 repo（脚本在 workspace 根被调用时的解析兜底）——这是 session 态而非 workspace 态，owner 即 session，按 writer-owner 铁律落盘零例外；多 session 各干各的仓互不劫持。语义与生命周期见〈Session 运行态〉。
-- Repo 级（按**三域**布局；linked worktree 的 repo / branch 域解析到**主仓** `.devloop`，working-tree 域例外）：**repo 域**根下 `meta.json` / `remote_branches.json` / `pr.json` + ledgers（`requirements/` / `friction.jsonl` / `review-history.jsonl`）；**branch 域** `branches/<branch>/` 下 `branch.json` / `lint.json` / `test.json` / `injection.json` / `review.json`，`RepoContext.load()` 按 **live 分支**取段后合并成内存视图；**working-tree 域** owner 锁与一次性提交输入 `commit_msg` 留各 worktree 自己的 `.devloop`（并行 worktree 互不干扰，`commit_msg` 成功消费后清理、失败时留作重试）；主仓 `tmp/` 收进程间日志（review.log / ccr history feed），随时可删。`branch.json`（local + worktrees，refresh owned）与 `remote_branches.json`（远端 trunk tips，monitor owned）是同一分支拓扑的两个 owner——见 [`docs/branch-state.md`](./docs/branch-state.md)〈落盘:按 writer-owner 拆段〉。
+- Workspace 级：`<workspace_root>/.devloop/context.json`，保存 workspace AGENTS.md 的 References + 文件系统自发现的 subproject 清单（叠加 AGENTS.md 表润色，symlink 子项目附 canonical 路径映射）；`active/<session_id>.json` **一 session 一文件**保存该 session 绑定的最近活跃 repo（脚本在 workspace 根被调用时的解析兜底）——这是 session 态而非 workspace 态，owner 即 session，按 writer-owner 铁律落盘零例外；多 session 各干各的仓互不劫持。语义与生命周期见〈Session 运行态〉。
+- Repo 级（按**三域**布局；linked worktree 的 repo / branch 域解析到**主仓** `.devloop`，working-tree 域例外）：**repo 域**根下 `meta.json` / `remote_branches.json` / `pr.json` + ledgers（`requirements/` / `friction.jsonl` / `review-history.jsonl`）；**branch 域** `branches/<branch>/` 下 `branch.json` / `lint.json` / `test.json` / `review.json`，`RepoContext.load()` 按 **live 分支**取段后合并成内存视图；**working-tree 域** owner 锁与一次性提交输入 `commit_msg` 留各 worktree 自己的 `.devloop`（并行 worktree 互不干扰，`commit_msg` 成功消费后清理、失败时留作重试）；主仓 `tmp/` 收进程间日志（review.log / ccr history feed），随时可删。`branch.json`（local + worktrees，refresh owned）与 `remote_branches.json`（远端 trunk tips，monitor owned）是同一分支拓扑的两个 owner——见 [`docs/branch-state.md`](./docs/branch-state.md)〈落盘:按 writer-owner 拆段〉。
+
+### Board 投递游标
+
+Board 的边界是：**状态源提供事实，Board 决定如何组织和投递**。它按当前 session
+选择相关 workspace/repo 事实，产出结构化 `BoardItem`，再由统一 policy 分配到
+`session` / `turn` / `event` / `ui_only` surface。每个 item 单独去重，避免一个
+事实变化带着整块上下文重投；近期但无关的 PR 等事实可留在 `ui_only`，不进入 prompt。
+
+`<dev-root>/.devloop/board/sessions/<session_id>.json` 只记录该 session 已收到的
+item 签名、次数与时间，不复制业务事实。PostCompact 只清状态 item 的投递记忆；
+review 结果、待打标提醒等 event 保持已消费状态，`ui_only` 不产生投递游标。完整
+设计见 [`docs/board.md`](./docs/board.md)。
 
 schema / TTL / cap 数值在 `domain/context/base.py`，不在文档复述。
 

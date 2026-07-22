@@ -1,4 +1,4 @@
-"""`.devloop/` state layer — the bus between collection and use.
+"""`.devloop/` context layer — fact sources plus the prompt-facing Board.
 
 Modules group by WHY-THEY-CHANGE-TOGETHER (four families), NOT by storage domain — the
 repo/branch/working-tree domain split (see `store.py`) is the FILESYSTEM's axis (where bytes
@@ -8,9 +8,9 @@ two storage domains to present one cohesive view. Families:
   `worktree_state_dir` / `branch_segment` / `tmp_dir`) + the two persistence disciplines
   (`save_segment` overwrite / `append_jsonl` ledger); `base.py`: the shared VOCABULARY —
   leaves (`Reference` / `AgentsMd` / `Cadence`), re-exported forge domain, constants, time.
-- views       — `repo.py`: `RepoContext`, segment files merged into one OBSERVED/DISPLAY view
-  (display-grade PR derivation + two-cadence injection); `workspace.py`: `WorkspaceContext`
-  (`context.json`, session cadence) + the `active.json` writer-role.
+- views       — `repo.py`: `RepoContext`, segment files merged into one OBSERVED/DISPLAY view;
+  `workspace.py`: `WorkspaceContext` (`context.json`); `board.py`: relevant structured
+  items + one surface policy + per-session delivery cursors.
 - truth seams — `gate.py`: `GateView` / `evaluate()`, what hard gates read (LIVE branch +
   SHA-validated PR state, never the cached view; see docs/branch-state.md);
   `prstate.py`: the monitor's & gcampr's shared writer of the monitor-owned segments.
@@ -19,7 +19,7 @@ two storage domains to present one cohesive view. Families:
   `requirement` (requirement Trajectory spine), the 经验沉淀 line (workspace
   docs/loop-state.md). Future members: steering capture, resolution events, the miner.
 
-Usage (DISPLAY — for injection/hints; a gate must use `gate.evaluate` instead):
+Usage (DISPLAY facts; Board owns prompt delivery, gates use `gate.evaluate`):
     from domain.context import RepoContext, WorkspaceContext, PullRequest
     ctx = RepoContext.load(repo_dir)
     if ctx and ctx.branch_pr_inactive():   # display-grade; gates → domain.context.gate
@@ -41,7 +41,8 @@ from .base import (
     pr_label,
     vocab,
 )
-from .repo import Branch, BranchTopology, Injection, RepoContext, RepoMeta, Validation
+from .board import Board, BoardItem, BoardSurface, clear_after_compact, clear_session
+from .repo import Branch, BranchTopology, RepoContext, RepoMeta, Validation
 from .session import (
     clear_active_repo,
     load_active_repo,

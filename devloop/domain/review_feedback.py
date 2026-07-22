@@ -77,7 +77,7 @@ def pending(comments: list[Comment]) -> list[Finding]:
 
 
 def pending_key(found: list[Finding]) -> str:
-    """Identity of a pending SET, for nudge decay (`context.base.Nudge`).
+    """Identity of a pending SET, for Board event delivery decay.
 
     Hashes each finding's stable fp PLUS its published comment id. The fp identifies the issue,
     while the id identifies this review round's occurrence: if the same issue is published again

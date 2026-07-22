@@ -146,9 +146,9 @@ def note(root, branch: str, event: dict) -> None:
     record_event(root, req, {"repo": _repo_key(root), **event})
 
 
-# ── derived live view: the turn-injection requirement segment ─────────────────
+# ── derived live view: the current Board requirement summary ─────────────────
 def turn_line(root, branch: str | None) -> str:
-    """One-line 'where is my TASK' view for turn injection: the requirement this branch
+    """One-line 'where is my TASK' view consumed by Board: the requirement this branch
     belongs to + live state of every PR the requirement raised (across repos).
 
     Derived read-only — spine `pr_created` joined against each repo's `pr.json` window;
@@ -190,7 +190,7 @@ def turn_line(root, branch: str | None) -> str:
             parts.append(f"{prefix}#{num} {state}")
         return f"Requirement: {req} | PRs: " + " · ".join(parts)
     except Exception:
-        return ""    # derived view — must never break turn injection
+        return ""    # derived view — must never break Board delivery
 
 
 # ── close half: monitor-side scope closing ───────────────────────────────────

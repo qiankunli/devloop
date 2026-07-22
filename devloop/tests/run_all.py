@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _testkit import run_all  # noqa: E402  (bootstrap first)
 
-MODULES = ["test_cmdparse", "test_forge", "test_git_ops", "test_rebase", "test_notify", "test_context", "test_guards", "test_lifecycle", "test_review"]
+MODULES = ["test_cmdparse", "test_forge", "test_git_ops", "test_rebase", "test_notify", "test_board", "test_context", "test_guards", "test_lifecycle", "test_review"]
 
 
 def main() -> int:

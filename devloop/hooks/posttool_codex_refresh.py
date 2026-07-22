@@ -49,7 +49,7 @@ def _candidate_roots_for_input(inp: hook_io.HookInput) -> list[str]:
 
 
 def _warm_repo(git_root: str, session_id: str) -> None:
-    ctx = (
+    (
         RepoContext.refresh_all(git_root)
         if RepoContext.is_stale_at(git_root)
         else RepoContext.load(git_root) or RepoContext.refresh_all(git_root)
@@ -61,7 +61,6 @@ def _warm_repo(git_root: str, session_id: str) -> None:
     # when the CLI provides an env id.
     if not (os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_SESSION_ID")):
         record_active_repo(git_root, "")
-    ctx.emit_turn_if_changed()  # cheap read path; keeps corrupt branch segments fail-open
 
 
 def _warm_workspace(cwd: str, roots: list[str]) -> None:

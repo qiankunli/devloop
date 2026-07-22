@@ -4,7 +4,7 @@
 
 领域主链是 **`PR/MR → Repo → Component`**：每个 PR/MR 始终锚定一个 repo，repo 是 git/branch/forge 状态的边界，component 是 repo 内 lint/test 的验证单位。branch 是开发主轴；面向多 session 并发时，worktree 是 branch 的一种特殊形态。workspace 则是可选的聚合上下文，可以挂多个 repo；单仓库模式同样完整支持。
 
-devloop 通过两个控制杠杆落实这条生命周期：**实时状态注入**让每轮 prompt 都掌握当前 repo 的 branch、工作区、近期 PR/MR 与验证状态；**执行级硬拦截**把保护分支、过期分支编辑、绕过规范入口等非法操作直接 deny。GitHub PR 与 GitLab MR 均支持，按 repo 的 origin 自动识别。
+devloop 通过两个控制杠杆落实这条生命周期：**Board 上下文投递**让 prompt 掌握当前 repo 的 branch、工作区、当前 PR/MR 与验证状态；**执行级硬拦截**把保护分支、过期分支编辑、绕过规范入口等非法操作直接 deny。GitHub PR 与 GitLab MR 均支持，按 repo 的 origin 自动识别。
 
 > 架构 / 扩展看 [`AGENTS.md`](./AGENTS.md)；术语看 [`CONCEPTS.md`](./CONCEPTS.md)。
 
@@ -14,7 +14,7 @@ devloop 通过两个控制杠杆落实这条生命周期：**实时状态注入*
 
 - **PR/MR 生命周期入口**：`/enter` 选择 repo/branch；多 session 并发时，`--worktree <tag>` 将 branch 以隔离 checkout 形态展开，并统一处理基线、依赖准备和安全清理。`/gcam`、`/gcamp`、`/gcampr` 依次覆盖 commit、push 与创建/复用 PR/MR；已有 PR/MR 的冲突处理走可恢复的 `smart_rebase.sh start/continue/finish`，以 rebase 前保存的远端 SHA 做精确 `force-with-lease`。新工作从目标分支建立干净基线，最终 merge 始终留给人。
 - **component 感知**（多代码目录仓）：一个 git 仓可能有多个自带工具链、可独立 lint/test 的目录——`server/` + `cli/`、`packages/*`、`cmd/*`。devloop 按**本次改动**决定跑哪些：改了 `cli/**` 就只跑 `cli` 的 lint/test，不静默回落仓根或 `server/`；改动跨多个 component 就都跑；clean tree 从仓根发起时枚举**全部** component（绝不替你猜一个）。验证戳也按 component 记——「A 过 B 挂」不会被记成整仓已验。术语见 [`CONCEPTS.md`](./CONCEPTS.md)。
-- **状态总线与 PR/MR 感知**：workspace/repo 的 `.devloop/` 保存当前 branch、工作区、近期 PR/MR、验证和 session 归属等结构化运行态；hook 与 monitor 持续刷新，每轮 prompt 按需注入，并自动排除在 git 提交之外。
+- **Board 与 PR/MR 感知**：workspace/repo 的 `.devloop/` 保存当前 branch、工作区、近期 PR/MR、验证和 session 归属等结构化运行态；hook 与 monitor 持续刷新事实，Board 按相关性选择紧凑内容并决定 session/turn 投递。状态与投递游标都自动排除在 git 提交之外。
 - **硬拦截**（PreToolUse deny）：保护分支 commit/push、`git add -A`、直接 `git worktree add`、过期分支（PR 已 merged/closed）改文件、别的 session 占用的 checkout 上切分支或改文件（引导 worktree）、工作区根跑子项目命令、裸 `pytest`、uv 项目 `pip install`、编辑 `requirements.txt`、`lifecycle.pre_commit` 含 lint 时 lint 过期的裸 `git commit` gate。
 - **自动进项目**：`cd` 进子项目时（`CwdChanged`）自动刷新上下文、浮现 AGENTS.md References，无需手动 `/enter`。
 - **生命周期 hook**：`pre_commit / post_commit / pre_mr / post_mr` 四相位可挂 hook，挂哪相位由 config 决定；两类——**inline 门禁**（失败挡 commit/MR）与 **signal hook**（advisory、后台跑、不挡）。当前内置三个：`lint`、`test`（门禁），`review`（signal——后台跑 [ocr](https://github.com/alibaba/open-code-review) 审全量改动、结果回流会话、有开放 MR 时发评论）。机制见 [`docs/lifecycle-hooks.md`](./docs/lifecycle-hooks.md)；code-review 细节见 [`docs/code-review.md`](./docs/code-review.md)。

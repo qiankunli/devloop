@@ -31,7 +31,7 @@ devloop/                              # ← 仓库根（marketplace）
 ├── .opencode/marketplace.json        # opencode marketplace 索引（占位，按协议补）
 │
 ├── devloop/                          # plugin: 开发者日常工作流（第一个真实 plugin，Claude + Codex）
-│   │                                 #   git / MR / lint / test / cwd-aware enter / 状态注入 / 硬拦截
+│   │                                 #   git / MR / lint / test / cwd-aware enter / Board / 硬拦截
 │   │                                 #   Claude 坐到原生事件上：CwdChanged / PostCompact / FileChanged / monitors；Codex 用 hooks.codex.json 的事件子集
 │   ├── .claude-plugin/plugin.json    #     Claude manifest
 │   ├── .codex-plugin/plugin.json     #     Codex manifest（hooks 指向 hooks.codex.json）

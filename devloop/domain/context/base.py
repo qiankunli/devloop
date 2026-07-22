@@ -1,12 +1,11 @@
-"""Context state layer — shared leaves, constants, persistence primitives.
+"""Context layer — shared fact leaves, constants, and compatibility primitives.
 
-The `.devloop/` state bus spans two levels. **Repo** state is split into per-owner
-*segment* files (`meta`/`branch`/`mr`/`validation`/`injection`.json) so independent
+The `.devloop/` facts span two levels. **Repo** state is split into per-owner
+*segment* files (`meta`/`branch`/`pr`/`lint`/`test`/`review`.json) so independent
 writer-roles never share a file — see `repo.py`. **Workspace** state is a single
 `context.json` (one writer-role: the refresh). This module holds what both share:
 leaf dataclasses (`Reference`, `AgentsMd`) plus the re-exported forge
-domain (`PullRequest`), the injection
-`Cadence` (content-hash dedup with a TTL safety net), and tunable constants.
+domain (`PullRequest`), a compatibility `Cadence`, and tunable constants.
 The storage primitives (paths, three-domain resolution, atomic JSON I/O) live in
 `store.py` — this module is the shared VOCABULARY, that one is the shared DISK.
 
@@ -14,10 +13,8 @@ The composite `RepoContext` / `WorkspaceContext` (with their git/AGENTS.md refre
 logic) live in `repo.py` / `workspace.py` and build on these.
 
 Design notes that matter:
-- **Cadence dedup** is how prompt injection stays cheap: re-emit only when the
-  text changed, or when the TTL elapsed. `PostCompact` calls `Cadence.clear()` so
-  state is re-injected right after compaction drops it — replacing a
-  guess-with-a-timer TTL net with a native trigger (TTL stays as a backstop).
+- Board owns prompt selection and delivery. The TTL constants here are its replay
+  backstop; per-session item cursors and compaction semantics live in `board.py`.
 - All tunables (TTLs, MR cap/poll) are **constants here**, never in docs — they
   drift with experience and belong next to the code that reads them.
 """
@@ -35,8 +32,8 @@ from domain.forge import PRS_CAP, Comment, MergeReadiness, PullRequest, pr_label
 # ── tunables (seconds unless noted) ──────────────────────────────────────────
 REPO_STALE_SEC = 300          # repo context older than this → refresh_all on next cd/prompt
 WORKSPACE_STALE_SEC = 600     # workspace context staleness
-TURN_TTL_SEC = 1800           # turn-cadence injection re-emit backstop (~30 min)
-SESSION_TTL_SEC = 14400       # session-cadence (References) re-emit backstop (~4 h)
+TURN_TTL_SEC = 1800           # Board turn-state replay backstop (~30 min)
+SESSION_TTL_SEC = 14400       # Board session-state replay backstop (~4 h)
 PR_POLL_INTERVAL_SEC = 90     # monitor poll cadence for PR/MR status
 REMOTE_VIEW_STALE_SEC = 120   # remote_branches snapshot older than this → re-pull trunk tips on enter
 ACTIVE_REPO_TTL_SEC = 21600   # workspace last-active repo validity (~6 h); stale → don't guess
@@ -46,8 +43,8 @@ REQUIREMENT_STALE_SEC = 1209600  # requirement idle this long with no close (~14
 REQ_VIEW_PRS_CAP = 8          # requirement turn-line PR list cap (a requirement rarely has more in flight)
 DEFAULT_BRANCH_TTL_SEC = 86400  # repo default branch is near-immutable → only re-fetch from the forge
                                 # once a day (refresh_all runs far more often; this gates the network call)
-LABEL_NUDGE_CAP = 3           # times to ask for a verdict on the SAME pending finding set, then
-                              # go quiet — see Nudge. Not ignoring you: 3 asks is enough to have
+LABEL_NUDGE_CAP = 3           # Board asks for a verdict on the SAME pending finding set, then
+                              # goes quiet. Not ignoring you: 3 asks is enough to have
                               # been heard, and labeling is advisory (ground truth, never a blocker).
 REVIEW_NUDGE_CAP = 1          # times to report the SAME review result. One: it's an event, not
                               # state — re-telling it makes the agent re-triage findings it已
@@ -80,41 +77,8 @@ class AgentsMd:
 
 
 @dataclass
-class Nudge:
-    """A bounded chore reminder: ask `cap` times per situation, then go quiet until the
-    situation actually changes.
-
-    `Cadence` can't express this, which is why this exists alongside it. Cadence dedups on the
-    WHOLE turn block's hash, so any unrelated line moving (HEAD sha, PR state) re-emits
-    everything inside it — during active work that's every turn. That's right for state lines
-    (they describe where you ARE, and a stale one would mislead) and wrong for a chore line (it
-    asks you to DO something; the 4th ask carries nothing the 3rd didn't, and not acting is
-    itself an answer).
-
-    `key` identifies the situation. A new key = genuinely new work → count resets and it speaks
-    up again; an unchanged key decays to silence. Level-triggered display, edge-triggered voice.
-    """
-    key: str = ""
-    count: int = 0
-
-    def due(self, key: str, *, cap: int) -> bool:
-        """Should the nudge speak? New situation → yes; same one → only until `cap` asks."""
-        return key != self.key or self.count < cap
-
-    def bump(self, key: str) -> None:
-        """Record one ask. A key change restarts the count at 1 (not 0 — this IS an ask)."""
-        self.count = self.count + 1 if key == self.key else 1
-        self.key = key
-
-    @classmethod
-    def from_dict(cls, d: dict | None) -> "Nudge":
-        d = d or {}
-        return cls(key=str(d.get("key") or ""), count=int(d.get("count", 0) or 0))
-
-
-@dataclass
 class Cadence:
-    """One injection cadence's dedup stamp (turn or session).
+    """Legacy whole-block content cadence retained for compatibility.
 
     `should_emit` returns True when the content changed OR the TTL backstop elapsed.
     `clear` (called by the PostCompact hook) forces a re-emit next turn by dropping
