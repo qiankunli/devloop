@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot/JSON/watch entrypoint for the Board's fixed three-line terminal HUD."""
+"""Render Board state for native status lines and the tmux sidecar."""
 from __future__ import annotations
 
 import argparse
@@ -14,19 +14,30 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from domain.board import BoardRuntime  # noqa: E402
-from ui.board.hud import HudPulseTracker, frame_from_snapshot, render_frame  # noqa: E402
+from lib import config  # noqa: E402
+from ui.board.hud import (  # noqa: E402
+    HudPulseTracker,
+    frame_from_snapshot,
+    render_frame,
+    render_statusline,
+)
 from ui.board.tmux import LEADER_ENV, pane_command  # noqa: E402
 
 
+def _runtime(cwd: str, session_id: str) -> BoardRuntime | None:
+    return BoardRuntime.resolve(cwd, session_id)
+
+
 def _snapshot(cwd: str, session_id: str) -> dict:
-    runtime = BoardRuntime.resolve(cwd, session_id)
+    runtime = _runtime(cwd, session_id)
     return runtime.snapshot() if runtime else {"root": cwd, "focus": None, "items": []}
 
 
 def _args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render devloop's three-line Board HUD")
+    parser = argparse.ArgumentParser(description="Render devloop's Board HUD")
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--claude-statusline", action="store_true")
     parser.add_argument("--cwd", default=str(Path.cwd()))
     parser.add_argument("--session-id", default=os.environ.get("DEVLOOP_HUD_SESSION", ""))
     parser.add_argument("--leader-pane", default=os.environ.get(LEADER_ENV, ""))
@@ -35,6 +46,32 @@ def _args() -> argparse.Namespace:
 
 def main() -> int:
     args = _args()
+    if args.claude_statusline:
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+        except json.JSONDecodeError:
+            return 0
+        workspace = payload.get("workspace") if isinstance(payload, dict) else None
+        cwd = (
+            workspace.get("current_dir")
+            if isinstance(workspace, dict) and workspace.get("current_dir")
+            else payload.get("cwd") if isinstance(payload, dict) else None
+        ) or args.cwd
+        session_id = (
+            str(payload.get("session_id") or args.session_id)
+            if isinstance(payload, dict)
+            else args.session_id
+        )
+        if not config.board_hud(cwd).get("enabled", True):
+            return 0
+        runtime = _runtime(cwd, session_id)
+        if runtime is None:
+            return 0
+        columns = os.environ.get("COLUMNS", "")
+        width = int(columns) if columns.isdigit() else shutil.get_terminal_size((120, 2)).columns
+        frame = frame_from_snapshot(runtime.snapshot())
+        print(render_statusline(frame, max(1, width - 4), not os.environ.get("NO_COLOR")))
+        return 0
     if args.json:
         print(json.dumps(_snapshot(args.cwd, args.session_id), indent=2, ensure_ascii=False))
         return 0

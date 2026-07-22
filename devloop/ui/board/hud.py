@@ -141,7 +141,9 @@ def _health_segments(items: dict[str, dict]) -> tuple[HudSegment, ...]:
 
     blocked = _payload(items.get("repo.pr-blocked"))
     if blocked:
-        out.append(HudSegment(f"BLOCKED:{_clean(blocked.get('readiness'))}", HudTone.ERROR, 0))
+        # A narrow status line may drop ordinary context, but never the fact that
+        # the current PR is blocked (docs/board.md: stable health beats decoration).
+        out.append(HudSegment(f"BLOCKED:{_clean(blocked.get('readiness'))}", HudTone.ERROR, -1))
     out.append(_validation_segment(items.get("repo.validation")))
 
     review = _payload(items.get("repo.review"))
@@ -322,4 +324,17 @@ def render_frame(frame: HudFrame, width: int = 120, color: bool = True) -> str:
         _render_segments(frame.context, width, color),
         _render_segments(frame.health, width, color),
         _render_segments((pulse,), width, color),
+    ))
+
+
+def render_statusline(frame: HudFrame, width: int = 120, color: bool = True) -> str:
+    """Render stable Board state for a command-backed status line.
+
+    Claude starts a fresh process for each refresh, so the tmux watcher's
+    in-memory pulse has no honest equivalent here. Keep the native surface to
+    the two durable slots instead of persisting a second event ledger.
+    """
+    return "\n".join((
+        _render_segments(frame.context, width, color),
+        _render_segments(frame.health, width, color),
     ))

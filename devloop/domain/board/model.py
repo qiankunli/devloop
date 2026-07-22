@@ -173,7 +173,7 @@ class BoardItem:
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
-        """Return the presentation-neutral shape consumed by the future Board UI."""
+        """Return the presentation-neutral shape consumed by Board UI adapters."""
         return {
             "id": self.id,
             "revision": self.signature,
@@ -229,7 +229,7 @@ class BoardView:
 
 @dataclass(frozen=True)
 class Board:
-    """Shared structured facts for prompt delivery today and collaborative UI later."""
+    """Shared structured facts for prompt delivery and UI projections."""
 
     root: str
     items: tuple[BoardItem, ...]

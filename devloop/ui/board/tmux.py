@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -18,6 +19,7 @@ SESSION_ENV = "DEVLOOP_HUD_SESSION"
 LEADER_ENV = "DEVLOOP_HUD_LEADER_PANE"
 
 RunTmux = Callable[[list[str]], subprocess.CompletedProcess[str]]
+FindExecutable = Callable[[str], str | None]
 
 
 def _default_run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -77,9 +79,12 @@ def ensure_hud_pane(
     *,
     env: dict[str, str] | None = None,
     run_tmux: RunTmux = _default_run,
+    find_executable: FindExecutable = shutil.which,
 ) -> str:
     """Ensure one three-line HUD for this CLI pane; all failures degrade to a no-op."""
     env = dict(os.environ if env is None else env)
+    if find_executable("tmux") is None:
+        return "skipped_tmux_unavailable"
     leader = _pane_id(env.get("TMUX_PANE"))
     if not env.get("TMUX") or not leader:
         return "skipped_not_tmux"

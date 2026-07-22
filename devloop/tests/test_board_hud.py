@@ -2,9 +2,12 @@
 """Board HUD fixed-line projection, pulse replacement, and tmux lifecycle."""
 from __future__ import annotations
 
+import json
 import subprocess
+import tempfile
+from pathlib import Path
 
-from _testkit import _hook_input, _load_hook, run_main  # noqa: E402
+from _testkit import _hook_input, _load_hook, _load_script, run_main  # noqa: E402
 
 
 def _item(item_type: str, payload: dict, revision: str) -> dict:
@@ -135,6 +138,20 @@ def test_hud_never_wraps_and_sanitizes_dynamic_text():
     assert all("\x1b" not in line for line in lines)
 
 
+def test_native_statusline_keeps_stable_slots_and_never_drops_blocker():
+    from ui.board.hud import frame_from_snapshot, render_statusline
+
+    snapshot = _snapshot(
+        _identity(modified_count=2),
+        _item("repo.pr-blocked", {"readiness": "ci_blocked"}, "b1"),
+        _item("repo.validation", {"components": []}, "v1"),
+    )
+    lines = render_statusline(frame_from_snapshot(snapshot), width=30, color=False).splitlines()
+    assert len(lines) == 2
+    assert "BLOCKED:ci_blocked" in lines[1]
+    assert "feat/board-ui" not in lines[1]
+
+
 class _FakeTmux:
     def __init__(self, panes: str = ""):
         self.panes = panes
@@ -157,8 +174,14 @@ def test_tmux_hud_creates_then_reuses_owned_three_line_pane():
 
     assert (config.plugin_root() / "scripts/board_hud.py").is_file()
     env = {"TMUX": "/tmp/tmux", "TMUX_PANE": "%1"}
+
+    def installed(_: str) -> str:
+        return "/usr/bin/tmux"
+
     fake = _FakeTmux()
-    assert tmux.ensure_hud_pane("/repo", "session-a", env=env, run_tmux=fake) == "created"
+    assert tmux.ensure_hud_pane(
+        "/repo", "session-a", env=env, run_tmux=fake, find_executable=installed,
+    ) == "created"
     split = next(call for call in fake.calls if call[0] == "split-window")
     assert split[split.index("-l") + 1] == "3"
     command = split[-1]
@@ -171,7 +194,9 @@ def test_tmux_hud_creates_then_reuses_owned_three_line_pane():
         "DEVLOOP_HUD_LEADER_PANE=%1 python board_hud.py --watch\n"
     )
     reused = _FakeTmux(existing)
-    assert tmux.ensure_hud_pane("/repo", "session-a", env=env, run_tmux=reused) == "reused"
+    assert tmux.ensure_hud_pane(
+        "/repo", "session-a", env=env, run_tmux=reused, find_executable=installed,
+    ) == "reused"
     assert any(call[:3] == ["resize-pane", "-t", "%8"] for call in reused.calls)
     assert not any(call[0] == "split-window" for call in reused.calls)
 
@@ -179,8 +204,25 @@ def test_tmux_hud_creates_then_reuses_owned_three_line_pane():
         "%7\texec env DEVLOOP_HUD_OWNER=1 DEVLOOP_HUD_SESSION=old-session "
         "DEVLOOP_HUD_LEADER_PANE=%1 python board_hud.py --watch\n"
     )
-    assert tmux.ensure_hud_pane("/repo", "session-a", env=env, run_tmux=stale) == "created"
+    assert tmux.ensure_hud_pane(
+        "/repo", "session-a", env=env, run_tmux=stale, find_executable=installed,
+    ) == "created"
     assert ["kill-pane", "-t", "%7"] in stale.calls
+
+
+def test_tmux_hud_is_disabled_when_tmux_is_not_installed():
+    from ui.board import tmux
+
+    fake = _FakeTmux()
+    result = tmux.ensure_hud_pane(
+        "/repo",
+        "session-a",
+        env={"TMUX": "/tmp/tmux", "TMUX_PANE": "%1"},
+        run_tmux=fake,
+        find_executable=lambda _: None,
+    )
+    assert result == "skipped_tmux_unavailable"
+    assert fake.calls == []
 
 
 def test_sessionstart_hud_hook_is_best_effort_observer():
@@ -193,6 +235,53 @@ def test_sessionstart_hud_hook_is_best_effort_observer():
     finally:
         hook.ensure_hud_pane = original
     assert seen == [("/ws", "s1")]
+
+
+def test_claude_uses_native_statusline_while_codex_keeps_sidecar_hook():
+    root = Path(__file__).resolve().parent.parent
+    claude = json.loads((root / "hooks/hooks.json").read_text(encoding="utf-8"))
+    codex = json.loads((root / "hooks/hooks.codex.json").read_text(encoding="utf-8"))
+
+    def commands(value: dict) -> list[str]:
+        return [
+            hook["command"]
+            for groups in value["hooks"].values()
+            for group in groups
+            for hook in group.get("hooks", [])
+        ]
+
+    assert not any("board_hud_start.py" in command for command in commands(claude))
+    assert any("board_hud_start.py" in command for command in commands(codex))
+
+
+def test_claude_statusline_setup_preserves_settings_and_refuses_foreign_owner():
+    setup = _load_script("setup_claude_board")
+    plugin_root = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory() as tmp:
+        claude_dir = Path(tmp) / ".claude"
+        claude_dir.mkdir()
+        settings_path = claude_dir / "settings.json"
+        settings_path.write_text(json.dumps({"theme": "dark"}), encoding="utf-8")
+
+        saved, backup = setup.install(claude_dir, plugin_root)
+        value = json.loads(saved.read_text(encoding="utf-8"))
+        assert value["theme"] == "dark"
+        assert value["statusLine"]["type"] == "command"
+        assert value["statusLine"]["refreshInterval"] == 2
+        assert setup.LAUNCHER_NAME in value["statusLine"]["command"]
+        assert backup is not None and backup.is_file()
+        launcher = claude_dir / "plugins/devloop" / setup.LAUNCHER_NAME
+        assert "plugins/cache/*/devloop/*" in launcher.read_text(encoding="utf-8")
+
+        foreign = {"theme": "dark", "statusLine": {"type": "command", "command": "other-hud"}}
+        settings_path.write_text(json.dumps(foreign), encoding="utf-8")
+        try:
+            setup.install(claude_dir, plugin_root)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("foreign status line must require explicit replacement")
+        assert json.loads(settings_path.read_text(encoding="utf-8")) == foreign
 
 
 if __name__ == "__main__":

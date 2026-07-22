@@ -205,7 +205,7 @@ def worktree(repo_dir: str | Path | None = None) -> dict:
 
 
 def board_hud(repo_dir: str | Path | None = None) -> dict:
-    """Resolved Board HUD settings; enabled by default and harmless outside tmux."""
+    """Resolved Board HUD settings shared by native and sidecar UI adapters."""
     board = load(repo_dir).get("board") or {}
     hud = board.get("hud") if isinstance(board, dict) else None
     return hud if isinstance(hud, dict) else {}
