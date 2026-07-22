@@ -25,6 +25,12 @@ _EXEC_COMMAND_CALL = re.compile(
     re.DOTALL,
 )
 _JS_OBJECT_KEY = re.compile(r'([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)')
+_SHELL_APPLY_PATCH = re.compile(
+    r"(?:^|(?:&&|\|\||;)\s*)(?:\S*/)?apply_patch\s+<<(?P<strip>-?)[ \t]*"
+    r"(?P<quote>['\"]?)(?P<tag>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)[ \t]*\n"
+    r"(?P<patch>.*?)(?:\n[ \t]*(?P=tag)[ \t]*(?=\n|$))",
+    re.MULTILINE | re.DOTALL,
+)
 
 
 def project(inp) -> Change:
@@ -72,10 +78,25 @@ def _command_targets(command: str, base: WorkingDir) -> list[Target]:
             dash_c=getattr(v, "dash_c", None),
         )
 
-    return [
-        project(v)
-        for v in cmdparse.command_invocations(command)
+    invocations = cmdparse.command_invocations(command)
+    targets: list[Target] = [project(v) for v in invocations]
+
+    # Codex may fall back to a shell heredoc when the native apply_patch tool cannot write
+    # through a symlink/sandbox boundary. It is still a file mutation and must pass through
+    # the same owner/inactive-branch policy instead of looking like an opaque shell command.
+    patch_dirs = [
+        v.run_dir(base.path)
+        for v in invocations
+        if v.argv and Path(v.argv[0]).name == "apply_patch"
     ]
+    for match, run_dir in zip(_SHELL_APPLY_PATCH.finditer(command), patch_dirs):
+        patch = match.group("patch")
+        for path, mode in _patch_file_changes({"input": patch}):
+            target = Path(path).expanduser()
+            if not target.is_absolute() and run_dir is not None:
+                target = Path(run_dir) / target
+            targets.append(FileChange(path=str(target), mode=mode, tool_input={"input": patch}))
+    return targets
 
 
 def _bash_working_dir(inp) -> WorkingDir:

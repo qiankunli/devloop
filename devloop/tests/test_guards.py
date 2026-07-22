@@ -299,6 +299,17 @@ def test_codex_exec_envelope_runs_edit_and_command_guards():
     assert guard.decide(inp) is None
     assert session_lock.read(repo)["session_id"] == "sess-A"
 
+    shell_patch = f"apply_patch <<'PATCH'\n{patch}PATCH"
+    shell_source = (
+        "const r = await tools.exec_command("
+        f"{json.dumps({'cmd': shell_patch, 'workdir': repo})}"
+        "); text(r.output);"
+    )
+    reason = guard.decide(_hook_input("exec", {
+        "session_id": "sess-B", "cwd": R, "tool_input": {"input": shell_source},
+    }))
+    assert reason and "worktree" in reason and "owner.lock" in reason
+
     command = f'const r = await tools.exec_command({{"cmd":"git add -A","workdir":{json.dumps(repo)}}});'
     reason = guard.decide(_hook_input("exec", {
         "session_id": "sess-A", "cwd": R, "tool_input": {"input": command},
