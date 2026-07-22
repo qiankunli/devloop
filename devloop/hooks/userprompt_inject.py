@@ -8,15 +8,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hooks import hook_io
-from domain.context import (  # noqa: E402
-    Board,
-    record_session_event,
-)
+from domain.board import BoardRuntime  # noqa: E402
+from domain.context import record_session_event  # noqa: E402
 
 
 def produce(inp: hook_io.HookInput) -> str | None:
-    board = Board.resolve(inp.cwd, inp.session_id)
-    text = board.emit() if board else None
+    board = BoardRuntime.resolve(inp.cwd, inp.session_id)
+    text = board.deliver_prompt() if board else None
     # Log what actually went out (session.record_session_event). Placed here, not around each
     # emit, because what's worth reviewing is the ASSEMBLED block the model saw. `text` only —
     # NOT the user's prompt: the point is reviewing what WE emit, and the user's words are

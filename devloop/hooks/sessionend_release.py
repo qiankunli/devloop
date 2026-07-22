@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hooks import hook_io
 from domain import repo_layout, workspace  # noqa: E402
-from domain.context import Board, RepoContext, WorkspaceContext, clear_session, session  # noqa: E402
+from domain.board import BoardRuntime  # noqa: E402
+from domain.context import RepoContext, WorkspaceContext, session  # noqa: E402
 
 
 def _candidate_checkouts(cwd: str) -> list[str]:
@@ -53,9 +54,9 @@ def _candidate_checkouts(cwd: str) -> list[str]:
 def handle(inp: hook_io.HookInput) -> None:
     if not inp.session_id:
         return
-    board = Board.resolve(inp.cwd, inp.session_id)
+    board = BoardRuntime.resolve(inp.cwd, inp.session_id)
     if board:
-        clear_session(board.root, inp.session_id)
+        board.close()
     ws = workspace.find_containing_workspace(inp.cwd)
     if ws:
         session.clear_active_repo(ws, inp.session_id)

@@ -474,17 +474,40 @@ class RepoContext:
         p = self.current_pr()
         return bool(p and p.is_open)
 
-    # ── Board render previews (delivery itself lives in context.board) ─────────
+    # Compatibility previews for callers that need text without mutating Board receipts.
     def turn_text(self) -> str:
-        from .board import render_repo_turn
+        from domain.board import (
+            DeliveryChannel,
+            DeliveryPolicy,
+            PromptScope,
+            project_view,
+            render_prompt,
+        )
 
-        return render_repo_turn(self)
+        _, view = project_view(self.repo.repo_dir, repo=self)
+        items = DeliveryPolicy.items_for(
+            view,
+            DeliveryChannel.PROMPT,
+            frozenset({PromptScope.TURN}),
+        )
+        return render_prompt(items)
 
     def session_text(self) -> str:
-        from .board import render_repo_session
+        from domain.board import (
+            DeliveryChannel,
+            DeliveryPolicy,
+            PromptScope,
+            project_view,
+            render_prompt,
+        )
 
-        return render_repo_session(self)
-
+        _, view = project_view(self.repo.repo_dir, repo=self)
+        items = DeliveryPolicy.items_for(
+            view,
+            DeliveryChannel.PROMPT,
+            frozenset({PromptScope.SESSION}),
+        )
+        return render_prompt(items)
 
 # ── private builders / renderers ──────────────────────────────────────────────
 def _build_topology(repo_dir: str, target: str, prev: BranchTopology | None) -> BranchTopology:

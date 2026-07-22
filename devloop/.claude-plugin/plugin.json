@@ -1,7 +1,7 @@
 {
   "name": "devloop",
-  "version": "0.2.0",
-  "description": "Dev-loop workflow, native-first rebuild: git/PR (GitHub + GitLab) + cwd-aware enter + lint/test gates + .devloop/context.json state layer auto-injected into every prompt. Built on native Claude Code events (CwdChanged / PostCompact / FileChanged / monitors).",
+  "version": "0.2.1",
+  "description": "Dev-loop workflow, native-first rebuild: git/PR (GitHub + GitLab) + cwd-aware enter + Board-managed context delivery + lint/test gates. Built on native Claude Code events (CwdChanged / PostCompact / FileChanged / monitors).",
   "author": {
     "name": "qiankunli",
     "url": "https://github.com/qiankunli"

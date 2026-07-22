@@ -747,16 +747,16 @@ def test_inject_at_workspace_root_uses_active_repo():
 
     class _Board:
         repo = None
-        def emit(self): return "Branch: feat/x (ahead 0, behind 0 vs main, as of 1)"
+        def deliver_prompt(self): return "Branch: feat/x (ahead 0, behind 0 vs main, as of 1)"
 
-    saved = ui.Board
+    saved = ui.BoardRuntime
     seen = {}
     try:
-        ui.Board = type("M", (), {"resolve": staticmethod(
+        ui.BoardRuntime = type("M", (), {"resolve": staticmethod(
             lambda cwd, sid=None: seen.setdefault("args", (cwd, sid)) and _Board())})
         out = ui.produce(_hook_input("UserPromptSubmit", {"cwd": "/ws"}))
     finally:
-        ui.Board = saved
+        ui.BoardRuntime = saved
     assert seen.get("args", (None,))[0] == "/ws"
     assert out and "Branch: feat/x" in out                 # active repo's turn context reached the prompt
 
