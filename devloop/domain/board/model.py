@@ -176,6 +176,7 @@ class BoardItem:
         """Return the presentation-neutral shape consumed by the future Board UI."""
         return {
             "id": self.id,
+            "revision": self.signature,
             "type": self.type.value,
             "kind": self.kind.value,
             "scope": _json_ready(self.scope),

@@ -34,6 +34,12 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/python\" \"${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart_codex_init.py\"",
             "timeout": 10,
             "statusMessage": "Initializing devloop session"
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/python\" \"${CLAUDE_PLUGIN_ROOT}/hooks/board_hud_start.py\"",
+            "timeout": 5,
+            "statusMessage": "Starting Board HUD"
           }
         ]
       }

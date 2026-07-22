@@ -31,8 +31,10 @@ focus，把事实投影为共享 `Board`，再得到相关 `BoardView`。每次
 已经变化的部分。
 
 UI 读取 `BoardRuntime.snapshot()` 得到 JSON-ready 的结构化 view；读取不经过 prompt
-renderer，也不改变 delivery receipt。下一阶段的 Board UI 只消费这个 read surface，
-不直接拼接各状态源。
+renderer，也不改变 delivery receipt。Board HUD 消费同一个 snapshot：CLI session 在
+tmux 中启动时，`SessionStart` 自动创建底部固定三行的只读 sidecar，前两行展示当前
+focus 与健康状态，第三行展示最近一次 snapshot 变化；新的变化覆盖旧消息。HUD 不直接
+拼接各状态源，也不参与 prompt receipt。
 
 投递游标按 session 存在 `.devloop/board/sessions/`。`PostCompact` 会让状态条目
 在下一轮重放；已经消费的 event 不会因压缩再次触发。只有 UI channel 的条目不经过
@@ -62,3 +64,15 @@ validation 等事实仍由原 owner 的 segment 提供。
 branch、dirty、validation 等描述“现在在哪里”，compaction 后必须重放；review
 结果和待办提醒描述“发生过什么 / 请做什么”，按身份限次投递，避免 agent
 重复处理同一件事。
+
+### 三行 HUD 是展示面，不是第二条状态总线
+
+HUD 固定保留三种语义槽位：工作上下文、当前健康状态、最新变化。失败或阻塞事实始终
+留在健康状态行，不能只作为会被覆盖的实时消息出现。第三行由 watcher 比较前后两帧
+Board item revision 得出，仅在进程内保留最新一条，不另建事件 ledger；HUD 重启后从
+“watching Board”重新开始。
+
+tmux 只提供 Codex/Claude 当前尚未开放给 plugin 的底部展示位置。HUD pane 以 CLI
+session 与 leader pane 标识，重复 SessionStart 复用同一 pane，leader 回到 shell 后自动
+退出。非 tmux 会话安静降级，不影响 Board 的 prompt 投递；可通过
+`board.hud.enabled=false` 显式关闭。

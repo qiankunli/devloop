@@ -67,6 +67,9 @@ _DEFAULTS: dict = {
     # load() 的距离分层覆盖——repo 的 .devloop/config.json 写一份 worktree.keep_recent 即覆盖全局。
     # 任何规范入口建 worktree 时都消费它（worktree.create_or_reuse）。
     "worktree": {"keep_recent": 5},
+    # Board HUD is a read-only display surface. It starts automatically only when the
+    # current CLI already runs inside tmux; false is an explicit opt-out.
+    "board": {"hud": {"enabled": True}},
 }
 
 _LOCAL_NAME = ".devloop"
@@ -98,7 +101,7 @@ def plugin_root() -> Path:
     env_root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT")
     if env_root:
         return Path(env_root)
-    return Path(__file__).resolve().parent.parent.parent
+    return Path(__file__).resolve().parent.parent
 
 
 # ── read / write ─────────────────────────────────────────────────────────────
@@ -199,6 +202,13 @@ def worktree(repo_dir: str | Path | None = None) -> dict:
     0 一个旧的都不留，N<0 关闭清理。无 repos map：`load(repo_dir)` 已按距离深合并，repo 的
     `.devloop/config.json` 里的 `worktree.keep_recent` 直接覆盖全局。`create_or_reuse` 读它。"""
     return load(repo_dir).get("worktree") or {}
+
+
+def board_hud(repo_dir: str | Path | None = None) -> dict:
+    """Resolved Board HUD settings; enabled by default and harmless outside tmux."""
+    board = load(repo_dir).get("board") or {}
+    hud = board.get("hud") if isinstance(board, dict) else None
+    return hud if isinstance(hud, dict) else {}
 
 
 def notify(repo_dir: str | Path | None = None) -> dict:
