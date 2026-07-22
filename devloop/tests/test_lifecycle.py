@@ -49,6 +49,11 @@ def test_code_policy_engine():
     assert isinstance(unified.targets[0], Command)
     assert unified.targets[0].working_dir.path == Path("/r")
     assert unified.targets[0].working_dir.source == "exec_command.workdir"
+    shell_patch = "apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: b.py\n@@\n-x\n+y\n*** End Patch\nPATCH"
+    source = f"const r = await tools.exec_command({json.dumps({'cmd': shell_patch, 'workdir': '/r'})});"
+    unified = engine.project(_hook_input("exec", {"cwd": "/", "tool_input": {"input": source}}))
+    changed = [target for target in unified.targets if isinstance(target, FileChange)]
+    assert len(changed) == 1 and changed[0].path == "/r/b.py"
     bash = engine.project(_hook_input("Bash", {"cwd": "/r", "tool_input": {"command": "cd x && go build ./..."}}))
     assert len(bash.targets) == 2 and all(isinstance(t, Command) for t in bash.targets)
 
