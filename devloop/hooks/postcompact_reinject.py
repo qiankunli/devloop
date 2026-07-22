@@ -8,13 +8,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hooks import hook_io
-from domain.context import Board, clear_after_compact  # noqa: E402
+from domain.board import BoardRuntime  # noqa: E402
 
 
 def handle(inp: hook_io.HookInput) -> None:
-    board = Board.resolve(inp.cwd, inp.session_id)
+    board = BoardRuntime.resolve(inp.cwd, inp.session_id)
     if board:
-        clear_after_compact(board.root, inp.session_id)
+        board.after_compact()
 
 
 if __name__ == "__main__":

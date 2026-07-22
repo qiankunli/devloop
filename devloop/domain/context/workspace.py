@@ -105,12 +105,12 @@ class WorkspaceContext:
     def is_stale(self, ttl: float = WORKSPACE_STALE_SEC) -> bool:
         return base.is_stale(self.parsed_at, ttl)
 
-    # ── Board render preview (delivery itself lives in context.board) ──────────
     def session_text(self) -> str:
-        from .board import render_workspace
+        """Compatibility preview; prompt delivery receipts remain Board-owned."""
+        from domain.board import project_view, render_prompt
 
-        return render_workspace(self)
-
+        _, view = project_view(self.workspace_root, workspace=self)
+        return render_prompt(view.items)
 
 # Direct children that are never subprojects, skipped before the git-repo test. The
 # git-repo test alone already drops them; this just avoids stat'ing the obvious ones

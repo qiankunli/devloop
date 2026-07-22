@@ -22,7 +22,7 @@ AGENTS.md 是项目边界与 References 的**文字知识源**；`.devloop/*.jso
 
 **两个控制杠杆**：
 
-1. **Board 消除信息滞后**：状态源持续提供当前 subproject 的 branch / 工作区 / PR / validation，加上 workspace 级的子项目清单与 AGENTS.md References；Board 按相关性组织结构化条目，并统一选择 session / turn / event / ui_only surface——AI 改第一行前就掌握现状，长历史又不浪费 prompt token。
+1. **Board 消除信息滞后**：状态源持续提供当前 subproject 的 branch / 工作区 / PR / validation，加上 workspace 级的子项目清单与 AGENTS.md References；Board 按相关性组织 payload-first 条目，以独立的 item kind、delivery channel、prompt scope 与 replay policy 决定投递——AI 改第一行前就掌握现状，长历史又不浪费 prompt token。
 2. **硬拦截把软约定变成执行级边界**：PreToolUse `deny`，AI 绕不过（保护分支、过期分支改文件、误带文件…）。
 
 **实现取向**：native-first——控制能力优先坐到 CLI 原生事件和统一技术 seam 上；独立 `.devloop/` 命名空间，状态与其它工具互不干扰。Claude 使用完整原生事件，Codex 使用其事件子集并通过刷新路径补足缺口。
@@ -43,8 +43,8 @@ devloop/
 │   ├── repo.py                    #   ★Repo 模型 + cwd 无关解析 + WorkSet（本轮 components）
 │   ├── workspace.py               #   ★Workspace 注册、发现与归属
 │   ├── repo_layout.py             #   ★Component 模型 + repo/component 路径边界
-│   ├── context/                   #   ★状态源 + Board：repo/workspace/session、prompt 投递、gate/prstate
-│   │   └── board.py              #     相关性组织 + 四类 surface policy + per-session 游标
+│   ├── context/                   #   ★状态源：repo/workspace/session、gate/prstate
+│   ├── board/                     #   ★Board：结构化模型/投影/view + delivery policy/receipt/renderer
 │   ├── lifecycle/                 #   ★pre/post commit/MR dispatch + lint/test/review handlers
 │   ├── forge.py                   #   ★PullRequest/Comment/Release 中立模型 + Forge port
 │   ├── review_feedback.py         #   review finding/label 的领域 join
@@ -93,7 +93,7 @@ devloop/
 ## References
 
 - 一轮循环端到端流程（事件 → hook/script → 状态）：[`docs/loop.md`](./docs/loop.md)
-- Board 上下文读模型（事实源 → 相关性组织 → session/turn/event/ui_only surface）：[`docs/board.md`](./docs/board.md)
+- Board 上下文读模型（事实源 → Board/View → channel/scope/replay policy）：[`docs/board.md`](./docs/board.md)
 - 外部事件驱动的会话续跑（感知 → 唤醒 → 按 auto-mode 决策，含设计/实现分层）：[`docs/event-driven-resume.md`](./docs/event-driven-resume.md)
 - devops 生命周期 hook（pre_commit/post_commit/pre_mr/post_mr，统一 lint/test/review 等的触发；hook 皆阻塞，异步=发信号+既有 wake）：[`docs/lifecycle-hooks.md`](./docs/lifecycle-hooks.md)
 - Worktree 依赖环境（checkout-local 依赖视图 + 共享包缓存；生态 prepare 与验证前置条件）：[`docs/worktree-env.md`](./docs/worktree-env.md)

@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hooks import hook_io
 from domain import repo_layout, workspace  # noqa: E402
-from domain.context import Board, BoardSurface, RepoContext, WorkspaceContext  # noqa: E402
+from domain.board import BoardRuntime, PromptTrigger  # noqa: E402
+from domain.context import RepoContext, WorkspaceContext  # noqa: E402
 
 
 def build(inp: hook_io.HookInput) -> dict | None:
@@ -46,8 +47,11 @@ def build(inp: hook_io.HookInput) -> dict | None:
             watch.append(ctx.agents_md.path)
 
     board_root = ws_root or git_root
-    board = Board(str(board_root), inp.session_id, ws, ctx) if board_root else None
-    session_text = board.emit({BoardSurface.SESSION}) if board else None
+    board = (
+        BoardRuntime.from_facts(str(board_root), inp.session_id, ws, ctx)
+        if board_root else None
+    )
+    session_text = board.deliver_prompt(PromptTrigger.SESSION_START) if board else None
 
     out: dict = {}
     if session_text:
