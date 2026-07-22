@@ -21,7 +21,7 @@ from typing import Literal
 
 
 class Severity(str, Enum):
-    WARN = "warn"  # 软提示：不拦，建议性 advisory（≠ 状态总线的 turn 注入软提醒）
+    WARN = "warn"  # 软提示：不拦，建议性 advisory（≠ Board 的 turn/event 提醒）
     DENY = "deny"  # 硬拦：阻断本次工具调用
 
 

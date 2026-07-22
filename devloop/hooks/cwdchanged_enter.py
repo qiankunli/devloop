@@ -4,8 +4,8 @@
 The native replacement for an old regex-parse-of-`cd` hook:
 the harness hands us the authoritative new working directory, so there's no brittle
 command parsing. This does the cheap, safe part of `/enter` automatically — refresh
-the repo's state segments and clear its injection stamps so the next UserPromptSubmit
-surfaces the entered repo's branch / state / References. `/enter` now only owns what
+the repo's state segments so Board sees the entered repo on the next UserPromptSubmit.
+`/enter` now only owns what
 can't be inferred from a cd: fuzzy name resolution and worktree creation.
 
 Assumes `cwd` in the payload is the NEW directory (the event's whole point).
@@ -58,20 +58,17 @@ def handle(inp: hook_io.HookInput) -> None:
     new_cwd = inp.cwd
     git_root = repo_layout.find_git_root(new_cwd)
     if git_root:
-        ctx = (
+        (
             RepoContext.refresh_all(git_root)
             if RepoContext.is_stale_at(git_root)
             else RepoContext.load(git_root) or RepoContext.refresh_all(git_root)
         )
         _refresh_remote_view_on_enter(git_root)
-        # Surface the entered repo's state/refs on the next prompt.
-        ctx.reset_turn_injection()
-        ctx.reset_session_injection()
         # deliberately NO owner acquire: enter 只是选中上下文(阅读/review/查日志都走到
         # 这),不碰 checkout 的可变面——占有由第一笔变更动作建立(edit/checkout guard、
         # posttool git refresh),与 gitignored 豁免同一判据:是否污染 owner 的 diff。
         record_active_repo(git_root, inp.session_id)
-    # Keep the workspace context warm too (no injection reset — same workspace).
+    # Keep workspace facts warm too; Board delivery state is independent.
     # Containment misses a symlinked subproject (resolve() escapes the workspace tree),
     # so fall back to the subproject-realpath match; an unregistered workspace root
     # auto-registers on first cd into it.

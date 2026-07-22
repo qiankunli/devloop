@@ -12,7 +12,7 @@ instances live here:
 
 - **active-repo binding** — `<workspace_root>/.devloop/active/<session_id>.json`:
   "which repo is this session working on", feeding the scripts' cwd-independent
-  repo resolution and the workspace-root turn injection.
+  repo resolution and the workspace-root Board view.
 - **checkout owner lock** — `<git_root>/.devloop/owner.lock`: the first session
   to MUTATE a checkout owns it; a guest's branch switches and edits are denied
   and routed to a worktree.
@@ -96,6 +96,11 @@ def _session_name(session_id: str | None) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "-", _session_key(session_id)) or "anon"
 
 
+def session_name(session_id: str | None) -> str:
+    """Public safe path component shared by session-owned state families."""
+    return _session_name(session_id)
+
+
 def _session_file(ws_root: str | Path, session_id: str | None) -> Path:
     return store.state_dir(ws_root) / "active" / f"{_session_name(session_id)}.json"
 
@@ -140,7 +145,7 @@ def load_active_repo_lenient(ws_root: str | Path,
     """READ-path binding: `(repo_dir, age_sec)` ignoring the TTL. For turn INJECTION only.
 
     The TTL exists so WRITE-path fallbacks (/gcam, run_fixlint.py repo resolution) never guess a stale
-    target — that semantic stays in `load_active_repo`. But injection sharing it caused silent
+    target — that semantic stays in `load_active_repo`. But Board resolution sharing it caused silent
     blindness: past the TTL the repo view vanished without a word and the model kept reasoning
     from hours-old context (the cross-repo merge-order incident). The repo STATE itself is
     monitor-fresh; only the "which repo" binding is old — so the read path keeps injecting and

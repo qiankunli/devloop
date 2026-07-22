@@ -1,7 +1,7 @@
 """`WorkspaceContext` — aggregate-workspace state at `<workspace_root>/.devloop/context.json`.
 
-Same shape as RepoContext but only the **session** injection cadence (References +
-Subprojects); no turn-grain content (branch/dirty/validation are repo-level). The
+Workspace facts (References + Subprojects); no turn-grain content
+(branch/dirty/validation are repo-level). Board owns their prompt delivery. The
 registry of which dirs are workspaces lives in `domain/workspace.py`.
 
 The workspace `.devloop/` also hosts the session-grain `active/` dir (each
@@ -17,10 +17,8 @@ from typing import Any
 from lib import parsers
 from . import base, store
 from .base import (
-    SESSION_TTL_SEC,
     WORKSPACE_STALE_SEC,
     AgentsMd,
-    Cadence,
     Reference,
 )
 
@@ -52,7 +50,6 @@ class WorkspaceContext:
     workspace_root: str = ""
     agents_md: AgentsMd = field(default_factory=AgentsMd)
     subprojects: list[Subproject] = field(default_factory=list)
-    injection_session: Cadence = field(default_factory=Cadence)
     parsed_at: float = 0.0
 
     @classmethod
@@ -61,7 +58,6 @@ class WorkspaceContext:
             workspace_root=d.get("workspace_root", ""),
             agents_md=AgentsMd.from_dict(d.get("agents_md") or {}),
             subprojects=[Subproject.from_dict(s) for s in (d.get("subprojects") or [])],
-            injection_session=Cadence.from_dict(d.get("injection_session") or {}),
             parsed_at=float(d.get("parsed_at", 0) or 0),
         )
 
@@ -94,7 +90,6 @@ class WorkspaceContext:
         if agents_md.exists():
             items = parsers.parse_references_section(agents_md)
             table_rows = parsers.parse_subprojects_section(agents_md)
-        prev = cls.load(root)
         new = cls(
             workspace_root=str(root),
             agents_md=AgentsMd(
@@ -103,7 +98,6 @@ class WorkspaceContext:
                                       hook=r.get("description")) for r in items],
             ),
             subprojects=_merge_subprojects(root, table_rows),
-            injection_session=prev.injection_session if prev else Cadence(),
         )
         new.save()
         return new
@@ -111,42 +105,11 @@ class WorkspaceContext:
     def is_stale(self, ttl: float = WORKSPACE_STALE_SEC) -> bool:
         return base.is_stale(self.parsed_at, ttl)
 
-    # ── session-cadence injection ──────────────────────────────────────────────
+    # ── Board render preview (delivery itself lives in context.board) ──────────
     def session_text(self) -> str:
-        refs = self.agents_md.references
-        if not refs and not self.subprojects:
-            return ""
-        lines = [f"[Workspace: {self.workspace_root}]"]
-        if refs:
-            lines.append("AGENTS.md references (Read with the Read tool when your task touches these topics):")
-            for r in refs:
-                lines.append("  - " + _format_ref(r))
-        if self.subprojects:
-            lines.append("Subprojects (each in its own subdir under the workspace):")
-            for s in self.subprojects[:12]:
-                alias = f" ({', '.join(s.aliases)})" if s.aliases else ""
-                note = " · ".join([b for b in (s.language or "", s.role or "") if b])
-                # Surface the realpath for symlinked subprojects: git reports canonical
-                # paths, and without the mapping the agent treats them as two repos.
-                canon = f" → {s.canonical}" if s.canonical else ""
-                lines.append(f"  - {s.name}{alias}: {note}{canon}")
-        return "\n".join(lines)
+        from .board import render_workspace
 
-    def emit_session_if_changed(self) -> str:
-        text = self.session_text()
-        return text if self.injection_session.should_emit(text, now=base.now(), ttl=SESSION_TTL_SEC) else ""
-
-    def mark_session_emitted(self, text: str) -> None:
-        self.injection_session.mark(text, now=base.now())
-        self.save()
-
-    def reset_session_injection(self) -> None:
-        self.injection_session.clear()
-        self.save()
-
-    def clear_injection_dedup(self) -> None:
-        self.injection_session.clear()
-        self.save()
+        return render_workspace(self)
 
 
 # Direct children that are never subprojects, skipped before the git-repo test. The
@@ -258,16 +221,3 @@ def workspace_for_repo(repo_dir: str | Path) -> str | None:
             except ValueError:
                 continue
     return None
-
-
-
-
-def _format_ref(r: Reference) -> str:
-    title = r.title or "?"
-    desc = (r.hook or "").strip()
-    basename = Path(r.path).name if r.path else ""
-    desc_is_path = desc and (desc == basename or desc == r.path
-                             or (desc.endswith(".md") and Path(desc).name == basename))
-    if desc and not desc_is_path:
-        return f"{title} — {desc}  ← {basename}"
-    return f"{title}  ← {basename}"

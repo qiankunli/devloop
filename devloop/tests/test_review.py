@@ -124,7 +124,7 @@ def test_review_line_told_once_per_result():
     """Review 是**事件**不是状态：同一个结果讲一遍就闭嘴（否则 agent 会反复 triage 同一批
     已处理的 findings），重跑出新结果（sha/status/计数变了）才再讲。且 PostCompact 不复活它
     ——compaction 掉的是「说过的话」，state 必须重说，事件重投则是让人重做已做的事。"""
-    from domain.context import RepoContext, base, store
+    from domain.context import Board, RepoContext, base, clear_after_compact, store
     G = "/tmp/dlut_revonce"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
     Path(f"{G}/a.txt").write_text("x"); _git(G, "add", "-A"); _git(G, "commit", "-q", "-m", "init")
@@ -134,10 +134,8 @@ def test_review_line_told_once_per_result():
 
     def seg(**kw): store.save_segment(R, _rseg, {"comments": [], "generated_at": 1.0, **kw})
     def tell() -> bool:
-        c = RepoContext.load(R)
-        said = "Review:" in c.turn_text()
-        c.mark_turn_emitted(c.turn_text())
-        return said
+        text = Board(R, "review-test", repo=RepoContext.load(R)).emit()
+        return bool(text and "Review:" in text)
 
     seg(status="success", count=2, reviewed_sha="abcdef1234567")
     assert tell() is True                       # 第一次：讲
@@ -156,7 +154,7 @@ def test_review_line_told_once_per_result():
     assert tell() is True
 
     # PostCompact 清 cadence 让 state 重注入，但不复活已投递的事件
-    c = RepoContext.load(R); c.clear_injection_dedup()
+    clear_after_compact(R, "review-test")
     assert tell() is False
 
     # running → stale 必须还能讲：stale 是 *推导* 的（running 超时），段里的 status 一直是
@@ -165,9 +163,8 @@ def test_review_line_told_once_per_result():
     seg(status="running", count=0, reviewed_sha="bbbbbbbbbbbbb", generated_at=base.now())
     assert tell() is True and tell() is False                  # running 讲一次
     seg(status="running", count=0, reviewed_sha="bbbbbbbbbbbbb", generated_at=1.0)   # 超时 → stale
-    c = RepoContext.load(R)
-    assert "Review: stale" in c.turn_text()                    # 同一 status，但事件变了
-    c.mark_turn_emitted(c.turn_text())
+    assert "Review: stale" in RepoContext.load(R).turn_text()  # 同一 status，但事件变了
+    assert tell() is True
     assert tell() is False                                     # stale 也只讲一次
 
 
@@ -206,7 +203,7 @@ def test_label_nudge_decays_then_reopens_on_new_findings():
     """待打标是**要人干活**的行，不是状态行：同一批 finding 问满 LABEL_NUDGE_CAP 次就闭嘴
     （不理也是一种回答）；来了新的一批（pending set 变了）才重新开口。turn Cadence 顶不了
     这件事——它按整块 hash 去重，随便哪行状态一动就整块重发，chore 行会永远跟着喊。"""
-    from domain.context import RepoContext, store
+    from domain.context import Board, RepoContext, store
     from domain.context.base import LABEL_NUDGE_CAP
     G = "/tmp/dlut_nudgedecay"; shutil.rmtree(G, ignore_errors=True); os.makedirs(G)
     _git(G, "init", "-q"); _git(G, "config", "user.email", "t@t.t"); _git(G, "config", "user.name", "t")
@@ -218,10 +215,8 @@ def test_label_nudge_decays_then_reopens_on_new_findings():
 
     def ask() -> bool:
         """一个 emit→mark 回合，返回这轮有没有喊。"""
-        c = RepoContext.load(R)
-        said = "待打标" in c.turn_text()
-        c.mark_turn_emitted(c.turn_text())   # 真发出去了才记账（见 userprompt_inject）
-        return said
+        text = Board(R, "label-test", repo=RepoContext.load(R)).emit()
+        return bool(text and "待打标" in text)
 
     prseg(label_pending=3, label_pending_key="setA")
     assert [ask() for _ in range(LABEL_NUDGE_CAP)] == [True] * LABEL_NUDGE_CAP   # 问满 cap

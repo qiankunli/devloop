@@ -1,11 +1,11 @@
 """`RepoContext` — per-repo state, persisted as per-owner segment files under
 `<git_root>/.devloop/` (`meta.json` / `branch.json` / `remote_branches.json` / `pr.json` /
-`injection.json`, plus branch-domain `branches/<b>/{branch,lint,test,injection,review}.json`).
+plus branch-domain `branches/<b>/{branch,lint,test,review}.json`).
 `RepoContext` is the in-memory *view* that `load()` assembles by merging them; each mutator
 writes back only its own segment.
 
 Why one file per owner: the state has several independent writer-roles (the refresh, the MR
-monitor, **the lint handler**, **the test handler**, injection marks) running in different
+monitor, **the lint handler**, and **the test handler**) running in different
 processes — and lint/test additionally run CONCURRENTLY inside one `lifecycle.dispatch`.
 That is why they own separate segments: "validation marks" was one entry in this list while
 being two concurrent writers on one file, which is exactly the lost update this layout exists
@@ -42,19 +42,10 @@ from .. import repo_layout
 from . import base, store
 from .base import (
     DEFAULT_BRANCH_TTL_SEC,
-    LABEL_NUDGE_CAP,
     REPO_STALE_SEC,
-    REVIEW_NUDGE_CAP,
-    SESSION_TTL_SEC,
-    TURN_TTL_SEC,
     AgentsMd,
-    Cadence,
-    MergeReadiness,
-    Nudge,
     PullRequest,
     Reference,
-    pr_label,
-    vocab,
 )
 
 
@@ -249,64 +240,12 @@ class Validation:
         return self.components.setdefault(cid, ComponentValidation())
 
 
-def _review_status(rv: dict) -> str:
-    """The review status as DISPLAYED, which is not always the one stored.
-
-    `stale` is DERIVED, never written: a detached run_review that got killed (sleep / OOM /
-    kill) never wrote a terminal status, so review.json sits at `running` forever — past
-    REVIEW_STALE_SEC that reads as stale. "" for skipped / no review (no signal, pure noise).
-
-    Shared by the renderer and `_review_key` on purpose: keying on the STORED status would
-    make running and stale the same event, so a review told once while running could never
-    report that it died — the exact case the staleness backstop exists for.
-    """
-    status = rv.get("status")
-    if not status or status == "skipped":
-        return ""
-    if status == "running" and (base.now() - (rv.get("generated_at") or 0)) > base.REVIEW_STALE_SEC:
-        return "stale"
-    return status
-
-
-def _review_key(rv: dict) -> str:
-    """Identity of a review RESULT — what makes it a different thing worth telling again.
-
-    Displayed status + the sha it ran against + its counts. A re-run over new code, a run
-    finishing (running → success), or one dying (running → stale) is new; the same result
-    re-read every turn is not.
-    """
-    st = _review_status(rv)
-    return f"{st}:{rv.get('reviewed_sha') or ''}:{rv.get('count', 0)}:{rv.get('failed', 0)}" if st else ""
-
-
-@dataclass
-class Injection:
-    turn: Cadence = field(default_factory=Cadence)
-    session: Cadence = field(default_factory=Cadence)
-    # Event/chore delivery ledgers, decaying independently of the turn cadence — Cadence
-    # hashes the whole block, so an unrelated line moving would re-deliver forever. Also NOT
-    # cleared by PostCompact, unlike the cadences: see clear_injection_dedup. base.Nudge.
-    label_nudge: Nudge = field(default_factory=Nudge)
-    review_nudge: Nudge = field(default_factory=Nudge)
-
-    @classmethod
-    def from_dict(cls, d: dict | None) -> "Injection":
-        d = d or {}
-        return cls(
-            turn=Cadence.from_dict(d.get("turn") or {}),
-            session=Cadence.from_dict(d.get("session") or {}),
-            label_nudge=Nudge.from_dict(d.get("label_nudge") or {}),
-            review_nudge=Nudge.from_dict(d.get("review_nudge") or {}),
-        )
-
-
 @dataclass
 class RepoContext:
     repo: RepoMeta = field(default_factory=RepoMeta)
     agents_md: AgentsMd = field(default_factory=AgentsMd)
     branch: BranchTopology = field(default_factory=BranchTopology)
     validation: Validation = field(default_factory=Validation)
-    injection: Injection = field(default_factory=Injection)
     prs: list[PullRequest] = field(default_factory=list)   # monitor-owned recent-PR window
     provider: str = ""   # repo-level forge ("github"/"gitlab"); drives display vocabulary
     merge_readiness: str | None = None   # current branch's open-MR readiness — a pr.json hint
@@ -354,8 +293,6 @@ class RepoContext:
             validation=Validation.from_dict(
                 store.load_segment(repo_dir, store.branch_segment(live, "lint")),
                 store.load_segment(repo_dir, store.branch_segment(live, "test"))),
-            injection=Injection.from_dict(
-                store.load_segment(repo_dir, store.branch_segment(live, "injection")) or {}),
             prs=[PullRequest.from_dict(p) for p in (pr.get("prs") or []) if p.get("number") is not None],
             provider=pr.get("provider", ""),
             merge_readiness=(pr.get("merge_readiness") if on_branch else None),
@@ -425,16 +362,12 @@ class RepoContext:
         if self._root():
             store.save_segment(self._root(), self._branch_seg("test"), self.validation.test_segment())
 
-    def _save_injection(self) -> None:
-        if self._root():
-            store.save_segment(self._root(), self._branch_seg("injection"), asdict(self.injection))
-
     # ── refresh (re-derive from authoritative sources) ─────────────────────────
     @classmethod
     def refresh_all(cls, repo_dir: str | Path) -> "RepoContext":
         """Full rebuild (normal-impl boundary: SessionStart / enter / TTL).
 
-        Writes only the refresher-owned segments (meta + branch). validation / injection /
+        Writes only the refresher-owned segments (meta + branch). validation /
         pr / remote_branches live in their own files and are left untouched — their values
         are merged in (via prev) only to keep the *returned* object complete."""
         repo_dir_in = str(Path(repo_dir))
@@ -461,7 +394,6 @@ class RepoContext:
             ),
             branch=_build_topology(repo_dir_abs, target, prev.branch),
             validation=prev.validation,
-            injection=prev.injection,
             prs=prev.prs,
             provider=prev.provider,
         )
@@ -542,75 +474,16 @@ class RepoContext:
         p = self.current_pr()
         return bool(p and p.is_open)
 
-    # ── injection: turn / session cadences ─────────────────────────────────────
+    # ── Board render previews (delivery itself lives in context.board) ─────────
     def turn_text(self) -> str:
-        return _format_turn(self)
+        from .board import render_repo_turn
+
+        return render_repo_turn(self)
 
     def session_text(self) -> str:
-        if not self.agents_md.references:
-            return ""
-        return _format_session(self)
+        from .board import render_repo_session
 
-    def emit_turn_if_changed(self) -> str:
-        text = self.turn_text()
-        return text if self.injection.turn.should_emit(text, now=base.now(), ttl=TURN_TTL_SEC) else ""
-
-    def emit_session_if_changed(self) -> str:
-        text = self.session_text()
-        return text if self.injection.session.should_emit(text, now=base.now(), ttl=SESSION_TTL_SEC) else ""
-
-    @property
-    def label_nudge_due(self) -> bool:
-        """Whether the待打标 nudge should speak this turn. ONE predicate, read by both
-        `_format_turn` (to decide whether to say it) and `mark_turn_emitted` (to count that it
-        was said) — the two are separate calls over the same unchanged ctx, so a single
-        definition is what keeps them from drifting into counting asks that never went out."""
-        return bool(self.label_pending) and self.injection.label_nudge.due(
-            self.label_pending_key, cap=LABEL_NUDGE_CAP)
-
-    def review_nudge_due(self, rv: dict) -> bool:
-        """Whether this review RESULT still needs telling. Same emit/mark pairing as
-        `label_nudge_due`; `rv` is the freshly-read review segment (the formatter reads it
-        live because an external process writes it, so it can't come off `self`)."""
-        return bool(_review_key(rv)) and self.injection.review_nudge.due(
-            _review_key(rv), cap=REVIEW_NUDGE_CAP)
-
-    def mark_turn_emitted(self, text: str) -> None:
-        self.injection.turn.mark(text, now=base.now())
-        # Only reached when `text` actually went out (see userprompt_inject), so these count
-        # deliveries the agent really saw — not ones the block-level dedup swallowed.
-        if self.label_nudge_due:
-            self.injection.label_nudge.bump(self.label_pending_key)
-        rv = store.load_segment(self._root(), self._branch_seg("review")) or {}
-        if self.review_nudge_due(rv):
-            self.injection.review_nudge.bump(_review_key(rv))
-        self._save_injection()
-
-    def mark_session_emitted(self, text: str) -> None:
-        self.injection.session.mark(text, now=base.now())
-        self._save_injection()
-
-    def reset_turn_injection(self) -> None:
-        self.injection.turn.clear()
-        self._save_injection()
-
-    def reset_session_injection(self) -> None:
-        self.injection.session.clear()
-        self._save_injection()
-
-    def clear_injection_dedup(self) -> None:
-        """PostCompact: drop both cadences' stamps so STATE re-injects next turn.
-
-        Deliberately does NOT touch the nudges. Compaction drops what was said, so state must
-        be re-said — an agent acting on a branch/PR picture it no longer holds is the failure
-        this prevents. Events and chores are the opposite: re-delivering a review result makes
-        the agent re-triage findings it already handled, and re-asking for verdicts the user
-        declined three times re-litigates a decision compaction didn't undo. Their ledgers
-        record "this was delivered", which stays true across a compaction.
-        """
-        self.injection.turn.clear()
-        self.injection.session.clear()
-        self._save_injection()
+        return render_repo_session(self)
 
 
 # ── private builders / renderers ──────────────────────────────────────────────
@@ -635,189 +508,3 @@ def _build_topology(repo_dir: str, target: str, prev: BranchTopology | None) -> 
         topo.remotes_fetched_at = prev.remotes_fetched_at
         topo.pr_number = prev.pr_number
     return topo
-
-
-def _branch_staleness(repo_dir: str, b: BranchTopology) -> dict:
-    """ahead/behind of local vs its trunk baseline, plus a freshness qualifier.
-
-    ahead/behind is computed against the LOCAL `origin/<base>` mirror (no network). The monitor's
-    TRUE tip (`b.remotes`) is compared to that mirror to detect 'trunk moved since you last
-    fetched' — the silent-staleness the count alone hides (see docs/branch-state.md §read-freshness)."""
-    base_name = b.base_branch()
-    ahead, behind = git_state.get_ahead_behind(repo_dir, base_name) or (0, 0)
-    remote = b.remote_tip(base_name)
-    if remote and remote.commit:
-        # we have the server's TRUE tip for this baseline → a real freshness signal. Claim
-        # "as of" ONLY here: if the baseline isn't among the monitor's tracked tips, saying
-        # "as of <t>" would falsely imply this count reflects the latest remote.
-        local_mirror = git_state.rev_parse(repo_dir, f"origin/{base_name}")
-        if local_mirror and local_mirror != remote.commit:
-            asof = f", ⚠ trunk moved since fetch {base.fmt_ts(b.remotes_fetched_at)} — fetch to recount"
-        else:
-            asof = f", as of {base.fmt_ts(b.remotes_fetched_at)}"
-    else:
-        asof = ""
-    return {"base": base_name, "ahead": ahead, "behind": behind, "asof": asof}
-
-
-_READINESS_BLURB = {
-    MergeReadiness.CONFLICT: "merge conflict with target — rebase/merge & resolve",
-    MergeReadiness.DISCUSSIONS_UNRESOLVED: "unresolved review discussions — address the comments",
-    MergeReadiness.CI_BLOCKED: "CI not passing",
-}
-
-
-def _format_turn(ctx: "RepoContext") -> str:
-    lines = [f"[Current repo: {_display_code_dir(ctx)} ({ctx.repo.language or '?'})]"]
-    b = ctx.branch
-    cur = b.local.name or "?"
-    wt = " (worktree)" if git_state.is_linked_worktree(ctx.repo.real_repo_dir) else ""
-    extras = []
-    if b.local.is_protected():
-        extras.append("PROTECTED")
-    pr = ctx.current_pr()
-    if pr and pr.inactive:
-        extras.append(
-            f"INACTIVE ({pr_label(ctx.provider, pr.number)} {pr.state}) — cut a new branch from latest origin/{b.target}"
-        )
-    elif pr and pr.is_open:
-        # Soft hint, not a guard: an in-flight PR has one legitimate edit case (amending it for
-        # review), so we surface the state and let the agent choose rather than hard-blocking.
-        noun = vocab(ctx.provider)[0]
-        extras.append(
-            f"IN-FLIGHT ({pr_label(ctx.provider, pr.number)} open) — new work needs a fresh branch (gcampr --branch); "
-            f"edit here only to amend this {noun}"
-        )
-    # Surface an actionable merge blocker on the current open MR (conflict / unresolved discussions
-    # / CI). A pr.json hint as of the last poll — the nudge to act; the gate re-checks live at merge.
-    if pr and pr.is_open and ctx.merge_readiness:
-        try:
-            rd = MergeReadiness(ctx.merge_readiness)
-        except ValueError:
-            rd = None
-        if rd and rd.blocks_merge:
-            extras.append(f"MERGE-BLOCKED: {_READINESS_BLURB[rd]}")
-    extra_str = f" ⚠️ {'; '.join(extras)}" if extras else ""
-    st = _branch_staleness(ctx.repo.real_repo_dir or ctx.repo.repo_dir, b)
-    lines.append(
-        f"Branch: {cur}{wt} (ahead {st['ahead']}, behind {st['behind']} vs {st['base']}{st['asof']}, target={b.target})"
-        f"{extra_str}"
-    )
-
-    raw = git_state.get_workspace_status(ctx.repo.real_repo_dir or ctx.repo.repo_dir)
-    if raw.get("dirty"):
-        lines.append(f"Workspace: dirty: {raw.get('modified_count', 0)} modified, {raw.get('untracked_count', 0)} untracked")
-    else:
-        lines.append("Workspace: clean")
-
-    # 按 component 逐段渲染（key 排序：dict 序来自落盘顺序，会随哪个 component 先盖戳而变；整块 hash 去重
-    # 下那等于无意义重发）。没有任何 component 验过 → 一句话，不摆两个 never。
-    v = ctx.validation
-    if not v.components:
-        lines.append("Validation: never run")
-    else:
-        # 只报「什么时候验过」，**不报「验的还算不算数」**：后者要现算指纹（读改动文件的 bytes），
-        # 而这里每轮都跑——按成本铁律（AGENTS.md〈成本原则〉）不值当。而且它本就不该由提示承担：
-        # 陈旧与否由 gate 在 commit 时判（那里算一次指纹是合算的），gcam 路径更是直接把 lint 跑掉。
-        # 旧的「N edits since」看着便宜，代价是它在 Codex 侧恒为 0——一个说谎的提示比没有更糟。
-        segs = [f"{cid}: lint={base.fmt_ts(v.components[cid].last_lint_at)}; test={base.fmt_ts(v.components[cid].last_test_at)}"
-                for cid in sorted(v.components)]
-        lines.append("Validation: " + " | ".join(segs))
-
-    # 后台 code-review 的结果回流（pull）：run_review（由 commit_flow detach 起）跑完写
-    # review.json，这里在下一轮把它捎进上下文——advisory，只通报、不挟持。读 fresh（段由
-    # 外部进程写，RepoContext 视图可能滞后）；skipped 不出（无信号价值、避免噪声）。
-    # 这是 pull 路径（醒着才看见）；另有 push 路径 notify 端口的 review Source（lib/notify/sources/review.py），
-    # 经 channel 或 waiter（scripts/notify.py）在 review 出终态时主动唤醒 idle 会话并带上 findings——pull 是兜底。
-    _rv = store.load_segment(ctx.repo.repo_dir,
-                            store.branch_segment(ctx.branch.local.name or None, "review")) or {}
-    _sha = (_rv.get("reviewed_sha") or "")[:9]
-    # Review 是**事件**,不是状态——「这次 review 出了什么」讲一遍就讲完了,它不描述「你现在
-    # 在哪」。所以按 review 身份（status+sha+计数）报一次就闭嘴,而不是每轮跟着整块重发:
-    # turn Cadence 按整块 hash 去重,随便哪行一动就整块重发,事件行会被反复重投,agent 于是
-    # 反复 triage 同一批已经处理过的 findings。同理它不该被 PostCompact 复活（见 Nudge）。
-    # 状态取 `_review_status`（与 key 同源）:stale 是推导出来的,不在段里。
-    _rs = _review_status(_rv) if ctx.review_nudge_due(_rv) else ""
-    if _rs == "stale":
-        lines.append(f"Review: stale on {_sha} — 疑似中途中断（见 .devloop/review.json）；下次 gcampr/commit 会重跑")
-    elif _rs == "running":
-        lines.append(f"Review: running on {_sha} (.devloop/review.json)")
-    elif _rs:   # success / completed_with_(warnings|errors) / error；skipped 已被 _review_status 滤掉
-        _n, _failed = _rv.get("count", 0), _rv.get("failed", 0)
-        # 诚实呈现：findings 与「N 文件 review 失败」分别报；都没有才是 clean。
-        # 关键修正：completed_with_errors+0 评论曾被误报成 clean——失败要看得见。
-        parts = []
-        if _n:
-            parts.append(f"{_n} finding(s)")
-        if _failed:
-            parts.append(f"{_failed} file(s) failed")
-        if _rs == "error":
-            parts.append("review errored")
-        summary = ", ".join(parts) if parts else "clean (no findings)"
-        lines.append(f"Review: {summary} on {_sha} — see .devloop/review.json")
-
-    # 待打标 nudge（ground truth 双向积累）——让所有 session/agent（含 Codex）都收到，
-    # 不依赖个体记忆。数来自 pr.json（forge 派生:有 ccr:fp 却没有 ccr:label 回复的 finding
-    # comment），刻意不用 review.json 的 finding 数:那是「上次 review 出了几条」,不是「还剩
-    # 几条没标」——标完了它照喊，review.json 被下轮覆盖 / 换机器 / worktree 删了它就没了，
-    # 而 MR 上没标的 finding 还挂着。pending 锚在 forge 上，跟本地状态无关。
-    # 独立于上面的 Review 行:review.json 没了不影响它，两者是不同的事实源。
-    # `label_nudge_due` 而非 `label_pending`:这是**要人干活**的行,不是状态行——同一批 finding
-    # 问满 LABEL_NUDGE_CAP 次就闭嘴（不理也是一种回答),来了新的才重新开口。
-    if ctx.label_nudge_due:
-        lines.append(f"Review findings: {ctx.label_pending} 条待打标 — 逐条求证后回复 "
-                     f"`ccr:label=`（label-review skill）")
-
-    if ctx.prs:
-        noun, sigil = vocab(ctx.provider)
-        parts = []
-        for p in ctx.prs:
-            star = "*" if p.number == b.pr_number else ""
-            parts.append(f"{sigil}{p.number}{star} {p.state or '?'}({p.source_branch or '?'})")
-        lines.append(f"Recent {noun}s: " + "  ".join(parts) + ("   (*=current branch)" if b.pr_number else ""))
-
-    # Requirement segment — "where is my TASK" vs the repo lines' "where am I STANDING".
-    # Cross-repo/cross-MR live view derived from the requirement spine + each repo's pr.json;
-    # empty unless the current branch belongs to an in-flight requirement (zero-token default).
-    from .loopstate import requirement as _requirement
-    rl = _requirement.turn_line(ctx.repo.repo_dir, b.local.name or None)
-    if rl:
-        lines.append(rl)
-
-    return " | ".join(lines)
-
-
-def _display_code_dir(ctx: "RepoContext") -> str:
-    """Human-facing repo identity for turn injection.
-
-    `code_dir` intentionally follows the live checkout so lifecycle hooks run in the
-    worktree being edited. The prompt header is different: it should name the repo,
-    not the transient `.worktrees/...` checkout path. For worktrees, project the
-    code-dir relative path back onto the main checkout; keep execution paths untouched.
-    """
-    code_dir = Path(ctx.repo.code_dir or ctx.repo.real_repo_dir or ctx.repo.repo_dir)
-    checkout = Path(ctx.repo.real_repo_dir or ctx.repo.repo_dir or code_dir)
-    main = store.state_dir(checkout).parent
-    try:
-        rel = code_dir.resolve().relative_to(checkout.resolve())
-    except (OSError, ValueError):
-        return str(code_dir)
-    return str(main / rel)
-
-
-def _format_session(ctx: "RepoContext") -> str:
-    lines = ["Repo AGENTS.md references (Read with the Read tool when your task touches these topics):"]
-    for r in ctx.agents_md.references:
-        lines.append("  - " + _format_ref(r))
-    return "\n".join(lines)
-
-
-def _format_ref(r: Reference) -> str:
-    title = r.title or "?"
-    desc = (r.hook or "").strip()
-    basename = Path(r.path).name if r.path else ""
-    desc_is_path = desc and (desc == basename or desc == r.path
-                             or (desc.endswith(".md") and Path(desc).name == basename))
-    if desc and not desc_is_path:
-        return f"{title} — {desc}  ← {basename}"
-    return f"{title}  ← {basename}"

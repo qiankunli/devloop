@@ -251,11 +251,11 @@ def test_in_flight_turn_hint():
     ctx.provider = "github"
     txt = ctx.turn_text()
     assert "IN-FLIGHT" in txt and "fresh branch" in txt and "INACTIVE" not in txt
-    assert "PR #51" in txt and "Recent PRs" in txt
+    assert "PR #51" in txt and "Recent PRs" not in txt
 
     # GitLab provider → MR ! 词汇(同一组 PR,只换 repo-level provider)
     ctx.provider = "gitlab"
-    assert "MR !51" in ctx.turn_text() and "Recent MRs" in ctx.turn_text()
+    assert "MR !51" in ctx.turn_text() and "Recent MRs" not in ctx.turn_text()
 
     # inactive(merged)→ 仍是 INACTIVE,不误报 IN-FLIGHT
     ctx.provider = "github"
@@ -745,24 +745,19 @@ def test_inject_at_workspace_root_uses_active_repo():
     prompt — the most common usage, where a naive cwd-only lookup injects nothing (Codex P1)."""
     ui = _load_hook("userprompt_inject")
 
-    class _Ctx:
-        def emit_session_if_changed(self): return ""
-        def mark_session_emitted(self, s): pass
-        def emit_turn_if_changed(self): return "Branch: feat/x (ahead 0, behind 0 vs main, as of 1)"
-        def mark_turn_emitted(self, s): pass
+    class _Board:
+        repo = None
+        def emit(self): return "Branch: feat/x (ahead 0, behind 0 vs main, as of 1)"
 
-    saved = (ui.repo_layout, ui.workspace, ui.WorkspaceContext, ui.RepoContext, ui.load_active_repo)
+    saved = ui.Board
     seen = {}
     try:
-        ui.repo_layout = type("M", (), {"find_git_root": staticmethod(lambda p: None)})
-        ui.workspace = type("M", (), {"find_containing_workspace": staticmethod(lambda p: "/ws")})
-        ui.WorkspaceContext = type("M", (), {"load": staticmethod(lambda r: None)})
-        ui.load_active_repo = lambda r, sid=None: seen.setdefault("active_arg", r) or "/active/repo"
-        ui.RepoContext = type("M", (), {"load": staticmethod(lambda r: _Ctx())})
+        ui.Board = type("M", (), {"resolve": staticmethod(
+            lambda cwd, sid=None: seen.setdefault("args", (cwd, sid)) and _Board())})
         out = ui.produce(_hook_input("UserPromptSubmit", {"cwd": "/ws"}))
     finally:
-        ui.repo_layout, ui.workspace, ui.WorkspaceContext, ui.RepoContext, ui.load_active_repo = saved
-    assert seen.get("active_arg") == "/ws"                 # fell back via the workspace root
+        ui.Board = saved
+    assert seen.get("args", (None,))[0] == "/ws"
     assert out and "Branch: feat/x" in out                 # active repo's turn context reached the prompt
 
 

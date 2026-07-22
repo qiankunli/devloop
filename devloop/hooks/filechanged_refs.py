@@ -4,7 +4,7 @@ disk → re-parse References and force a re-inject next prompt.
 
 Native replacement for old hook-driven AGENTS.md mtime polling. We only ever register
 AGENTS.md paths to watch, so any FileChanged here means a References source moved
-— re-parse + clear the session cadence so UserPromptSubmit re-emits the new refs.
+— re-parse; Board's content cursor notices the changed projection on the next prompt.
 (Refreshes the cwd repo/workspace; precise per-path routing is unnecessary since
 only AGENTS.md files are watched.)
 """
@@ -47,12 +47,10 @@ def handle(inp: hook_io.HookInput) -> None:
     base_dir = str(Path(changed).parent) if changed else inp.cwd
     git_root = repo_layout.find_git_root(base_dir)
     if git_root:
-        ctx = RepoContext.refresh_all(git_root)   # re-parse AGENTS.md References
-        ctx.reset_session_injection()
+        RepoContext.refresh_all(git_root)   # re-parse AGENTS.md References
     ws_root = workspace.find_containing_workspace(base_dir)
     if ws_root:
-        ws = WorkspaceContext.refresh(ws_root)
-        ws.reset_session_injection()
+        WorkspaceContext.refresh(ws_root)
 
 
 if __name__ == "__main__":
