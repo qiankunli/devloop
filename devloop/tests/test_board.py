@@ -129,6 +129,7 @@ def test_board_snapshot_is_structured_and_does_not_consume_prompt_delivery():
     assert snapshot["focus"]["repo_root"] == root
     identity = next(item for item in snapshot["items"] if item["type"] == "repo.identity")
     assert identity["kind"] == "state"
+    assert identity["revision"]
     assert identity["payload"]["branch"] == "feat/board"
     assert "text" not in identity
 

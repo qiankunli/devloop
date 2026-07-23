@@ -10,6 +10,8 @@
 
   "worktree": { "keep_recent": 5 },
 
+  "board": { "hud": { "enabled": true } },
+
   "lifecycle": {
     "default": { "pre_commit": [], "post_commit": [], "pre_mr": [], "post_mr": [] },
     "repos": {

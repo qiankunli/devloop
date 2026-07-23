@@ -72,7 +72,8 @@ devloop/
 │   ├── posttool_git_refresh.py       # PostToolUse：git 状态命令后刷新 branch 段
 │   ├── sessionend_release.py      # SessionEnd：释放本 session 的 owner 锁（正常退出路径）
 │   └── pretool_*.py               # 命令/编辑硬拦截（guard harness；含 owner 锁与裸 worktree add 拦截）
-├── scripts/                        # 工作流驱动 adapter：enter / commit_flow + smart_* / pr / release / lint/test/review / init_*
+├── ui/board/                       # Board UI adapter：稳定状态 projection + Claude status line / Codex tmux sidecar
+├── scripts/                        # 工作流驱动 adapter：enter / commit_flow + smart_* / pr / release / lint/test/review / init_* / Claude Board setup
 ├── monitors/monitors.json          # ★PR-sweep 后台轮询（替代 hook 心跳 scheduler）
 ├── commands/                       # slash：enter / gcam / gcamp / gcampr（lint/test 归 skill，gate 自动触发）
 ├── skills/                         # git-ops / gcam / gcamp / gcampr / fix-lint / run-test
