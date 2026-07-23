@@ -33,6 +33,25 @@ def _snapshot(cwd: str, session_id: str) -> dict:
     return runtime.snapshot() if runtime else {"root": cwd, "focus": None, "items": []}
 
 
+def _watch_text(cwd: str, session_id: str, tracker: HudPulseTracker) -> str | None:
+    """Keep the last visible frame when a transient Board read is unavailable."""
+    try:
+        snapshot = _snapshot(cwd, session_id)
+        frame = frame_from_snapshot(snapshot, tracker)
+        return render_frame(frame, shutil.get_terminal_size((120, 3)).columns, True)
+    except (OSError, ValueError):
+        return None
+
+
+def _shell_commands(environ: dict[str, str] | None = None) -> set[str]:
+    environ = os.environ if environ is None else environ
+    commands = {"bash", "dash", "fish", "sh", "zsh"}
+    configured = Path(environ.get("SHELL", "")).name
+    if configured:
+        commands.add(configured)
+    return commands
+
+
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render devloop's Board HUD")
     parser.add_argument("--watch", action="store_true")
@@ -90,7 +109,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     tracker = HudPulseTracker()
     inactive_leader_ticks = 0
-    shell_commands = {"bash", "dash", "fish", "sh", "zsh"}
+    shell_commands = _shell_commands()
     sys.stdout.write("\x1b[?25l\x1b[2J\x1b[H")
     sys.stdout.flush()
     try:
@@ -106,12 +125,11 @@ def main() -> int:
                 )
                 if inactive_leader_ticks >= 3:
                     break
-            snapshot = _snapshot(args.cwd, args.session_id)
-            frame = frame_from_snapshot(snapshot, tracker)
-            text = render_frame(frame, shutil.get_terminal_size((120, 3)).columns, True)
-            lines = "\n".join("\x1b[2K" + line for line in text.splitlines())
-            sys.stdout.write("\x1b[H" + lines + "\x1b[J")
-            sys.stdout.flush()
+            text = _watch_text(args.cwd, args.session_id, tracker)
+            if text is not None:
+                lines = "\n".join("\x1b[2K" + line for line in text.splitlines())
+                sys.stdout.write("\x1b[H" + lines + "\x1b[J")
+                sys.stdout.flush()
             time.sleep(1)
     finally:
         sys.stdout.write("\x1b[?25h")

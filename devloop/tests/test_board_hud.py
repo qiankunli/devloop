@@ -152,6 +152,18 @@ def test_native_statusline_keeps_stable_slots_and_never_drops_blocker():
     assert "feat/board-ui" not in lines[1]
 
 
+def test_watch_frame_survives_transient_board_read_error():
+    script = _load_script("board_hud")
+    script._snapshot = lambda *_: (_ for _ in ()).throw(ValueError("partial state"))
+
+    assert script._watch_text("/repo", "session-a", script.HudPulseTracker()) is None
+
+
+def test_watch_recognizes_the_users_configured_shell():
+    script = _load_script("board_hud")
+    assert "nu" in script._shell_commands({"SHELL": "/opt/homebrew/bin/nu"})
+
+
 class _FakeTmux:
     def __init__(self, panes: str = ""):
         self.panes = panes
